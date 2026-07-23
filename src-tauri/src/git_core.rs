@@ -8,9 +8,9 @@
 use crate::app_error::AppError;
 use crate::domain::{
     endpoint_for_host, parse_remote_url, sanitize_remote_url, BranchInfo, CodeHostEndpoint,
-    CodeHostKind, CommitSummary, GitOperationKind, GitStatus, GitStatusEntry, LfsStatus,
-    RemoteProfile, RepositoryRecord, ResetMode, StashEntry, SubmoduleInfo, SubmoduleStatus,
-    TagInfo, WorktreeInfo,
+    CodeHostKind, CommitSummary, ExternalEditorConfig, GitOperationKind, GitStatus, GitStatusEntry,
+    LfsStatus, RemoteBranchInfo, RemoteProfile, RepositoryRecord, ResetMode, StashEntry,
+    SubmoduleInfo, SubmoduleStatus, TagInfo, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -24,6 +24,9 @@ use std::time::{Duration, Instant};
 use url::Url;
 
 const NETWORK_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_EXTERNAL_EDITOR_ARGUMENTS: usize = 32;
+const MAX_EXTERNAL_EDITOR_VALUE_LENGTH: usize = 4096;
+const REMOTE_BRANCH_FETCH_REFSPEC_PATTERN: &str = "^[+]?refs/heads/.*";
 
 #[cfg(windows)]
 const DISABLED_GIT_HOOKS_PATH: &str = "NUL";
@@ -280,6 +283,84 @@ impl GitCore {
         parse_status_porcelain_v2(&output.stdout)
     }
 
+    /// Opens every unresolved conflict file in the application's explicitly
+    /// configured external editor. The editor executable and each argument
+    /// are passed directly to the operating system; no repository setting,
+    /// shell command, or user-controlled path is interpolated into a shell.
+    ///
+    /// This intentionally opens files rather than invoking Git's mergetool.
+    /// A repository-local mergetool configuration can contain an arbitrary
+    /// shell command, whereas this application-local configuration is saved
+    /// only after the user explicitly selects it.
+    pub fn open_conflicted_files_in_external_editor(
+        &self,
+        repository: &Path,
+        editor: &ExternalEditorConfig,
+    ) -> Result<Vec<String>, AppError> {
+        let editor = normalize_external_editor_config(editor.clone())?;
+        let status = self.status(repository)?;
+        let paths: Vec<String> = status
+            .entries
+            .iter()
+            .filter(|entry| is_conflicted_status_entry(entry))
+            .map(|entry| entry.path.clone())
+            .collect();
+        if paths.is_empty() {
+            return Err(AppError::new(
+                "no_conflicted_files",
+                "当前仓库没有需要在外部编辑器中处理的冲突文件。",
+            ));
+        }
+
+        let canonical_repository = fs::canonicalize(repository).map_err(|_| {
+            AppError::new(
+                "external_editor_repository_unavailable",
+                "无法访问当前仓库，未启动外部编辑器。",
+            )
+        })?;
+        let mut files = Vec::with_capacity(paths.len());
+        for path in &paths {
+            validate_worktree_relative_path(path)?;
+            let file = fs::canonicalize(repository.join(path)).map_err(|_| {
+                AppError::new(
+                    "conflicted_file_unavailable",
+                    "冲突文件已不存在或无法访问；请刷新仓库状态后重试。",
+                )
+            })?;
+            if !file.starts_with(&canonical_repository) {
+                return Err(AppError::new(
+                    "conflicted_file_outside_repository",
+                    "拒绝在仓库外部打开冲突文件。",
+                ));
+            }
+            files.push(file);
+        }
+
+        let mut command = Command::new(&editor.executable);
+        command
+            .args(&editor.arguments)
+            .args(&files)
+            .current_dir(repository)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().map_err(|_| {
+            AppError::new(
+                "external_editor_launch_failed",
+                "无法启动外部编辑器；请检查可执行文件路径和参数。",
+            )
+        })?;
+        // A GUI editor may remain open for a long time. Reap it in a detached
+        // worker so the desktop process never accumulates zombie children and
+        // the IPC call can return immediately for the user to resolve files.
+        let _ = thread::Builder::new()
+            .name("bkm-external-editor-reaper".into())
+            .spawn(move || {
+                let _ = child.wait();
+            });
+        Ok(paths)
+    }
+
     /// Reads an unstaged or staged patch.  File paths are placed after `--` so
     /// they cannot be interpreted as Git options. For one untracked file,
     /// ordinary `git diff` is empty, so we render it as an addition from
@@ -317,6 +398,88 @@ impl GitCore {
             return self.untracked_file_diff(repository, path, options.context_lines);
         }
         Ok(diff)
+    }
+
+    /// Returns Git's standard blame output for one tracked file. The caller
+    /// receives text rather than an error diagnostic so source lines and
+    /// commit subjects remain data, never part of an IPC error message.
+    pub fn blame(&self, repository: &Path, path: &str) -> Result<String, AppError> {
+        validate_worktree_relative_path(path)?;
+        if !self.has_head(repository)? {
+            return Err(AppError::new(
+                "blame_unavailable",
+                "当前仓库还没有可用于 Blame 的提交历史。",
+            ));
+        }
+        if self.is_untracked_path(repository, path)? {
+            return Err(AppError::new(
+                "blame_unavailable",
+                "未跟踪文件没有可用于 Blame 的提交历史。",
+            ));
+        }
+        // Unlike diff, blame does not accept a magic-pathspec token such as
+        // :(literal)path. Use Git's global literal-pathspec switch instead,
+        // then pass the already validated path as one direct argument.
+        let mut arguments = os_arguments(&["--literal-pathspecs", "blame", "--abbrev=12", "--"]);
+        arguments.push(OsString::from(path));
+        let output = self.run(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            "读取文件 Blame",
+        )?;
+        Ok(output_text(&output.stdout))
+    }
+
+    /// Shows recent HEAD movements in Git's native reflog presentation. A
+    /// bounded count prevents a very old repository from sending an
+    /// unbounded recovery history through IPC.
+    pub fn reflog(&self, repository: &Path, limit: usize) -> Result<String, AppError> {
+        let limit = limit.clamp(1, 500);
+        let arguments = os_arguments(&[
+            "reflog",
+            "show",
+            "--date=iso-strict",
+            &format!("--max-count={limit}"),
+            "--format=%h %gd %gs (%an, %ad)",
+        ]);
+        let output = self.run(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            "读取 Reflog",
+        )?;
+        Ok(output_text(&output.stdout))
+    }
+
+    /// Previews files and directories that a normal clean operation would
+    /// delete. Ignored files are deliberately excluded; cleaning them needs a
+    /// separate, more explicit workflow.
+    pub fn preview_clean_untracked(&self, repository: &Path) -> Result<String, AppError> {
+        self.ensure_no_operation(repository)?;
+        let environment = GitEnvironment::new()
+            .with_variable("LC_ALL", "C")
+            .with_variable("LANG", "C");
+        let output = self.run(
+            Some(repository),
+            &os_arguments(&["clean", "-nd"]),
+            &environment,
+            "预览清理未跟踪文件",
+        )?;
+        Ok(output_text(&output.stdout))
+    }
+
+    /// Deletes untracked, non-ignored files and directories after the caller
+    /// has displayed a preview and received explicit confirmation.
+    pub fn clean_untracked(&self, repository: &Path) -> Result<(), AppError> {
+        self.ensure_no_operation(repository)?;
+        self.run(
+            Some(repository),
+            &os_arguments(&["clean", "-fd"]),
+            &GitEnvironment::default(),
+            "清理未跟踪文件",
+        )?;
+        Ok(())
     }
 
     fn is_untracked_path(&self, repository: &Path, path: &str) -> Result<bool, AppError> {
@@ -617,6 +780,38 @@ impl GitCore {
         parse_branches(&output.stdout)
     }
 
+    /// Lists the locally stored remote-tracking branches for configured
+    /// remotes. Symbolic refs such as `origin/HEAD` and refs left behind for a
+    /// removed remote are intentionally omitted: neither can be checked out
+    /// as a user-selectable remote branch.
+    pub fn remote_branches(&self, repository: &Path) -> Result<Vec<RemoteBranchInfo>, AppError> {
+        let remote_names = self
+            .remotes(repository)?
+            .into_iter()
+            .map(|remote| remote.name)
+            .collect::<Vec<_>>();
+        self.remote_branches_for_names(repository, &remote_names)
+    }
+
+    fn remote_branches_for_names(
+        &self,
+        repository: &Path,
+        remote_names: &[String],
+    ) -> Result<Vec<RemoteBranchInfo>, AppError> {
+        let arguments = os_arguments(&[
+            "for-each-ref",
+            "--format=%(refname)%00%(symref)",
+            "refs/remotes",
+        ]);
+        let output = self.run(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            "读取远程分支",
+        )?;
+        parse_remote_branches(&output.stdout, remote_names)
+    }
+
     /// Lists the main and linked worktrees that share this repository's Git
     /// metadata. Porcelain with NUL separators preserves paths containing
     /// whitespace or newlines.
@@ -871,6 +1066,75 @@ impl GitCore {
             &arguments,
             &GitEnvironment::default(),
             "切换分支",
+        )?;
+        Ok(())
+    }
+
+    /// Switches to a remote-tracking branch. If a local branch with the same
+    /// name already exists, Git switches to that branch; otherwise this
+    /// creates a conventional local tracking branch from the selected remote
+    /// ref. The remote ref is verified first so a stale UI row cannot create
+    /// an unrelated branch from an ambiguous revision.
+    pub fn switch_remote_branch(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<(), AppError> {
+        validate_remote_name(remote_name)?;
+        validate_ref_name(branch, "远程分支名")?;
+        if !self
+            .remotes(repository)?
+            .iter()
+            .any(|remote| remote.name == remote_name)
+        {
+            return Err(AppError::new("remote_not_found", "找不到该 remote。"));
+        }
+
+        let remote_reference = remote_tracking_reference(remote_name, branch);
+        let reference_exists = self.execute(
+            Some(repository),
+            &os_arguments(&["show-ref", "--verify", "--quiet", &remote_reference]),
+            &GitEnvironment::default(),
+        )?;
+        if !reference_exists.status.success() {
+            if reference_exists.status.code() == Some(1) {
+                return Err(AppError::new(
+                    "remote_branch_not_found",
+                    "找不到该远程分支；请先获取远程更新后重试。",
+                ));
+            }
+            return Err(git_command_error("检查远程分支", &reference_exists));
+        }
+
+        if self
+            .branches(repository)?
+            .iter()
+            .any(|local_branch| local_branch.name == branch)
+        {
+            return self.switch_branch(repository, branch);
+        }
+
+        // `git switch --track` accepts a short remote-tracking name such as
+        // `origin/release`, rather than its fully-qualified
+        // `refs/remotes/origin/release` form. A single-branch clone also
+        // needs the matching fetch refspec before Git will allow the upstream
+        // to be configured.
+        self.ensure_remote_fetches_all_branches(repository, remote_name)?;
+        let remote_tracking_branch = remote_tracking_branch_name(remote_name, branch);
+        let arguments = os_arguments(&[
+            "switch",
+            "--track",
+            "-c",
+            branch,
+            "--",
+            &remote_tracking_branch,
+        ]);
+        self.run(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            "切换远程分支",
         )?;
         Ok(())
     }
@@ -1243,6 +1507,70 @@ impl GitCore {
         self.fetch_with_environment(repository, options, &GitEnvironment::default())
     }
 
+    /// Makes a remote's normal fetch operation include every branch it
+    /// advertises. Git creates a restrictive refspec for `--single-branch`
+    /// clones (and implicitly for shallow clones), which otherwise leaves
+    /// branches absent from both the remote-branch list and `--track`
+    /// checkout.
+    ///
+    /// Branch-tracking refspecs are replaced rather than supplemented:
+    /// retaining an exact single-branch source makes every later `git fetch`
+    /// fail once that branch is deleted on the server, even if a wildcard
+    /// refspec was added alongside it. Non-branch custom fetch rules, such as
+    /// Gerrit change refs, are kept intact.
+    pub fn ensure_remote_fetches_all_branches(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+    ) -> Result<(), AppError> {
+        validate_remote_name(remote_name)?;
+        if !self
+            .remotes(repository)?
+            .iter()
+            .any(|remote| remote.name == remote_name)
+        {
+            return Err(AppError::new("remote_not_found", "找不到该 remote。"));
+        }
+
+        let refspec = all_remote_branches_fetch_refspec(remote_name)?;
+        let config_key = remote_fetch_refspec_config_key(remote_name);
+        let existing = self.execute(
+            Some(repository),
+            &os_arguments(&["config", "--local", "--get-all", &config_key]),
+            &GitEnvironment::default(),
+        )?;
+        if existing.status.success() {
+            let configured = output_text(&existing.stdout);
+            if configured.lines().eq([refspec.as_str()]) {
+                return Ok(());
+            }
+            if configured.lines().any(is_remote_branch_fetch_refspec) {
+                self.run(
+                    Some(repository),
+                    &os_arguments(&[
+                        "config",
+                        "--local",
+                        "--unset-all",
+                        &config_key,
+                        REMOTE_BRANCH_FETCH_REFSPEC_PATTERN,
+                    ]),
+                    &GitEnvironment::default(),
+                    "迁移远程分支获取规则",
+                )?;
+            }
+        } else if existing.status.code() != Some(1) {
+            return Err(git_command_error("读取远程分支获取规则", &existing));
+        }
+
+        self.run(
+            Some(repository),
+            &os_arguments(&["config", "--local", "--add", &config_key, &refspec]),
+            &GitEnvironment::default(),
+            "启用全部远程分支获取",
+        )?;
+        Ok(())
+    }
+
     /// Backend-only equivalent of [`Self::fetch`] with a controlled process
     /// environment, for example an askpass helper selected by CredentialBroker.
     pub fn fetch_with_environment(
@@ -1558,11 +1886,17 @@ impl GitCore {
 
     /// Loads the fields most repository pages need in one backend call.
     pub fn snapshot(&self, repository: &Path) -> Result<RepositorySnapshot, AppError> {
+        let remotes = self.remotes(repository)?;
+        let remote_names = remotes
+            .iter()
+            .map(|remote| remote.name.clone())
+            .collect::<Vec<_>>();
         Ok(RepositorySnapshot {
             repository: self.repository_record(repository)?,
             status: self.status(repository)?,
             branches: self.branches(repository)?,
-            remotes: self.remotes(repository)?,
+            remote_branches: self.remote_branches_for_names(repository, &remote_names)?,
+            remotes,
             tags: self.tags(repository)?,
         })
     }
@@ -1820,6 +2154,52 @@ impl GitCore {
     }
 }
 
+/// Normalizes the app-local external editor configuration. The UI supplies
+/// one argument per line; retaining them as individual values means paths
+/// with spaces and editor arguments never need shell parsing.
+pub fn normalize_external_editor_config(
+    editor: ExternalEditorConfig,
+) -> Result<ExternalEditorConfig, AppError> {
+    let executable = normalize_external_editor_value(&editor.executable, "外部编辑器可执行文件")?;
+    if editor.arguments.len() > MAX_EXTERNAL_EDITOR_ARGUMENTS {
+        return Err(AppError::new(
+            "external_editor_arguments_invalid",
+            "外部编辑器参数过多。",
+        ));
+    }
+    let arguments = editor
+        .arguments
+        .iter()
+        .map(|argument| normalize_external_editor_value(argument, "外部编辑器参数"))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ExternalEditorConfig {
+        executable,
+        arguments,
+    })
+}
+
+fn normalize_external_editor_value(value: &str, label: &'static str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > MAX_EXTERNAL_EDITOR_VALUE_LENGTH
+        || value.chars().any(char::is_control)
+    {
+        let _ = label;
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "外部编辑器配置无效。",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn is_conflicted_status_entry(entry: &GitStatusEntry) -> bool {
+    matches!(
+        (entry.index_status.as_str(), entry.worktree_status.as_str()),
+        ("D", "D") | ("A", "U") | ("U", "D") | ("U", "A") | ("D", "U") | ("A", "A") | ("U", "U")
+    )
+}
+
 fn terminate_git_network_child(child: &mut std::process::Child, process_id: u32) {
     terminate_git_network_process_group(process_id);
     let _ = child.kill();
@@ -2074,6 +2454,7 @@ pub struct RepositorySnapshot {
     pub repository: RepositoryRecord,
     pub status: GitStatus,
     pub branches: Vec<BranchInfo>,
+    pub remote_branches: Vec<RemoteBranchInfo>,
     pub remotes: Vec<RemoteProfile>,
     pub tags: Vec<TagInfo>,
 }
@@ -2295,6 +2676,53 @@ fn parse_branches(raw: &[u8]) -> Result<Vec<BranchInfo>, AppError> {
             upstream: (!fields[2].is_empty()).then(|| fields[2].to_owned()),
         });
     }
+    Ok(branches)
+}
+
+fn parse_remote_branches(
+    raw: &[u8],
+    configured_remote_names: &[String],
+) -> Result<Vec<RemoteBranchInfo>, AppError> {
+    let mut remote_names = configured_remote_names
+        .iter()
+        .filter(|name| !name.is_empty())
+        .collect::<Vec<_>>();
+    // A remote name may itself contain `/`; use the longest configured name
+    // first so `team/origin` is not accidentally parsed as `team`.
+    remote_names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+
+    let mut branches = Vec::new();
+    for line in output_text(raw).lines().filter(|line| !line.is_empty()) {
+        let fields = line.split('\0').collect::<Vec<_>>();
+        if fields.len() != 2 || fields[0].is_empty() {
+            return Err(AppError::new("git_parse_error", "无法解析远程分支信息"));
+        }
+        // `refs/remotes/<remote>/HEAD` is a symbolic ref pointing at the
+        // remote's default branch, not a branch users can check out.
+        if !fields[1].is_empty() {
+            continue;
+        }
+        let Some((remote_name, branch_name)) = remote_names.iter().find_map(|remote_name| {
+            let prefix = format!("refs/remotes/{remote_name}/");
+            fields[0]
+                .strip_prefix(&prefix)
+                .filter(|name| !name.is_empty() && *name != "HEAD")
+                .map(|name| ((*remote_name).clone(), name.to_owned()))
+        }) else {
+            // Git keeps remote-tracking refs after removing a remote. They
+            // have no usable fetch configuration, so omit them from the UI.
+            continue;
+        };
+        branches.push(RemoteBranchInfo {
+            remote_name,
+            name: branch_name,
+        });
+    }
+    branches.sort_by(|left, right| {
+        left.remote_name
+            .cmp(&right.remote_name)
+            .then(left.name.cmp(&right.name))
+    });
     Ok(branches)
 }
 
@@ -2736,6 +3164,30 @@ fn validate_remote_name(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn all_remote_branches_fetch_refspec(remote_name: &str) -> Result<String, AppError> {
+    validate_remote_name(remote_name)?;
+    Ok(format!("+refs/heads/*:refs/remotes/{remote_name}/*"))
+}
+
+fn is_remote_branch_fetch_refspec(refspec: &str) -> bool {
+    refspec
+        .strip_prefix('+')
+        .unwrap_or(refspec)
+        .starts_with("refs/heads/")
+}
+
+fn remote_fetch_refspec_config_key(remote_name: &str) -> String {
+    format!("remote.{remote_name}.fetch")
+}
+
+fn remote_tracking_reference(remote_name: &str, branch: &str) -> String {
+    format!("refs/remotes/{remote_name}/{branch}")
+}
+
+fn remote_tracking_branch_name(remote_name: &str, branch: &str) -> String {
+    format!("{remote_name}/{branch}")
+}
+
 fn validate_ref_name(value: &str, _label: &str) -> Result<(), AppError> {
     if value.trim().is_empty()
         || value.starts_with('-')
@@ -2953,6 +3405,18 @@ fn git_error_from_diagnostic(operation: &'static str, diagnostic: &str) -> AppEr
             "git_remote_not_found",
             "请检查远程地址、访问权限和账号绑定。",
         )
+    } else if contains_any(
+        diagnostic,
+        &[
+            "couldn't find remote ref",
+            "could not find remote ref",
+            "remote ref does not exist",
+        ],
+    ) {
+        (
+            "git_remote_ref_not_found",
+            "远端分支可能已删除；请获取远程更新并刷新分支列表。",
+        )
     } else if diagnostic.contains("not a git repository") {
         (
             "not_a_git_repository",
@@ -3052,6 +3516,50 @@ mod tests {
                 "-z",
             ]
         );
+    }
+
+    #[test]
+    fn normalizes_external_editor_arguments_without_shell_parsing() {
+        let editor = normalize_external_editor_config(ExternalEditorConfig {
+            executable: "  code  ".into(),
+            arguments: vec![" --wait ".into(), "--reuse-window".into()],
+        })
+        .expect("editor configuration is valid");
+        assert_eq!(editor.executable, "code");
+        assert_eq!(editor.arguments, vec!["--wait", "--reuse-window"]);
+
+        let error = normalize_external_editor_config(ExternalEditorConfig {
+            executable: "code\n--malicious".into(),
+            arguments: Vec::new(),
+        })
+        .expect_err("control characters are not a command separator");
+        assert_eq!(error.code(), "external_editor_config_invalid");
+    }
+
+    #[test]
+    fn recognizes_every_unmerged_porcelain_status() {
+        for (index_status, worktree_status) in [
+            ("D", "D"),
+            ("A", "U"),
+            ("U", "D"),
+            ("U", "A"),
+            ("D", "U"),
+            ("A", "A"),
+            ("U", "U"),
+        ] {
+            assert!(is_conflicted_status_entry(&GitStatusEntry {
+                path: "conflicted.txt".into(),
+                original_path: None,
+                index_status: index_status.into(),
+                worktree_status: worktree_status.into(),
+            }));
+        }
+        assert!(!is_conflicted_status_entry(&GitStatusEntry {
+            path: "changed.txt".into(),
+            original_path: None,
+            index_status: "M".into(),
+            worktree_status: "M".into(),
+        }));
     }
 
     #[test]
@@ -3239,6 +3747,198 @@ mod tests {
         let tags = parse_tags(b"v1.0.0\0abc123\nv0.9.0\0def456\n").unwrap();
         assert_eq!(tags[0].name, "v1.0.0");
         assert_eq!(tags[1].target, "def456");
+    }
+
+    #[test]
+    fn parses_remote_branches_without_symbolic_or_stale_refs() {
+        let raw = concat!(
+            "refs/remotes/origin/HEAD\0refs/remotes/origin/main\n",
+            "refs/remotes/origin/feature/demo\0\n",
+            "refs/remotes/team/origin/release\0\n",
+            "refs/remotes/removed/legacy\0\n",
+        )
+        .as_bytes();
+        let remote_names = vec!["origin".to_owned(), "team/origin".to_owned()];
+
+        let branches = parse_remote_branches(raw, &remote_names).unwrap();
+
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].remote_name, "origin");
+        assert_eq!(branches[0].name, "feature/demo");
+        assert_eq!(branches[1].remote_name, "team/origin");
+        assert_eq!(branches[1].name, "release");
+        assert_eq!(
+            remote_tracking_reference("origin", "feature/demo"),
+            "refs/remotes/origin/feature/demo"
+        );
+        assert_eq!(
+            remote_tracking_branch_name("origin", "feature/demo"),
+            "origin/feature/demo"
+        );
+        assert_eq!(
+            all_remote_branches_fetch_refspec("origin").unwrap(),
+            "+refs/heads/*:refs/remotes/origin/*"
+        );
+        assert!(is_remote_branch_fetch_refspec(
+            "+refs/heads/main:refs/remotes/origin/main"
+        ));
+        assert!(!is_remote_branch_fetch_refspec(
+            "+refs/changes/*:refs/remotes/origin/changes/*"
+        ));
+    }
+
+    #[test]
+    fn migrates_single_branch_fetch_scope_tracks_remote_branch_and_prunes_deletion() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "broknowmygitdesktop-remote-branch-test-{}-{suffix}",
+            std::process::id()
+        ));
+        let source = root.join("source");
+        let remote = root.join("remote.git");
+        let clone = root.join("clone");
+        fs::create_dir_all(&source).unwrap();
+        let run_git = |repository: &Path, arguments: &[&str]| {
+            let status = Command::new("git")
+                .args(["-C", repository.to_str().unwrap()])
+                .args(arguments)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+
+        let remote_initialized = Command::new("git")
+            .args(["init", "--bare", "-q", remote.to_str().unwrap()])
+            .status()
+            .unwrap();
+        assert!(remote_initialized.success());
+        run_git(&source, &["init", "-q"]);
+        run_git(&source, &["switch", "-c", "main"]);
+        run_git(
+            &source,
+            &["config", "user.email", "remote-test@example.invalid"],
+        );
+        run_git(&source, &["config", "user.name", "Remote Branch Test"]);
+        fs::write(source.join("file.txt"), "main\n").unwrap();
+        run_git(&source, &["add", "file.txt"]);
+        run_git(&source, &["commit", "-qm", "main"]);
+        run_git(
+            &source,
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        run_git(&source, &["push", "-u", "origin", "main"]);
+        run_git(&source, &["switch", "-c", "release"]);
+        fs::write(source.join("file.txt"), "release\n").unwrap();
+        run_git(&source, &["commit", "-am", "release"]);
+        run_git(&source, &["push", "-u", "origin", "release"]);
+
+        let cloned = Command::new("git")
+            .args([
+                "clone",
+                "--no-local",
+                "--single-branch",
+                "--branch",
+                "main",
+                remote.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(cloned.success());
+
+        let git = GitCore::new();
+        let before_fetch = git.remote_branches(&clone).unwrap();
+        assert!(before_fetch.iter().all(|branch| branch.name != "release"));
+
+        // This is the shape written by the earlier implementation: the
+        // original exact single-branch refspec remained beside the wildcard.
+        // Once that exact branch is deleted remotely, `git fetch` fails.
+        run_git(
+            &clone,
+            &[
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
+        );
+        run_git(
+            &clone,
+            &[
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                "+refs/changes/*:refs/remotes/origin/changes/*",
+            ],
+        );
+        git.ensure_remote_fetches_all_branches(&clone, "origin")
+            .unwrap();
+        git.fetch(
+            &clone,
+            &FetchOptions {
+                remote: "origin".into(),
+                refspecs: Vec::new(),
+                prune: true,
+            },
+        )
+        .unwrap();
+        let remote_branches = git.remote_branches(&clone).unwrap();
+        assert!(remote_branches
+            .iter()
+            .any(|branch| { branch.remote_name == "origin" && branch.name == "release" }));
+
+        git.switch_remote_branch(&clone, "origin", "release")
+            .unwrap();
+        let release = git
+            .branches(&clone)
+            .unwrap()
+            .into_iter()
+            .find(|branch| branch.name == "release")
+            .expect("a local tracking branch is created for the selected remote branch");
+        assert!(release.is_current);
+        assert_eq!(release.upstream.as_deref(), Some("origin/release"));
+
+        let configured_refspecs = Command::new("git")
+            .args([
+                "-C",
+                clone.to_str().unwrap(),
+                "config",
+                "--get-all",
+                "remote.origin.fetch",
+            ])
+            .output()
+            .unwrap();
+        assert!(configured_refspecs.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&configured_refspecs.stdout)
+                .lines()
+                .collect::<Vec<_>>(),
+            vec![
+                "+refs/changes/*:refs/remotes/origin/changes/*",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ]
+        );
+
+        run_git(&source, &["push", "origin", "--delete", "release"]);
+        git.fetch(
+            &clone,
+            &FetchOptions {
+                remote: "origin".into(),
+                refspecs: Vec::new(),
+                prune: true,
+            },
+        )
+        .expect("fetching succeeds after a previously tracked remote branch is deleted");
+        assert!(git
+            .remote_branches(&clone)
+            .unwrap()
+            .iter()
+            .all(|branch| branch.name != "release"));
+
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -3623,6 +4323,129 @@ mod tests {
     }
 
     #[test]
+    fn reads_blame_and_reflog_and_cleans_only_untracked_items() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let repository = std::env::temp_dir().join(format!(
+            "broknowmygitdesktop-inspection-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&repository).unwrap();
+        let run_git = |arguments: &[&str]| {
+            let status = Command::new("git")
+                .args(["-C", repository.to_str().unwrap()])
+                .args(arguments)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "inspection@example.invalid"]);
+        run_git(&["config", "user.name", "Inspection Test"]);
+        fs::write(repository.join("tracked.txt"), "tracked line\n").unwrap();
+        run_git(&["add", "tracked.txt"]);
+        run_git(&["commit", "-qm", "initial tracked file"]);
+        fs::write(repository.join("untracked.txt"), "remove me\n").unwrap();
+        fs::create_dir_all(repository.join("generated")).unwrap();
+        fs::write(repository.join("generated/output.txt"), "remove me too\n").unwrap();
+
+        let git = GitCore::new();
+        let blame = git.blame(&repository, "tracked.txt").unwrap();
+        assert!(blame.contains("Inspection Test"));
+        let reflog = git.reflog(&repository, 10).unwrap();
+        assert!(reflog.contains("initial tracked file"));
+        let preview = git.preview_clean_untracked(&repository).unwrap();
+        assert!(preview.contains("Would remove untracked.txt"));
+        assert!(preview.contains("Would remove generated/"));
+
+        git.clean_untracked(&repository).unwrap();
+        assert!(!repository.join("untracked.txt").exists());
+        assert!(!repository.join("generated").exists());
+        assert!(repository.join("tracked.txt").exists());
+
+        let _ = fs::remove_dir_all(repository);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opens_actual_conflict_files_with_the_configured_editor() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let repository = std::env::temp_dir().join(format!(
+            "broknowmygitdesktop-editor-conflict-test-{}-{suffix}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&repository).unwrap();
+        let run_git = |arguments: &[&str]| {
+            let status = Command::new("git")
+                .args(["-C", repository.to_str().unwrap()])
+                .args(arguments)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "editor@example.invalid"]);
+        run_git(&["config", "user.name", "Editor Test"]);
+        fs::write(repository.join("conflict.txt"), "base\n").unwrap();
+        run_git(&["add", "conflict.txt"]);
+        run_git(&["commit", "-qm", "base"]);
+        let initial_branch = String::from_utf8(
+            Command::new("git")
+                .args([
+                    "-C",
+                    repository.to_str().unwrap(),
+                    "symbolic-ref",
+                    "--short",
+                    "HEAD",
+                ])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        run_git(&["checkout", "-qb", "other"]);
+        fs::write(repository.join("conflict.txt"), "other\n").unwrap();
+        run_git(&["commit", "-am", "other change"]);
+        run_git(&["checkout", "-q", &initial_branch]);
+        fs::write(repository.join("conflict.txt"), "main\n").unwrap();
+        run_git(&["commit", "-am", "main change"]);
+
+        let merge = Command::new("git")
+            .args([
+                "-C",
+                repository.to_str().unwrap(),
+                "merge",
+                "--no-edit",
+                "other",
+            ])
+            .status()
+            .unwrap();
+        assert!(!merge.success());
+        let opened = GitCore::new()
+            .open_conflicted_files_in_external_editor(
+                &repository,
+                &ExternalEditorConfig {
+                    executable: "true".into(),
+                    arguments: Vec::new(),
+                },
+            )
+            .expect("configured editor receives each conflict file");
+        assert_eq!(opened, vec!["conflict.txt"]);
+
+        let _ = Command::new("git")
+            .args(["-C", repository.to_str().unwrap(), "merge", "--abort"])
+            .status();
+        let _ = fs::remove_dir_all(repository);
+    }
+
+    #[test]
     fn revision_validation_accepts_git_expressions_but_rejects_options() {
         assert!(validate_revision("HEAD~2", "引用").is_ok());
         assert!(validate_revision("stash@{0}", "引用").is_ok());
@@ -3698,6 +4521,19 @@ mod tests {
         );
         assert_eq!(error.code(), "git_authentication_failed");
         assert!(!returned.contains("secret-token"));
+    }
+
+    #[test]
+    fn classifies_a_deleted_remote_branch_without_echoing_its_ref() {
+        let error = git_error_from_diagnostic(
+            "获取远程更新",
+            "fatal: couldn't find remote ref refs/heads/released-feature",
+        );
+        assert_eq!(error.code(), "git_remote_ref_not_found");
+        assert_eq!(
+            error.details(),
+            Some("远端分支可能已删除；请获取远程更新并刷新分支列表。")
+        );
     }
 
     #[test]

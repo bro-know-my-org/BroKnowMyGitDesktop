@@ -95,6 +95,7 @@ const englishErrors: Record<string, string> = {
   git_network_error: "Check the network connection, proxy, and remote service status.",
   git_network_timeout: "The Git network operation timed out. Check the network, authentication, and remote service, then try again.",
   git_parse_error: "Git returned data that could not be parsed.",
+  git_remote_ref_not_found: "The remote branch no longer exists. Fetch remote updates and refresh the branch list.",
   git_remote_not_found: "Check the remote URL, access permissions, and account binding.",
   git_unavailable: "The system Git executable could not be started.",
   github_adapter_auth_unsupported: "GitHub service information requires a binding that matches the current gh identity.",
@@ -187,4 +188,3 @@ export function localizedErrorMessage(code: string, fallback: string): string {
 
 export const naiveUiLocale = computed(() => (appLocale.value === "zh-CN" ? zhCN : enUS));
 export const naiveUiDateLocale = computed(() => (appLocale.value === "zh-CN" ? dateZhCN : dateEnUS));
-

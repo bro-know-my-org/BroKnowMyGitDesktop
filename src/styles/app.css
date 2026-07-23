@@ -102,14 +102,9 @@ button {
   background: var(--app-surface);
 }
 
-.sidebar-shell {
-  display: flex;
-  height: 100%;
-  min-height: 0;
-}
-
 .app-rail {
   display: flex;
+  height: 100%;
   width: 64px;
   min-width: 64px;
   min-height: 0;
@@ -192,39 +187,42 @@ button {
   line-height: 1;
 }
 
-.repository-sidebar {
+.repository-picker {
   display: flex;
+  width: 286px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 84px);
   min-width: 0;
   min-height: 0;
-  flex: 1 1 auto;
   flex-direction: column;
 }
 
-.repository-sidebar-header {
+.repository-picker-popover {
+  overflow: hidden;
+}
+
+.repository-picker-header {
   display: grid;
   gap: 11px;
   padding: 17px 12px 12px;
   border-bottom: 1px solid var(--app-divider);
 }
 
-.repository-sidebar-title-row {
+.repository-picker-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
 }
 
-.sidebar-repositories {
+.repository-picker-repositories {
   min-height: 0;
-  flex: 1 1 auto;
   padding: 12px 10px;
   overflow: hidden;
 }
 
-.sidebar-repositories > .n-spin-container,
-.sidebar-repositories .n-spin-content {
-  height: 100%;
-  min-height: 0;
+.repository-picker-repositories .n-spin-content {
+  min-width: 0;
 }
 
 .sidebar-heading {
@@ -248,8 +246,7 @@ button {
 
 .sidebar-repository-list {
   display: grid;
-  max-height: none;
-  height: 100%;
+  max-height: min(460px, calc(100vh - 228px));
   gap: 14px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -344,33 +341,6 @@ button {
   background: var(--app-accent-bright);
 }
 
-.repository-group-edit {
-  width: 26px;
-  height: 28px;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--app-text-muted);
-  cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
-  opacity: 0.5;
-}
-
-.repository-group-edit:hover,
-.repository-group-edit:focus-visible,
-.sidebar-repository-item:hover .repository-group-edit {
-  background: var(--app-row-hover);
-  color: var(--app-accent);
-  opacity: 1;
-}
-
-.repository-group-edit:focus-visible {
-  outline: 2px solid var(--app-focus);
-  outline-offset: 1px;
-}
-
 .sidebar-empty {
   display: block;
   padding: 8px;
@@ -434,6 +404,46 @@ button {
   white-space: nowrap;
 }
 
+.repository-switcher {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(360px, 42vw);
+  align-items: center;
+  gap: 5px;
+  margin: -3px -5px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.repository-switcher .topbar-title {
+  flex: 0 1 auto;
+}
+
+.repository-switcher:hover {
+  background: var(--app-row-hover);
+}
+
+.repository-switcher:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: 2px;
+}
+
+.repository-switcher-caret {
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.16s ease;
+}
+
+.repository-switcher[aria-expanded="true"] .repository-switcher-caret {
+  transform: rotate(180deg);
+}
+
 .content-area {
   min-height: 0;
   background: var(--app-bg);
@@ -464,6 +474,21 @@ button {
 .error-alert,
 .operation-alert {
   margin-bottom: 18px;
+}
+
+.error-diagnostic-code {
+  margin-top: 8px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.error-diagnostic-code code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.error-diagnostic-guidance {
+  margin-top: 6px;
+  color: var(--app-text-body);
 }
 
 .operation-actions {
@@ -995,20 +1020,6 @@ h1 {
     min-width: 0;
   }
 
-  .application-sidebar {
-    width: 250px !important;
-  }
-
-  .app-rail {
-    width: 56px;
-    min-width: 56px;
-  }
-
-  .repository-sidebar-header {
-    padding-right: 10px;
-    padding-left: 10px;
-  }
-
   .repository-grouping-select {
     width: 90px;
   }
@@ -1088,4 +1099,3 @@ h1 {
     padding: 18px;
   }
 }
-

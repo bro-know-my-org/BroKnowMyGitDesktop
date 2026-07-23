@@ -21,7 +21,10 @@ export default defineComponent({
                   <div class="changes-list-pane">
                     <n-card size="small" :title="tr('改动文件', 'Changed files')" class="changes-file-card">
                       <template #header-extra>
-                        <n-button size="tiny" text type="error" :disabled="!snapshot.status.entries.length" :loading="mutationBusy" @click="confirmDiscardChanges(snapshot.status.entries.map((entry) => entry.path))">{{ tr("丢弃全部…", "Discard all…") }}</n-button>
+                        <n-space size="small">
+                          <n-button v-if="untrackedCount" size="tiny" text type="warning" :loading="mutationBusy" @click="confirmCleanUntracked">{{ tr("清理未跟踪…", "Clean untracked…") }}</n-button>
+                          <n-button size="tiny" text type="error" :disabled="!snapshot.status.entries.length" :loading="mutationBusy" @click="confirmDiscardChanges(snapshot.status.entries.map((entry) => entry.path))">{{ tr("丢弃全部…", "Discard all…") }}</n-button>
+                        </n-space>
                       </template>
                       <div v-if="snapshot.status.entries.length" class="changes-bulk-control">
                         <n-checkbox
@@ -76,7 +79,10 @@ export default defineComponent({
 
                   <n-card size="small" :title="selectedChange ? selectedChange.path : tr('差异预览', 'Diff preview')" class="diff-card changes-diff-card">
                     <template #header-extra>
-                      <n-button v-if="selectedChange" size="tiny" text type="error" :loading="mutationBusy" @click="discardSelectedChange">{{ tr("丢弃此文件…", "Discard file…") }}</n-button>
+                      <n-space v-if="selectedChange" size="small">
+                        <n-button size="tiny" tertiary :loading="blameLoading" :disabled="!snapshot.hasHead || (!selectedChange.indexStatus && selectedChange.worktreeStatus === '?')" @click="openFileBlame">{{ tr("查看 Blame", "View blame") }}</n-button>
+                        <n-button size="tiny" text type="error" :loading="mutationBusy" @click="discardSelectedChange">{{ tr("丢弃此文件…", "Discard file…") }}</n-button>
+                      </n-space>
                     </template>
                     <div class="changes-diff-panel">
                       <n-spin v-if="diffLoading" size="small" class="changes-diff-loading" />

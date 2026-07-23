@@ -15,13 +15,13 @@ use crate::domain::{
     endpoint_for_host, endpoint_matches_authority, git_authority_has_explicit_port,
     github_endpoint_has_gh_compatible_api, hostname_from_git_authority, normalize_git_authority,
     parse_remote_url, AccountProfile, AccountSelection, AuthenticationMethod, AuthenticationStatus,
-    CodeHostCapabilities, CodeHostEndpoint, CodeHostKind, CommitSummary, GitOperationKind,
-    LfsStatus, RemoteBinding, RemoteProfile, RepositoryRecord, ResetMode, StashEntry,
-    SubmoduleInfo, WorktreeInfo,
+    CodeHostCapabilities, CodeHostEndpoint, CodeHostKind, CommitSummary, ExternalEditorConfig,
+    GitOperationKind, LfsStatus, RemoteBinding, RemoteProfile, RepositoryRecord, ResetMode,
+    StashEntry, SubmoduleInfo, WorktreeInfo,
 };
 use crate::git_core::{
-    validate_git_remote_url, CloneOptions, DiffOptions, FetchOptions, GitCore, GitEnvironment,
-    PullOptions, PushOptions, RemoteUrlKind,
+    normalize_external_editor_config, validate_git_remote_url, CloneOptions, DiffOptions,
+    FetchOptions, GitCore, GitEnvironment, PullOptions, PushOptions, RemoteUrlKind,
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{AppState, PendingClone, PendingPublish, ProfileStore};
@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 const DISCOVERY_MAX_DEPTH: usize = 4;
 const SSH_AGENT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+const BRANCH_SWITCH_STASH_MESSAGE: &str = "切换分支前自动暂存";
 
 #[tauri::command]
 pub fn list_repositories(
@@ -231,6 +232,78 @@ pub fn get_file_diff(
 }
 
 #[tauri::command]
+pub fn get_file_blame(repository_path: String, path: String) -> Result<String, AppError> {
+    let repository = repository_root(&repository_path)?;
+    GitCore::new().blame(&repository, &path)
+}
+
+#[tauri::command]
+pub fn list_reflog(repository_path: String, limit: Option<usize>) -> Result<String, AppError> {
+    let repository = repository_root(&repository_path)?;
+    GitCore::new().reflog(&repository, limit.unwrap_or(100))
+}
+
+#[tauri::command]
+pub fn preview_clean_untracked(repository_path: String) -> Result<String, AppError> {
+    let repository = repository_root(&repository_path)?;
+    GitCore::new().preview_clean_untracked(&repository)
+}
+
+#[tauri::command]
+pub fn clean_untracked(
+    repository_path: String,
+    state: State<'_, AppState>,
+) -> Result<RepositorySnapshot, AppError> {
+    let repository = repository_root(&repository_path)?;
+    let _repository_operation_lease =
+        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
+    GitCore::new().clean_untracked(&repository)?;
+    snapshot_for(&state, &repository)
+}
+
+#[tauri::command]
+pub fn get_external_editor(
+    state: State<'_, AppState>,
+) -> Result<Option<ExternalEditorConfig>, AppError> {
+    Ok(state.snapshot()?.external_editor)
+}
+
+/// Saves an app-local external editor command. This does not read or modify
+/// Git's editor or mergetool configuration, which may be scoped to an
+/// untrusted repository.
+#[tauri::command]
+pub fn save_external_editor(
+    editor: Option<ExternalEditorConfig>,
+    state: State<'_, AppState>,
+) -> Result<Option<ExternalEditorConfig>, AppError> {
+    let editor = editor.map(normalize_external_editor_config).transpose()?;
+    state.mutate(|store| {
+        store.external_editor = editor.clone();
+        Ok(editor)
+    })
+}
+
+/// Starts the configured external editor with every currently unresolved
+/// conflict file. The editor is not awaited; the user resolves files outside
+/// the app, returns here, refreshes, stages, and then continues the operation.
+#[tauri::command]
+pub fn open_conflicted_files_in_external_editor(
+    repository_path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let repository = repository_root(&repository_path)?;
+    let _repository_operation_lease =
+        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
+    let editor = state.snapshot()?.external_editor.ok_or_else(|| {
+        AppError::new(
+            "external_editor_not_configured",
+            "请先配置用于解决冲突的外部编辑器。",
+        )
+    })?;
+    GitCore::new().open_conflicted_files_in_external_editor(&repository, &editor)
+}
+
+#[tauri::command]
 pub fn list_commits(
     repository_path: String,
     limit: Option<usize>,
@@ -335,12 +408,67 @@ pub fn create_branch(
 pub fn checkout_branch(
     repository_path: String,
     branch: String,
+    stash_local_changes: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<RepositorySnapshot, AppError> {
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    GitCore::new().switch_branch(&repository, &branch)?;
+    let git = GitCore::new();
+    if !git
+        .branches(&repository)?
+        .iter()
+        .any(|candidate| candidate.name == branch)
+    {
+        return Err(AppError::new("branch_not_found", "找不到该分支。"));
+    }
+    let stashed_local_changes = stash_local_changes_before_branch_switch(
+        &git,
+        &repository,
+        stash_local_changes.unwrap_or(false),
+    )?;
+    if let Err(error) = git.switch_branch(&repository, &branch) {
+        return Err(branch_switch_error_after_stash(
+            error,
+            stashed_local_changes,
+        ));
+    }
+    snapshot_for(&state, &repository)
+}
+
+#[tauri::command]
+pub fn checkout_remote_branch(
+    repository_path: String,
+    remote_name: String,
+    branch: String,
+    stash_local_changes: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<RepositorySnapshot, AppError> {
+    let repository = repository_root(&repository_path)?;
+    let _repository_operation_lease =
+        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
+    let git = GitCore::new();
+    if !git
+        .remote_branches(&repository)?
+        .iter()
+        .any(|candidate| candidate.remote_name == remote_name && candidate.name == branch)
+    {
+        return Err(AppError::new(
+            "remote_branch_not_found",
+            "找不到该远程分支；请先获取远程更新后重试。",
+        ));
+    }
+    let stashed_local_changes = stash_local_changes_before_branch_switch(
+        &git,
+        &repository,
+        stash_local_changes.unwrap_or(false),
+    )?;
+    if let Err(error) = git.switch_remote_branch(&repository, &remote_name, &branch) {
+        return Err(branch_switch_error_after_stash(
+            error,
+            stashed_local_changes,
+        ));
+    }
     snapshot_for(&state, &repository)
 }
 
@@ -651,17 +779,19 @@ pub async fn fetch_remote(
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
         let environment = network_environment(&state, &repository, &remote_name, false)?;
-        GitCore::new().fetch_with_environment(
+        let git = GitCore::new();
+        git.ensure_remote_fetches_all_branches(&repository, &remote_name)?;
+        git.fetch_with_environment(
             &repository,
             &FetchOptions {
                 remote: remote_name.clone(),
                 refspecs: Vec::new(),
-                prune: false,
+                prune: true,
             },
             &environment,
         )?;
         Ok(NetworkOperationResult::completed(format!(
-            "已从 {remote_name} 获取远程更新。"
+            "已从 {remote_name} 获取全部远程分支。"
         )))
     })
     .await
@@ -1587,6 +1717,34 @@ fn repository_root(path: &str) -> Result<PathBuf, AppError> {
     GitCore::new().repository_root(&path)
 }
 
+/// Keeps the stash and branch checkout in one repository-operation lease.
+/// The frontend only requests this after an explicit user choice, but status
+/// is checked again here so a stale UI snapshot never turns an empty working
+/// tree into a failed automatic stash.
+fn stash_local_changes_before_branch_switch(
+    git: &GitCore,
+    repository: &Path,
+    stash_local_changes: bool,
+) -> Result<bool, AppError> {
+    if stash_local_changes && !git.status(repository)?.entries.is_empty() {
+        git.stash_push(repository, Some(BRANCH_SWITCH_STASH_MESSAGE), true)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn branch_switch_error_after_stash(error: AppError, stashed_local_changes: bool) -> AppError {
+    if stashed_local_changes {
+        AppError::with_safe_details(
+            "branch_switch_changes_stashed",
+            "分支未能切换；本地改动已保存到暂存栈。",
+            "请从“历史与暂存栈”恢复改动，再检查分支或工作树状态后重试。",
+        )
+    } else {
+        error
+    }
+}
+
 fn snapshot_for(state: &AppState, repository: &Path) -> Result<RepositorySnapshot, AppError> {
     let git = GitCore::new();
     let git_snapshot = git.snapshot(repository)?;
@@ -1611,6 +1769,7 @@ fn snapshot_for(state: &AppState, repository: &Path) -> Result<RepositorySnapsho
         has_head: git.has_head(repository)?,
         status: git_snapshot.status,
         branches: git_snapshot.branches,
+        remote_branches: git_snapshot.remote_branches,
         remotes,
         tags: git_snapshot.tags,
         bindings,

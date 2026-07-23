@@ -1,13 +1,64 @@
 <script lang="ts">
-import { defineComponent } from "vue";
-import { NButton, NDropdown, NLayoutHeader, NSelect, NSpace, NTag, NText } from "naive-ui";
+import { computed, defineComponent, nextTick, ref, watch } from "vue";
+import { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
+import type { RepositoryRecord } from "../../../shared/types/domain";
 
 export default defineComponent({
   name: "WorkspaceHeader",
-  components: { NButton, NDropdown, NLayoutHeader, NSelect, NSpace, NTag, NText },
+  components: { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText },
   setup() {
-    return useWorkspaceControllerContext();
+    const workspace = useWorkspaceControllerContext();
+    const repositoryPickerOpen = ref(false);
+    const repositoryContextMenuOpen = ref(false);
+    const repositoryContextMenuX = ref(0);
+    const repositoryContextMenuY = ref(0);
+    const repositoryContextTarget = ref<RepositoryRecord | null>(null);
+    const repositoryContextMenuOptions = computed(() => [
+      { label: workspace.tr("编辑仓库分组", "Edit repository group"), key: "edit-group" },
+    ]);
+
+    function openRepositoryContextMenu(event: MouseEvent, repository: RepositoryRecord): void {
+      event.preventDefault();
+      repositoryContextMenuOpen.value = false;
+      repositoryContextTarget.value = repository;
+      const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+      const bounds = target?.getBoundingClientRect();
+      repositoryContextMenuX.value = event.clientX || (bounds ? bounds.left + bounds.width / 2 : 0);
+      repositoryContextMenuY.value = event.clientY || (bounds ? bounds.top + bounds.height / 2 : 0);
+      void nextTick(() => {
+        repositoryContextMenuOpen.value = true;
+      });
+    }
+
+    function selectRepositoryContextMenuAction(value: string | number): void {
+      repositoryContextMenuOpen.value = false;
+      const repository = repositoryContextTarget.value;
+      if (value === "edit-group" && repository) {
+        repositoryPickerOpen.value = false;
+        workspace.openRepositoryGroupEditor(repository);
+      }
+    }
+
+    watch(workspace.section, (section) => {
+      if (section !== "repositories") {
+        repositoryPickerOpen.value = false;
+        repositoryContextMenuOpen.value = false;
+      }
+    });
+    watch(repositoryPickerOpen, (open) => {
+      if (!open) repositoryContextMenuOpen.value = false;
+    });
+    return {
+      ...workspace,
+      repositoryPickerOpen,
+      repositoryContextMenuOpen,
+      repositoryContextMenuX,
+      repositoryContextMenuY,
+      repositoryContextMenuOptions,
+      openRepositoryContextMenu,
+      selectRepositoryContextMenuAction,
+    };
   },
 });
 </script>
@@ -17,7 +68,80 @@ export default defineComponent({
         <div v-if="section === 'repositories'" class="topbar-content repository-topbar-content">
           <div class="repository-topbar-context">
             <div class="repository-title-row">
-              <div class="topbar-title">{{ snapshot?.repository.name || tr("仓库", "Repository") }}</div>
+              <n-popover
+                v-model:show="repositoryPickerOpen"
+                trigger="click"
+                placement="bottom-start"
+                :show-arrow="false"
+                :overlap="false"
+                class="repository-picker-popover"
+              >
+                <template #trigger>
+                  <button
+                    class="repository-switcher"
+                    type="button"
+                    :aria-label="tr('切换仓库', 'Switch repository')"
+                    :aria-expanded="repositoryPickerOpen"
+                    :title="tr('切换仓库', 'Switch repository')"
+                  >
+                    <span class="topbar-title">{{ snapshot?.repository.name || tr("仓库", "Repository") }}</span>
+                    <span class="repository-switcher-caret" aria-hidden="true">▾</span>
+                  </button>
+                </template>
+
+                <aside class="repository-picker" :aria-label="tr('本地仓库', 'Local repositories')">
+                  <div class="repository-picker-header">
+                    <div class="repository-picker-title-row">
+                      <div class="sidebar-heading">{{ tr("本地仓库", "Local repositories") }}</div>
+                      <n-select v-model:value="repositoryGrouping" size="tiny" :options="repositoryGroupingOptions" class="repository-grouping-select" />
+                    </div>
+                    <n-dropdown :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
+                      <n-button size="small" type="primary" block class="repository-add-button">
+                        <span aria-hidden="true">＋</span>{{ tr("添加仓库", "Add repository") }}
+                      </n-button>
+                    </n-dropdown>
+                  </div>
+
+                  <div class="repository-picker-repositories">
+                    <n-spin :show="repositoriesLoading" size="small">
+                      <div v-if="repositories.length" class="sidebar-repository-list">
+                        <div v-for="group in repositoryGroups" :key="group.key" class="sidebar-repository-group">
+                          <div class="sidebar-group-heading">
+                            <span>{{ group.label }}</span>
+                            <span>{{ group.repositories.length }}</span>
+                          </div>
+                          <div class="sidebar-repository-group-list">
+                            <div v-for="repository in group.repositories" :key="repository.path" class="sidebar-repository-item">
+                              <button
+                                class="sidebar-repository"
+                                :class="{ active: repository.path === activeRepositoryPath }"
+                                type="button"
+                                :title="`${repository.path} · ${tr('右键编辑分组', 'Right-click to edit group')}`"
+                                @click="repositoryPickerOpen = false; selectRepository(repository.path)"
+                                @contextmenu="openRepositoryContextMenu($event, repository)"
+                              >
+                                <span class="repository-dot" />
+                                <span class="repository-name">{{ repository.name }}</span>
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <n-text v-else depth="3" class="sidebar-empty">{{ tr("尚未添加仓库", "No repositories added") }}</n-text>
+                    </n-spin>
+                  </div>
+                </aside>
+              </n-popover>
+              <n-dropdown
+                v-model:show="repositoryContextMenuOpen"
+                trigger="manual"
+                placement="bottom-start"
+                :x="repositoryContextMenuX"
+                :y="repositoryContextMenuY"
+                :options="repositoryContextMenuOptions"
+                @clickoutside="repositoryContextMenuOpen = false"
+                @select="selectRepositoryContextMenuAction"
+              />
               <template v-if="snapshot">
                 <n-tag size="small" type="primary">{{ currentBranch }}</n-tag>
                 <n-tag v-if="isUnbornRepository" size="small" type="warning" :bordered="false">{{ tr("尚未首次提交", "No commits yet") }}</n-tag>
@@ -60,4 +184,3 @@ export default defineComponent({
         </div>
       </n-layout-header>
 </template>
-

@@ -1,7 +1,8 @@
 use crate::app_error::AppError;
 use crate::credential_broker::delete_personal_access_token;
 use crate::domain::{
-    AccountProfile, CodeHostEndpoint, KeychainReference, RemoteBinding, RepositoryRecord,
+    AccountProfile, CodeHostEndpoint, ExternalEditorConfig, KeychainReference, RemoteBinding,
+    RepositoryRecord,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -77,12 +78,17 @@ pub struct ProfileStore {
     pub pending_clones: Vec<PendingClone>,
     #[serde(default)]
     pub remote_bindings: Vec<RemoteBinding>,
+    /// The editor is app-local rather than repository configuration. It is
+    /// launched with direct process arguments only after an explicit user
+    /// action from the conflict workflow.
+    #[serde(default)]
+    pub external_editor: Option<ExternalEditorConfig>,
     #[serde(default)]
     pub recent_repositories: Vec<RepositoryRecord>,
 }
 
 fn default_schema_version() -> u32 {
-    3
+    4
 }
 
 impl ProfileStore {
@@ -893,7 +899,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join(STORE_FILE_NAME),
-            br#"{"schemaVersion":4,"futureField":{"preserve":true}}"#,
+            br#"{"schemaVersion":5,"futureField":{"preserve":true}}"#,
         )
         .unwrap();
 

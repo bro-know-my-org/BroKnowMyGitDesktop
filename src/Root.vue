@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { NConfigProvider, NDialogProvider, NGlobalStyle, NMessageProvider, darkTheme, type GlobalThemeOverrides } from "naive-ui";
 import App from "./App.vue";
 import { naiveUiDateLocale, naiveUiLocale } from "./shared/i18n";
@@ -34,6 +34,18 @@ const darkThemeOverrides: GlobalThemeOverrides = {
 };
 
 const themeOverrides = computed(() => (isDarkTheme.value ? darkThemeOverrides : lightThemeOverrides));
+
+function preventNativeContextMenu(event: MouseEvent): void {
+  event.preventDefault();
+}
+
+onMounted(() => {
+  document.addEventListener("contextmenu", preventNativeContextMenu);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("contextmenu", preventNativeContextMenu);
+});
 </script>
 
 <template>

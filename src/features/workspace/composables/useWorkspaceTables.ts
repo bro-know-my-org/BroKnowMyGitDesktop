@@ -8,6 +8,7 @@ import {
   type AccountProfile,
   type BranchInfo,
   type PullRequestSummary,
+  type RemoteBranchInfo,
   type RemoteProfile,
   type RepositorySnapshot,
   type StashEntry,
@@ -23,6 +24,7 @@ interface WorkspaceTableDependencies {
   appLocale: Ref<AppLocale>;
   snapshot: Ref<RepositorySnapshot | null>;
   checkoutBranch: (branch: BranchInfo) => MaybePromiseVoid;
+  checkoutRemoteBranch: (branch: RemoteBranchInfo) => MaybePromiseVoid;
   confirmMergeBranch: (branch: BranchInfo) => void;
   openRenameBranchModal: (branch: BranchInfo) => void;
   confirmDeleteBranch: (branch: BranchInfo) => void;
@@ -47,6 +49,7 @@ export function useWorkspaceTables(dependencies: WorkspaceTableDependencies) {
     appLocale,
     snapshot,
     checkoutBranch,
+    checkoutRemoteBranch,
     confirmMergeBranch,
     openRenameBranchModal,
     confirmDeleteBranch,
@@ -117,6 +120,78 @@ const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
             ]
           : []),
       ]),
+  },
+]);
+
+function localBranchForRemoteBranch(remoteBranch: RemoteBranchInfo): BranchInfo | undefined {
+  return snapshot.value?.branches.find((branch) => branch.name === remoteBranch.name);
+}
+
+const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
+  {
+    title: tr("远程分支", "Remote branch"),
+    key: "name",
+    minWidth: 220,
+    render: (remoteBranch) => {
+      const localBranch = localBranchForRemoteBranch(remoteBranch);
+      return h(
+        NButton,
+        {
+          text: true,
+          type: localBranch?.isCurrent ? "primary" : "default",
+          disabled: localBranch?.isCurrent,
+          onClick: () => void checkoutRemoteBranch(remoteBranch),
+        },
+        { default: () => remoteBranch.name },
+      );
+    },
+  },
+  {
+    title: tr("Remote", "Remote"),
+    key: "remoteName",
+    width: 130,
+  },
+  {
+    title: tr("本地状态", "Local status"),
+    key: "localState",
+    minWidth: 155,
+    render: (remoteBranch) => {
+      const localBranch = localBranchForRemoteBranch(remoteBranch);
+      if (!localBranch) {
+        return h(NTag, { size: "small", type: "warning" }, { default: () => tr("切换时创建", "Create on switch") });
+      }
+      if (localBranch.isCurrent) {
+        return h(NTag, { size: "small", type: "success" }, { default: () => tr("当前分支", "Current branch") });
+      }
+      return h(
+        NTag,
+        { size: "small", type: localBranch.upstream === `${remoteBranch.remoteName}/${remoteBranch.name}` ? "success" : "warning" },
+        {
+          default: () =>
+            localBranch.upstream === `${remoteBranch.remoteName}/${remoteBranch.name}`
+              ? tr("本地已跟踪", "Tracking locally")
+              : tr("同名本地分支", "Same local branch"),
+        },
+      );
+    },
+  },
+  {
+    title: tr("操作", "Actions"),
+    key: "actions",
+    width: 86,
+    render: (remoteBranch) => {
+      const localBranch = localBranchForRemoteBranch(remoteBranch);
+      return h(
+        NButton,
+        {
+          size: "tiny",
+          tertiary: true,
+          disabled: localBranch?.isCurrent,
+          onClick: () => void checkoutRemoteBranch(remoteBranch),
+        },
+        { default: () => tr("切换", "Switch") },
+      );
+    },
   },
 ]);
 
@@ -317,6 +392,7 @@ const stashColumns = computed<DataTableColumns<StashEntry>>(() => [
 
   return {
     branchColumns,
+    remoteBranchColumns,
     worktreeColumns,
     submoduleColumns,
     remoteColumns,

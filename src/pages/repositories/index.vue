@@ -56,11 +56,13 @@ export default defineComponent({
                 {{ tr("当前正在进行 {operation}。", "A {operation} is currently in progress.", { operation: gitOperationLabel(snapshot.operation.kind) }) }}
               </template>
               <template v-if="conflictedChanges.length">
-                {{ tr("请编辑并暂存 {count} 个冲突文件，然后继续；也可中止操作。", "Edit and stage {count} conflicted file(s), then continue; you can also abort the operation.", { count: conflictedChanges.length }) }}
+                {{ tr("请在外部编辑器中解决并暂存 {count} 个冲突文件，然后继续；也可中止操作。", "Resolve and stage {count} conflicted file(s) in an external editor, then continue; you can also abort the operation.", { count: conflictedChanges.length }) }}
               </template>
-              <n-space v-if="snapshot.operation" size="small" class="operation-actions">
-                <n-button size="tiny" :loading="mutationBusy" :disabled="snapshot.operation.hasConflicts || conflictedChanges.length > 0" @click="continueGitOperation">{{ tr("继续", "Continue") }}</n-button>
-                <n-button size="tiny" tertiary type="error" :loading="mutationBusy" @click="confirmAbortGitOperation">{{ tr("中止", "Abort") }}</n-button>
+              <n-space v-if="snapshot.operation || conflictedChanges.length" size="small" class="operation-actions">
+                <n-button v-if="conflictedChanges.length" size="tiny" type="primary" :loading="mutationBusy" @click="openConflictedFilesInExternalEditor">{{ externalEditor ? tr("在外部编辑器中解决", "Resolve in external editor") : tr("配置外部编辑器", "Configure external editor") }}</n-button>
+                <n-button v-if="conflictedChanges.length && externalEditor" size="tiny" tertiary :disabled="mutationBusy" @click="openExternalEditorModal">{{ tr("编辑器设置", "Editor settings") }}</n-button>
+                <n-button v-if="snapshot.operation" size="tiny" :loading="mutationBusy" :disabled="snapshot.operation.hasConflicts || conflictedChanges.length > 0" @click="continueGitOperation">{{ tr("继续", "Continue") }}</n-button>
+                <n-button v-if="snapshot.operation" size="tiny" tertiary type="error" :loading="mutationBusy" @click="confirmAbortGitOperation">{{ tr("中止", "Abort") }}</n-button>
               </n-space>
             </n-alert>
 

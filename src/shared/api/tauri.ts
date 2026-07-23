@@ -9,6 +9,7 @@ import type {
   CodeHostRepositoryInfo,
   CreatePullRequestInput,
   CreateBranchInput,
+  ExternalEditorConfig,
   GitOperationKind,
   GitStatusEntry,
   InitRepositoryInput,
@@ -161,6 +162,11 @@ const mockSnapshot: RepositorySnapshot = {
     { name: "main", isCurrent: true, upstream: "origin/main" },
     { name: "feature/multi-account", isCurrent: false, upstream: "origin/feature/multi-account" },
   ],
+  remoteBranches: [
+    { remoteName: "origin", name: "feature/multi-account" },
+    { remoteName: "origin", name: "main" },
+    { remoteName: "upstream", name: "main" },
+  ],
   remotes: [
     {
       name: "origin",
@@ -248,6 +254,7 @@ let browserLfsStatus: LfsStatus = {
   version: "git-lfs/3.6.1 (browser demo)",
   files: [],
 };
+let browserExternalEditor: ExternalEditorConfig | null = null;
 type BrowserStash = StashEntry & { entries: GitStatusEntry[] };
 
 let browserStashes: BrowserStash[] = [];
@@ -257,6 +264,17 @@ function renumberBrowserStashes(): void {
     ...stash,
     reference: `stash@{${index}}`,
   }));
+}
+
+function stashBrowserChanges(snapshot: RepositorySnapshot, message: string): void {
+  if (!snapshot.status.entries.length) return;
+  browserStashes = [{
+    reference: "",
+    message: `On ${snapshot.status.branch || "HEAD"}: ${message}`,
+    entries: copy(snapshot.status.entries),
+  }, ...browserStashes];
+  renumberBrowserStashes();
+  snapshot.status.entries = [];
 }
 let browserPullRequests: PullRequestSummary[] = [
   {
@@ -495,6 +513,7 @@ export const api = {
         hasHead: false,
         status: { ...mockSnapshot.status, branch: input.initialBranch?.trim() || "main", upstream: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: input.initialBranch?.trim() || "main", isCurrent: true, upstream: null }],
+        remoteBranches: [],
         remotes: [],
         bindings: [],
         tags: [],
@@ -530,6 +549,7 @@ export const api = {
         hasHead: false,
         status: { ...mockSnapshot.status, branch, upstream: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: branch, isCurrent: true, upstream: null }],
+        remoteBranches: [{ remoteName: "origin", name: branch }],
         remotes: [browserRemoteProfile("origin", input.url)],
         bindings: [],
         tags: [],
@@ -609,6 +629,82 @@ export const api = {
         "+  multiAccount: true,",
         " }",
       ].join("\n");
+    });
+  },
+
+  getFileBlame(repositoryPath: string, path: string): Promise<string> {
+    return request("get_file_blame", { repositoryPath, path }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      const target = path || "README.md";
+      return [
+        "9d7a4f0c2ea (BroKnowMy 2026-07-19)  1) # " + target,
+        "55b91f2b0e1 (BroKnowMy 2026-07-18)  2) 示例 Blame 输出",
+      ].join("\n");
+    });
+  },
+
+  listReflog(repositoryPath: string, limit = 100): Promise<string> {
+    return request("list_reflog", { repositoryPath, limit }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      return [
+        "9d7a4f0 HEAD@{0} commit: 完善多账号远程绑定 (BroKnowMy, 2026-07-19T10:20:30+08:00)",
+        "55b91f2 HEAD@{1} commit (initial): 初始化桌面客户端 (BroKnowMy, 2026-07-18T09:00:00+08:00)",
+      ].join("\n");
+    });
+  },
+
+  previewCleanUntracked(repositoryPath: string): Promise<string> {
+    return request("preview_clean_untracked", { repositoryPath }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      return browserSnapshot.status.entries
+        .filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?")
+        .map((entry) => "Would remove " + entry.path)
+        .join("\n");
+    });
+  },
+
+  cleanUntracked(repositoryPath: string): Promise<RepositorySnapshot> {
+    return request("clean_untracked", { repositoryPath }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      return updateMockSnapshot((snapshot) => {
+        snapshot.status.entries = snapshot.status.entries.filter((entry) => entry.indexStatus || entry.worktreeStatus !== "?");
+      });
+    });
+  },
+
+  getExternalEditor(): Promise<ExternalEditorConfig | null> {
+    return request("get_external_editor", {}, () => (browserExternalEditor ? copy(browserExternalEditor) : null));
+  },
+
+  saveExternalEditor(editor: ExternalEditorConfig | null): Promise<ExternalEditorConfig | null> {
+    return request("save_external_editor", { editor }, () => {
+      if (editor === null) {
+        browserExternalEditor = null;
+        return null;
+      }
+      const executable = editor.executable.trim();
+      const editorArguments = editor.arguments.map((argument) => argument.trim()).filter(Boolean);
+      if (!executable || editorArguments.length > 32) {
+        throw { code: "external_editor_config_invalid", message: "外部编辑器配置无效。" } satisfies AppError;
+      }
+      browserExternalEditor = { executable, arguments: editorArguments };
+      return copy(browserExternalEditor);
+    });
+  },
+
+  openConflictedFilesInExternalEditor(repositoryPath: string): Promise<string[]> {
+    return request("open_conflicted_files_in_external_editor", { repositoryPath }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      if (!browserExternalEditor) {
+        throw { code: "external_editor_not_configured", message: "请先配置用于解决冲突的外部编辑器。" } satisfies AppError;
+      }
+      const conflicts = browserSnapshot.status.entries
+        .filter((entry) => ["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(entry.indexStatus + entry.worktreeStatus))
+        .map((entry) => entry.path);
+      if (!conflicts.length) {
+        throw { code: "no_conflicted_files", message: "当前仓库没有需要在外部编辑器中处理的冲突文件。" } satisfies AppError;
+      }
+      return conflicts;
     });
   },
 
@@ -760,17 +856,47 @@ export const api = {
     });
   },
 
-  checkoutBranch(repositoryPath: string, branch: string): Promise<RepositorySnapshot> {
-    return request("checkout_branch", { repositoryPath, branch }, () => {
+  checkoutBranch(repositoryPath: string, branch: string, stashLocalChanges = false): Promise<RepositorySnapshot> {
+    return request("checkout_branch", { repositoryPath, branch, stashLocalChanges }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!browserSnapshot.branches.some((entry) => entry.name === branch)) {
         throw { code: "branch_not_found", message: "找不到该分支。" } satisfies AppError;
       }
       return updateMockSnapshot((snapshot) => {
+        if (stashLocalChanges) stashBrowserChanges(snapshot, "切换分支前自动暂存");
         snapshot.branches.forEach((entry) => {
           entry.isCurrent = entry.name === branch;
         });
         snapshot.status.branch = branch;
+        snapshot.status.upstream = snapshot.branches.find((entry) => entry.name === branch)?.upstream ?? null;
+      });
+    });
+  },
+
+  checkoutRemoteBranch(
+    repositoryPath: string,
+    remoteName: string,
+    branch: string,
+    stashLocalChanges = false,
+  ): Promise<RepositorySnapshot> {
+    return request("checkout_remote_branch", { repositoryPath, remoteName, branch, stashLocalChanges }, () => {
+      const snapshot = requireBrowserSnapshot(repositoryPath);
+      requireBrowserRemote(snapshot, remoteName);
+      if (!snapshot.remoteBranches.some((entry) => entry.remoteName === remoteName && entry.name === branch)) {
+        throw { code: "remote_branch_not_found", message: "找不到该远程分支；请先获取远程更新后重试。" } satisfies AppError;
+      }
+      return updateMockSnapshot((nextSnapshot) => {
+        if (stashLocalChanges) stashBrowserChanges(nextSnapshot, "切换分支前自动暂存");
+        let localBranch = nextSnapshot.branches.find((entry) => entry.name === branch);
+        if (!localBranch) {
+          localBranch = { name: branch, isCurrent: false, upstream: `${remoteName}/${branch}` };
+          nextSnapshot.branches.push(localBranch);
+        }
+        nextSnapshot.branches.forEach((entry) => {
+          entry.isCurrent = entry === localBranch;
+        });
+        nextSnapshot.status.branch = localBranch.name;
+        nextSnapshot.status.upstream = localBranch.upstream;
       });
     });
   },
@@ -989,14 +1115,8 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       if (!browserSnapshot.status.entries.length) throw { code: "nothing_to_stash", message: "没有可暂存的改动。" } satisfies AppError;
       const suffix = message?.trim() || "WIP";
-      browserStashes = [{
-        reference: "",
-        message: `On ${browserSnapshot.status.branch || "HEAD"}: ${suffix}`,
-        entries: copy(browserSnapshot.status.entries),
-      }, ...browserStashes];
-      renumberBrowserStashes();
       return updateMockSnapshot((snapshot) => {
-        snapshot.status.entries = [];
+        stashBrowserChanges(snapshot, suffix);
       });
     });
   },
@@ -1143,6 +1263,9 @@ export const api = {
           throw { code: "remote_exists", message: "该 remote 已存在。" } satisfies AppError;
         }
         remote.name = newName;
+        snapshot.remoteBranches.forEach((branch) => {
+          if (branch.remoteName === oldName) branch.remoteName = newName;
+        });
         const binding = snapshot.bindings.find((item) => item.remoteName === oldName);
         if (binding) binding.remoteName = newName;
       });
@@ -1154,6 +1277,7 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       updateMockSnapshot((snapshot) => {
         snapshot.remotes = snapshot.remotes.filter((remote) => remote.name !== name);
+        snapshot.remoteBranches = snapshot.remoteBranches.filter((branch) => branch.remoteName !== name);
         snapshot.bindings = snapshot.bindings.filter((binding) => binding.remoteName !== name);
       });
     });
@@ -1163,6 +1287,11 @@ export const api = {
     return request("fetch_remote", { repositoryPath, remoteName }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       requireBrowserRemote(snapshot, remoteName);
+      updateMockSnapshot((nextSnapshot) => {
+        if (!nextSnapshot.remoteBranches.some((branch) => branch.remoteName === remoteName)) {
+          nextSnapshot.remoteBranches.push({ remoteName, name: "main" });
+        }
+      });
       return { summary: `已从 ${remoteName} 获取最新引用（浏览器演示）。` };
     });
   },
@@ -1419,4 +1548,3 @@ export const api = {
 export function isAppError(error: unknown): error is AppError {
   return typeof error === "object" && error !== null && "code" in error && "message" in error;
 }
-

@@ -21,8 +21,13 @@ export default defineComponent({
             {{ tr("浏览器演示模式：当前展示可交互的本地 mock 数据；启动 Tauri 后会调用 Rust commands。示例 PAT 不会保存或展示。", "Browser demo mode: this uses interactive local mock data. Tauri calls Rust commands. Demo PATs are never saved or shown.") }}
           </n-alert>
 
-          <n-alert v-if="lastError" type="error" closable class="error-alert" @close="lastError = null">
+          <n-alert v-if="lastError" type="error" closable class="error-alert" @close="clearLastError">
+            <template #header>
+              {{ lastErrorAction ? tr("最近一次操作失败：{action}", "Most recent operation failed: {action}", { action: lastErrorAction }) : tr("最近一次操作失败", "Most recent operation failed") }}
+            </template>
             <strong>{{ lastError.message }}</strong>
+            <div class="error-diagnostic-code">{{ tr("错误代码", "Error code") }}: <code>{{ lastError.code }}</code></div>
+            <div v-if="lastError.details" class="error-diagnostic-guidance">{{ lastError.details }}</div>
             <template v-if="lastError.code === 'account_selection_required'">{{ tr("请在 remote 绑定中选择明确账号，然后重试。", "Select an explicit account in the remote binding, then retry.") }}</template>
           </n-alert>
     <AccountsPage v-if="section === 'accounts'" />
@@ -42,4 +47,3 @@ export default defineComponent({
   </main>
 </n-layout-content>
 </template>
-

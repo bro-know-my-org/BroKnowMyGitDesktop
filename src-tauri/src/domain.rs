@@ -391,6 +391,17 @@ pub struct GitStatusEntry {
     pub worktree_status: String,
 }
 
+/// Application-local external editor configuration. Arguments are stored as
+/// separate values rather than as a shell command string, so repository file
+/// paths never become shell syntax when conflict files are opened.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalEditorConfig {
+    pub executable: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatus {
@@ -407,6 +418,17 @@ pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
     pub upstream: Option<String>,
+}
+
+/// A branch advertised by one configured remote and stored locally as a
+/// remote-tracking ref. `name` deliberately omits the remote prefix so the
+/// caller can create the conventional local tracking branch with the same
+/// name.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteBranchInfo {
+    pub remote_name: String,
+    pub name: String,
 }
 
 /// A concise, safe-to-display entry in the repository history.

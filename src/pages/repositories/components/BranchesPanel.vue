@@ -41,6 +41,20 @@ export default defineComponent({
                     </n-card>
                   </n-grid-item>
                   <n-grid-item span="2">
+                    <n-card size="small" :title="tr('远程分支', 'Remote branches')">
+                      <template #header-extra>
+                        <n-button size="tiny" tertiary :disabled="!activeRemote" :loading="networkBusy === 'fetch'" @click="runNetworkAction('fetch')">
+                          {{ activeRemote ? tr('获取 {remote}', 'Fetch {remote}', { remote: activeRemote.name }) : tr('获取更新', 'Fetch') }}
+                        </n-button>
+                      </template>
+                      <n-data-table :columns="remoteBranchColumns" :data="snapshot.remoteBranches" :bordered="false" />
+                      <n-empty
+                        v-if="!snapshot.remoteBranches.length"
+                        :description="activeRemote ? tr('尚未获取到远程分支。点击右上角按钮获取更新。', 'No remote branches have been fetched yet. Use the button above to fetch.') : tr('请先添加并选择一个 remote。', 'Add and select a remote first.')"
+                      />
+                    </n-card>
+                  </n-grid-item>
+                  <n-grid-item span="2">
                     <n-card size="small" :title="tr('工作树', 'Worktrees')">
                       <template #header-extra><n-button size="tiny" type="primary" @click="openWorktreeModal">{{ tr("新建工作树", "New worktree") }}</n-button></template>
                       <n-data-table :columns="worktreeColumns" :data="worktrees" :loading="worktreesLoading" :bordered="false" />

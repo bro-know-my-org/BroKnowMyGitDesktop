@@ -1,11 +1,11 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NText },
+  components: { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText },
   setup() {
     return useWorkspaceControllerContext();
   },
@@ -21,6 +21,49 @@ export default defineComponent({
     </n-form>
     <n-text depth="3">{{ tr("留空并保存即可移到“未分组”。分组仅保存在本应用，不会修改 Git 仓库。", "Leave this blank and save to move it to Ungrouped. Groups are stored by this app and never change the Git repository.") }}</n-text>
     <template #action><n-space justify="end"><n-button @click="repositoryGroupModalShown = false">{{ tr("取消", "Cancel") }}</n-button><n-button type="primary" :loading="mutationBusy" @click="saveRepositoryGroup">{{ tr("保存分组", "Save group") }}</n-button></n-space></template>
+  </n-modal>
+
+  <n-modal v-model:show="externalEditorModalShown" preset="card" :title="tr('外部冲突编辑器', 'External conflict editor')" class="dialog-card" :mask-closable="!mutationBusy">
+    <n-alert type="info" :bordered="false" class="token-alert">
+      {{ tr("发生冲突时，应用会把所有冲突文件作为独立参数交给此编辑器。不会执行 Git 或仓库配置中的 shell 命令。", "When conflicts occur, the app passes every conflicted file to this editor as a separate argument. It never runs a shell command from Git or repository configuration.") }}
+    </n-alert>
+    <n-form label-placement="top">
+      <n-form-item :label="tr('可执行文件', 'Executable')">
+        <n-input v-model:value="externalEditorForm.executable" :placeholder="tr('例如：code 或 /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code', 'For example: code or /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code')" />
+      </n-form-item>
+      <n-form-item :label="tr('附加参数（每行一个，可选）', 'Additional arguments (one per line, optional)')">
+        <n-input v-model:value="externalEditorForm.arguments" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="--wait" />
+      </n-form-item>
+    </n-form>
+    <n-text depth="3">{{ tr("VS Code 通常可使用可执行文件 code 和参数 --wait。保存后，在冲突提示中点击“在外部编辑器中解决”。", "For VS Code, use executable code with argument --wait. After saving, click Resolve in external editor from the conflict alert.") }}</n-text>
+    <template #action>
+      <n-space justify="space-between">
+        <n-button v-if="externalEditor" type="error" tertiary :loading="mutationBusy" @click="confirmClearExternalEditor">{{ tr("清除配置", "Clear configuration") }}</n-button>
+        <span v-else />
+        <n-space>
+          <n-button @click="externalEditorModalShown = false">{{ tr("取消", "Cancel") }}</n-button>
+          <n-button type="primary" :loading="mutationBusy" @click="saveExternalEditor">{{ tr("保存编辑器", "Save editor") }}</n-button>
+        </n-space>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <n-modal v-model:show="blameModalShown" preset="card" :title="tr('文件 Blame', 'File blame')" class="dialog-card">
+    <n-text depth="3">{{ selectedChange?.path || '—' }}</n-text>
+    <n-spin :show="blameLoading">
+      <pre v-if="blameText" class="diff-output dialog-output">{{ blameText }}</pre>
+      <n-text v-else-if="!blameLoading" depth="3">{{ tr("此文件没有可显示的 Blame 记录。", "This file has no blame records to display.") }}</n-text>
+    </n-spin>
+    <template #action><n-space justify="end"><n-button @click="blameModalShown = false">{{ tr("关闭", "Close") }}</n-button></n-space></template>
+  </n-modal>
+
+  <n-modal v-model:show="reflogModalShown" preset="card" :title="tr('Reflog（恢复记录）', 'Reflog (recovery history)')" class="dialog-card">
+    <n-alert type="info" :bordered="false" class="token-alert">{{ tr("Reflog 记录本地引用移动，可用于定位误删、重置或变基前的提交；恢复操作仍需在历史页谨慎执行。", "Reflog records local reference movements and helps locate commits before resets, rebases, or accidental changes. Use recovery actions from History carefully.") }}</n-alert>
+    <n-spin :show="reflogLoading">
+      <pre v-if="reflogText" class="diff-output dialog-output">{{ reflogText }}</pre>
+      <n-text v-else-if="!reflogLoading" depth="3">{{ tr("当前仓库没有可显示的 Reflog 记录。", "This repository has no reflog records to display.") }}</n-text>
+    </n-spin>
+    <template #action><n-space justify="end"><n-button @click="reflogModalShown = false">{{ tr("关闭", "Close") }}</n-button></n-space></template>
   </n-modal>
 
   <n-modal v-model:show="cloneModalShown" preset="card" :title="tr('Clone 仓库', 'Clone repository')" class="dialog-card" :mask-closable="!mutationBusy">
@@ -233,4 +276,3 @@ export default defineComponent({
     </n-drawer-content>
   </n-drawer>
 </template>
-

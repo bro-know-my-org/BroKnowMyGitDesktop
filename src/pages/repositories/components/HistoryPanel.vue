@@ -18,6 +18,7 @@ export default defineComponent({
                   <n-card size="small" :title="tr('提交历史', 'Commit history')">
                     <template #header-extra>
                       <n-space size="small">
+                        <n-button size="tiny" tertiary :loading="reflogLoading" @click="openReflog">{{ tr("查看 Reflog", "View reflog") }}</n-button>
                         <n-button size="tiny" tertiary :disabled="commits.length < 3" @click="openSquashModal">{{ tr("压缩最近提交", "Squash recent") }}</n-button>
                         <n-button size="tiny" tertiary :loading="historyLoading" @click="loadHistory">{{ tr("刷新", "Refresh") }}</n-button>
                       </n-space>

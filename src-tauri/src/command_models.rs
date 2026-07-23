@@ -1,6 +1,6 @@
 use crate::domain::{
-    BranchInfo, GitOperationKind, GitStatus, RemoteBinding, RemoteProfile, RepositoryRecord,
-    TagInfo,
+    BranchInfo, GitOperationKind, GitStatus, RemoteBinding, RemoteBranchInfo, RemoteProfile,
+    RepositoryRecord, TagInfo,
 };
 use serde::Serialize;
 
@@ -12,6 +12,7 @@ pub struct RepositorySnapshot {
     pub has_head: bool,
     pub status: GitStatus,
     pub branches: Vec<BranchInfo>,
+    pub remote_branches: Vec<RemoteBranchInfo>,
     pub remotes: Vec<RemoteProfile>,
     pub tags: Vec<TagInfo>,
     pub bindings: Vec<RemoteBinding>,

@@ -105,6 +105,15 @@ export interface GitStatusEntry {
   worktreeStatus: string;
 }
 
+/**
+ * App-local external editor launch settings. Each argument is separate so
+ * conflict paths never have to be interpreted as shell command text.
+ */
+export interface ExternalEditorConfig {
+  executable: string;
+  arguments: string[];
+}
+
 export interface GitStatus {
   branch: string | null;
   upstream: string | null;
@@ -117,6 +126,11 @@ export interface BranchInfo {
     name: string;
     isCurrent: boolean;
     upstream: string | null;
+}
+
+export interface RemoteBranchInfo {
+  remoteName: string;
+  name: string;
 }
 
 export interface WorktreeInfo {
@@ -187,6 +201,7 @@ export interface RepositorySnapshot {
   hasHead: boolean;
   status: GitStatus;
   branches: BranchInfo[];
+  remoteBranches: RemoteBranchInfo[];
   remotes: RemoteProfile[];
   tags: TagInfo[];
   bindings: RemoteBinding[];
@@ -290,4 +305,3 @@ export function authenticationStatusLabel(status: AuthenticationStatus, locale: 
   };
   return labels[status][locale === "zh-CN" ? 0 : 1];
 }
-

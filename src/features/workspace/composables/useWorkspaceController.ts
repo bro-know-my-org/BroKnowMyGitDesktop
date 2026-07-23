@@ -1,5 +1,5 @@
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useDialog, useMessage } from "naive-ui";
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { NButton, useDialog, useMessage } from "naive-ui";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
 import { colorMode, isDarkTheme, setColorMode, type ColorMode } from "../../../shared/theme";
@@ -15,10 +15,12 @@ import {
   type CodeHostCapabilities,
   type CodeHostEndpoint,
   type CodeHostRepositoryInfo,
+  type ExternalEditorConfig,
   type GitStatusEntry,
   type LfsStatus,
   type PullRequestSummary,
   type RemoteBinding,
+  type RemoteBranchInfo,
   type RemoteProfile,
   type RepositoryRecord,
   type RepositorySnapshot,
@@ -119,23 +121,29 @@ const pullRequests = ref<PullRequestSummary[]>([]);
 const selectedChange = ref<GitStatusEntry | null>(null);
 const diffText = ref("");
 const selectedDiffStaged = ref(false);
+const blameText = ref("");
 const commits = ref<CommitSummary[]>([]);
 const stashes = ref<StashEntry[]>([]);
+const reflogText = ref("");
 const worktrees = ref<WorktreeInfo[]>([]);
 const submodules = ref<SubmoduleInfo[]>([]);
 const lfsStatus = ref<LfsStatus | null>(null);
+const externalEditor = ref<ExternalEditorConfig | null>(null);
 const selectedCommit = ref<CommitSummary | null>(null);
 const commitDiffText = ref("");
 const lastError = ref<AppError | null>(null);
+const lastErrorAction = ref("");
 
 const repositoriesLoading = ref(false);
 const snapshotLoading = ref(false);
 const accountsLoading = ref(false);
 const accountStatusRefreshing = ref(false);
 const diffLoading = ref(false);
+const blameLoading = ref(false);
 const platformLoading = ref(false);
 const pullRequestsLoading = ref(false);
 const historyLoading = ref(false);
+const reflogLoading = ref(false);
 const commitDiffLoading = ref(false);
 const stashesLoading = ref(false);
 const worktreesLoading = ref(false);
@@ -156,6 +164,9 @@ const rebaseModalShown = ref(false);
 const cherryPickModalShown = ref(false);
 const worktreeModalShown = ref(false);
 const lfsTrackModalShown = ref(false);
+const externalEditorModalShown = ref(false);
+const blameModalShown = ref(false);
+const reflogModalShown = ref(false);
 const pullRequestModalShown = ref(false);
 const squashModalShown = ref(false);
 const publishModalShown = ref(false);
@@ -178,6 +189,7 @@ const rebaseForm = reactive({ base: "" });
 const cherryPickForm = reactive({ revision: "" });
 const worktreeForm = reactive({ path: "", mode: "new", branch: "" });
 const lfsTrackForm = reactive({ pattern: "" });
+const externalEditorForm = reactive({ executable: "", arguments: "" });
 const pullRequestForm = reactive({ title: "", body: "", base: "", draft: false });
 const squashForm = reactive({ count: "2", message: "" });
 const publishForm = reactive({ endpointId: "github.com", accountId: "", name: "", isPrivate: true });
@@ -196,6 +208,10 @@ const stagedChanges = computed(() => snapshot.value?.status.entries.filter((entr
 const stagedCount = computed(() => stagedChanges.value.length);
 const unstagedCount = computed(() => snapshot.value?.status.entries.filter((entry) => Boolean(entry.worktreeStatus)).length ?? 0);
 const workingChanges = computed(() => snapshot.value?.status.entries.filter((entry) => Boolean(entry.worktreeStatus)) ?? []);
+const untrackedChanges = computed(() =>
+  snapshot.value?.status.entries.filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?") ?? [],
+);
+const untrackedCount = computed(() => untrackedChanges.value.length);
 const allChangesIncluded = computed(() => {
   const entries = snapshot.value?.status.entries ?? [];
   return entries.length > 0 && entries.every(isChangeFullyIncluded);
@@ -409,6 +425,7 @@ const repositoryGroups = computed<RepositorySidebarGroup[]>(() => {
 
 const {
   branchColumns,
+  remoteBranchColumns,
   worktreeColumns,
   submoduleColumns,
   remoteColumns,
@@ -420,6 +437,7 @@ const {
   appLocale,
   snapshot,
   checkoutBranch,
+  checkoutRemoteBranch,
   confirmMergeBranch,
   openRenameBranchModal,
   confirmDeleteBranch,
@@ -508,11 +526,17 @@ function reportError(error: unknown, action: string): void {
     : { code: "unexpected_error", message: tr("发生未预期错误。", "An unexpected error occurred."), details: null };
   appError.message = localizedErrorMessage(appError.code, appError.message);
   lastError.value = appError;
+  lastErrorAction.value = action;
   message.error(tr("{action}：{message}", "{action}: {message}", { action, message: appError.message }));
   if (appError.code === "account_selection_required" && activeRemote.value) {
     message.warning(tr("此 remote 有多个或没有可用账号，请明确选择一个账号后重试。", "This remote has multiple or no usable accounts. Select one explicitly and retry."));
     openBindingDrawer(activeRemote.value);
   }
+}
+
+function clearLastError(): void {
+  lastError.value = null;
+  lastErrorAction.value = "";
 }
 
 function updateAppLocale(value: string | number): void {
@@ -670,7 +694,7 @@ async function selectRepository(repositoryPath: string): Promise<void> {
   activeRepositoryPath.value = repositoryPath;
   section.value = "repositories";
   snapshotLoading.value = true;
-  lastError.value = null;
+  clearLastError();
   try {
     clearDiffSelection();
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
@@ -801,6 +825,21 @@ async function loadDiff(entry: GitStatusEntry): Promise<void> {
   }
 }
 
+async function openFileBlame(): Promise<void> {
+  if (!activeRepositoryPath.value || !selectedChange.value) return;
+  blameModalShown.value = true;
+  blameText.value = "";
+  blameLoading.value = true;
+  try {
+    blameText.value = await api.getFileBlame(activeRepositoryPath.value, selectedChange.value.path);
+  } catch (error) {
+    blameModalShown.value = false;
+    reportError(error, tr("读取文件 Blame 失败", "Could not load file blame"));
+  } finally {
+    blameLoading.value = false;
+  }
+}
+
 async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
   if (!activeRepositoryPath.value || !selectedChange.value) return;
   const selectedPath = selectedChange.value.path;
@@ -848,6 +887,21 @@ async function loadHistory(): Promise<void> {
   }
 }
 
+async function openReflog(): Promise<void> {
+  if (!activeRepositoryPath.value) return;
+  reflogModalShown.value = true;
+  reflogText.value = "";
+  reflogLoading.value = true;
+  try {
+    reflogText.value = await api.listReflog(activeRepositoryPath.value);
+  } catch (error) {
+    reflogModalShown.value = false;
+    reportError(error, tr("读取 Reflog 失败", "Could not load reflog"));
+  } finally {
+    reflogLoading.value = false;
+  }
+}
+
 async function loadWorktrees(): Promise<void> {
   if (!activeRepositoryPath.value) {
     worktrees.value = [];
@@ -890,6 +944,14 @@ async function loadLfsStatus(): Promise<void> {
     reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
   } finally {
     lfsLoading.value = false;
+  }
+}
+
+async function loadExternalEditor(): Promise<void> {
+  try {
+    externalEditor.value = await api.getExternalEditor();
+  } catch (error) {
+    reportError(error, tr("读取外部编辑器配置失败", "Could not load external editor configuration"));
   }
 }
 
@@ -996,8 +1058,129 @@ function discardSelectedChange(): void {
   if (selectedChange.value) confirmDiscardChanges([selectedChange.value.path]);
 }
 
+async function confirmCleanUntracked(): Promise<void> {
+  if (!activeRepositoryPath.value) return;
+  mutationBusy.value = true;
+  let preview = "";
+  try {
+    preview = await api.previewCleanUntracked(activeRepositoryPath.value);
+  } catch (error) {
+    reportError(error, tr("预览未跟踪文件清理失败", "Could not preview untracked file cleanup"));
+    return;
+  } finally {
+    mutationBusy.value = false;
+  }
+  const entries = preview.split(/\r?\n/u).filter(Boolean);
+  if (!entries.length) {
+    message.info(tr("没有可清理的未跟踪文件。", "There are no untracked files to clean."));
+    return;
+  }
+  const count = entries.length;
+  dialog.error({
+    title: tr("清理未跟踪文件", "Clean untracked files"),
+    content: tr(
+      "永久删除 {count} 个未跟踪的文件或目录？已忽略的文件不会删除，此操作不能撤销。",
+      "Permanently delete {count} untracked file(s) or folder(s)? Ignored files are not removed and this cannot be undone.",
+      { count },
+    ),
+    positiveText: tr("永久删除", "Delete permanently"),
+    negativeText: tr("取消", "Cancel"),
+    onPositiveClick: async () => {
+      mutationBusy.value = true;
+      try {
+        const selectedPath = selectedChange.value?.path;
+        const nextSnapshot = await api.cleanUntracked(activeRepositoryPath.value!);
+        applySnapshot(nextSnapshot);
+        if (selectedPath && !nextSnapshot.status.entries.some((entry) => entry.path === selectedPath)) {
+          clearDiffSelection();
+        }
+        message.success(tr("未跟踪文件已清理。", "Untracked files cleaned."));
+      } catch (error) {
+        reportError(error, tr("清理未跟踪文件失败", "Could not clean untracked files"));
+      } finally {
+        mutationBusy.value = false;
+      }
+    },
+  });
+}
+
 async function refreshAfterGitConflict(error: unknown): Promise<void> {
   if (isAppError(error) && error.code === "git_merge_conflict") await refreshSnapshot();
+}
+
+function openExternalEditorModal(): void {
+  externalEditorForm.executable = externalEditor.value?.executable ?? "";
+  externalEditorForm.arguments = externalEditor.value?.arguments.join("\n") ?? "";
+  externalEditorModalShown.value = true;
+}
+
+async function saveExternalEditor(): Promise<void> {
+  const executable = externalEditorForm.executable.trim();
+  if (!executable) {
+    message.warning(tr("请输入外部编辑器的可执行文件。", "Enter the external editor executable."));
+    return;
+  }
+  const editorArguments = externalEditorForm.arguments
+    .split(/\r?\n/u)
+    .map((argument) => argument.trim())
+    .filter(Boolean);
+  mutationBusy.value = true;
+  try {
+    externalEditor.value = await api.saveExternalEditor({ executable, arguments: editorArguments });
+    externalEditorModalShown.value = false;
+    message.success(tr("外部编辑器已保存。", "External editor saved."));
+  } catch (error) {
+    reportError(error, tr("保存外部编辑器失败", "Could not save external editor"));
+  } finally {
+    mutationBusy.value = false;
+  }
+}
+
+function confirmClearExternalEditor(): void {
+  dialog.warning({
+    title: tr("清除外部编辑器", "Clear external editor"),
+    content: tr(
+      "清除应用保存的外部编辑器配置？这不会修改系统、Git 或编辑器本身的设置。",
+      "Clear the external editor configuration saved by this app? This does not change system, Git, or editor settings.",
+    ),
+    positiveText: tr("清除", "Clear"),
+    negativeText: tr("取消", "Cancel"),
+    onPositiveClick: async () => {
+      mutationBusy.value = true;
+      try {
+        externalEditor.value = await api.saveExternalEditor(null);
+        externalEditorModalShown.value = false;
+        message.success(tr("外部编辑器配置已清除。", "External editor configuration cleared."));
+      } catch (error) {
+        reportError(error, tr("清除外部编辑器失败", "Could not clear external editor"));
+      } finally {
+        mutationBusy.value = false;
+      }
+    },
+  });
+}
+
+async function openConflictedFilesInExternalEditor(): Promise<void> {
+  if (!activeRepositoryPath.value) return;
+  if (!externalEditor.value) {
+    openExternalEditorModal();
+    return;
+  }
+  mutationBusy.value = true;
+  try {
+    const paths = await api.openConflictedFilesInExternalEditor(activeRepositoryPath.value);
+    message.info(
+      tr(
+        "已在外部编辑器中打开 {count} 个冲突文件。完成后回到这里刷新、暂存并继续操作。",
+        "Opened {count} conflicted file(s) in the external editor. When finished, return here to refresh, stage, and continue.",
+        { count: paths.length },
+      ),
+    );
+  } catch (error) {
+    reportError(error, tr("打开外部编辑器失败", "Could not open external editor"));
+  } finally {
+    mutationBusy.value = false;
+  }
 }
 
 const commitMessage = ref("");
@@ -1041,17 +1224,124 @@ async function commitChanges(): Promise<void> {
   }
 }
 
-async function checkoutBranch(branch: BranchInfo): Promise<void> {
+function requestBranchSwitch(
+  target: string,
+  execute: (stashLocalChanges: boolean) => Promise<void>,
+): void {
+  if (snapshot.value?.operation || conflictedChanges.value.length) {
+    message.warning(tr("请先完成或中止当前 Git 操作，再切换分支。", "Finish or abort the current Git operation before switching branches."));
+    return;
+  }
+  const changeCount = snapshot.value?.status.entries.length ?? 0;
+  if (!changeCount) {
+    void execute(false);
+    return;
+  }
+  const branchSwitchDialog = dialog.warning({
+    title: tr("切换分支前暂存改动？", "Stash changes before switching?"),
+    content: tr(
+      "当前有 {count} 个未提交改动，即将切换到 {branch}。暂存后切换会保存已暂存、未暂存和未跟踪文件；直接切换会保留它们，但若会覆盖文件，Git 会拒绝切换。",
+      "There are {count} uncommitted change(s) before switching to {branch}. Stash and switch saves staged, unstaged, and untracked files; switch directly keeps them, but Git refuses if a file would be overwritten.",
+      { count: changeCount, branch: target },
+    ),
+    closable: true,
+    action: () => [
+      h(
+        NButton,
+        { onClick: () => branchSwitchDialog.destroy() },
+        { default: () => tr("取消", "Cancel") },
+      ),
+      h(
+        NButton,
+        {
+          tertiary: true,
+          onClick: () => {
+            branchSwitchDialog.destroy();
+            void execute(false);
+          },
+        },
+        { default: () => tr("直接切换", "Switch directly") },
+      ),
+      h(
+        NButton,
+        {
+          type: "primary",
+          onClick: () => {
+            branchSwitchDialog.destroy();
+            void execute(true);
+          },
+        },
+        { default: () => tr("暂存后切换", "Stash and switch") },
+      ),
+    ],
+  });
+}
+
+async function switchLocalBranch(branch: BranchInfo, stashLocalChanges: boolean): Promise<void> {
   if (!activeRepositoryPath.value || branch.isCurrent) return;
+  const repositoryPath = activeRepositoryPath.value;
   mutationBusy.value = true;
   try {
-    applySnapshot(await api.checkoutBranch(activeRepositoryPath.value, branch.name));
-    message.success(tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branch.name }));
+    const selectedPath = selectedChange.value?.path;
+    const nextSnapshot = await api.checkoutBranch(repositoryPath, branch.name, stashLocalChanges);
+    if (activeRepositoryPath.value !== repositoryPath) return;
+    applySnapshot(nextSnapshot);
+    await syncSelectedDiff(nextSnapshot, selectedPath);
+    if (stashLocalChanges) await loadHistory();
+    message.success(
+      stashLocalChanges
+        ? tr("改动已暂存，并切换到 {branch}。", "Changes stashed and switched to {branch}.", { branch: branch.name })
+        : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branch.name }),
+    );
   } catch (error) {
     reportError(error, tr("切换分支失败", "Could not switch branch"));
   } finally {
     mutationBusy.value = false;
   }
+}
+
+function checkoutBranch(branch: BranchInfo): void {
+  if (!activeRepositoryPath.value || branch.isCurrent) return;
+  requestBranchSwitch(branch.name, (stashLocalChanges) => switchLocalBranch(branch, stashLocalChanges));
+}
+
+async function switchRemoteBranch(remoteBranch: RemoteBranchInfo, stashLocalChanges: boolean): Promise<void> {
+  if (!activeRepositoryPath.value) return;
+  const repositoryPath = activeRepositoryPath.value;
+  mutationBusy.value = true;
+  try {
+    const selectedPath = selectedChange.value?.path;
+    const nextSnapshot = await api.checkoutRemoteBranch(
+      repositoryPath,
+      remoteBranch.remoteName,
+      remoteBranch.name,
+      stashLocalChanges,
+    );
+    if (activeRepositoryPath.value !== repositoryPath) return;
+    applySnapshot(nextSnapshot);
+    await syncSelectedDiff(nextSnapshot, selectedPath);
+    if (stashLocalChanges) await loadHistory();
+    const branchLabel = `${remoteBranch.remoteName}/${remoteBranch.name}`;
+    message.success(
+      stashLocalChanges
+        ? tr("改动已暂存，并切换到 {branch}。", "Changes stashed and switched to {branch}.", { branch: branchLabel })
+        : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branchLabel }),
+    );
+  } catch (error) {
+    reportError(error, tr("切换远程分支失败", "Could not switch remote branch"));
+  } finally {
+    mutationBusy.value = false;
+  }
+}
+
+function checkoutRemoteBranch(remoteBranch: RemoteBranchInfo): void {
+  if (!activeRepositoryPath.value) return;
+  const matchingLocalBranch = snapshot.value?.branches.find((branch) => branch.name === remoteBranch.name);
+  if (matchingLocalBranch?.isCurrent) return;
+  requestBranchSwitch(
+    `${remoteBranch.remoteName}/${remoteBranch.name}`,
+    (stashLocalChanges) => switchRemoteBranch(remoteBranch, stashLocalChanges),
+  );
 }
 
 async function createBranch(): Promise<void> {
@@ -1660,7 +1950,7 @@ async function runNetworkAction(action: NetworkAction, forceWithLease = false): 
     return;
   }
   networkBusy.value = action;
-  lastError.value = null;
+  clearLastError();
   try {
     await (action === "fetch"
       ? api.fetchRemote(activeRepositoryPath.value, activeRemote.value.name)
@@ -2061,7 +2351,7 @@ watch(repositoryGrouping, (grouping) => {
 
 onMounted(async () => {
   if (!browserDemo) window.addEventListener("keydown", handleDevtoolsShortcut);
-  await Promise.all([loadRepositories(), loadAccounts(), loadEndpoints()]);
+  await Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
   if (repositories.value[0]) await selectRepository(repositories.value[0].path);
 });
 
@@ -2096,22 +2386,28 @@ onBeforeUnmount(() => {
     selectedChange,
     diffText,
     selectedDiffStaged,
+    blameText,
     commits,
     stashes,
+    reflogText,
     worktrees,
     submodules,
     lfsStatus,
+    externalEditor,
     selectedCommit,
     commitDiffText,
     lastError,
+    lastErrorAction,
     repositoriesLoading,
     snapshotLoading,
     accountsLoading,
     accountStatusRefreshing,
     diffLoading,
+    blameLoading,
     platformLoading,
     pullRequestsLoading,
     historyLoading,
+    reflogLoading,
     commitDiffLoading,
     stashesLoading,
     worktreesLoading,
@@ -2131,6 +2427,9 @@ onBeforeUnmount(() => {
     cherryPickModalShown,
     worktreeModalShown,
     lfsTrackModalShown,
+    externalEditorModalShown,
+    blameModalShown,
+    reflogModalShown,
     pullRequestModalShown,
     squashModalShown,
     publishModalShown,
@@ -2152,6 +2451,7 @@ onBeforeUnmount(() => {
     cherryPickForm,
     worktreeForm,
     lfsTrackForm,
+    externalEditorForm,
     pullRequestForm,
     squashForm,
     publishForm,
@@ -2169,6 +2469,8 @@ onBeforeUnmount(() => {
     stagedCount,
     unstagedCount,
     workingChanges,
+    untrackedChanges,
+    untrackedCount,
     allChangesIncluded,
     someChangesIncluded,
     conflictedChanges,
@@ -2201,6 +2503,7 @@ onBeforeUnmount(() => {
     repositoryGroupingOptions,
     repositoryGroups,
     branchColumns,
+    remoteBranchColumns,
     worktreeColumns,
     submoduleColumns,
     remoteColumns,
@@ -2230,6 +2533,7 @@ onBeforeUnmount(() => {
     remoteBindingLabel,
     remoteAuthenticationLabel,
     reportError,
+    clearLastError,
     updateAppLocale,
     updateColorMode,
     openRepositoryAction,
@@ -2253,23 +2557,32 @@ onBeforeUnmount(() => {
     cloneRepository,
     initRepository,
     loadDiff,
+    openFileBlame,
     applyDiffHunk,
     loadHistory,
+    openReflog,
     loadWorktrees,
     loadSubmodules,
     loadLfsStatus,
+    loadExternalEditor,
     loadCommitDiff,
     setChangeIncluded,
     stageAll,
     unstageAll,
     confirmDiscardChanges,
     discardSelectedChange,
+    confirmCleanUntracked,
     refreshAfterGitConflict,
+    openExternalEditorModal,
+    saveExternalEditor,
+    confirmClearExternalEditor,
+    openConflictedFilesInExternalEditor,
     commitMessage,
     amendLastCommit,
     setAmendLastCommit,
     commitChanges,
     checkoutBranch,
+    checkoutRemoteBranch,
     createBranch,
     openRenameBranchModal,
     renameBranch,
