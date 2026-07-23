@@ -1,6 +1,6 @@
 # 开发状态与交接说明
 
-最后更新：2026-07-22
+最后更新：2026-07-23
 
 这份文档记录当前可交付范围、核心交互约定、已完成验证和下一步工作。它面向继续开发者；不要仅凭 UI 文案推断 Git 行为，应同时检查对应的 Rust command 和 `GitCore`。
 
@@ -12,7 +12,9 @@
 - 本地仓库侧栏可在手动分组、远端组织 / 用户、最近使用三种视图间切换。手动分组可逐仓库编辑并持久化；远端归属优先使用 `origin`，最近使用只在用户实际打开仓库时更新。
 - 工作区状态、文件 diff、按文件暂存/取消暂存、全部加入/移出提交、按 hunk 暂存/取消暂存、丢弃改动（有确认）。
 - 创建提交与 amend；无首个提交（unborn）仓库可正确取消暂存，不依赖 `HEAD`。
-- 历史、stash、分支、merge / rebase / cherry-pick / revert / reset、tag、worktree、子模块和 Git LFS 状态入口。
+- 历史、stash、分支（包括已获取的远程跟踪分支；可创建本地跟踪分支并切换）、merge / rebase / cherry-pick / revert / reset、tag、worktree、子模块和 Git LFS 状态入口。切换分支前如有本地改动，会提供暂存后切换、直接切换或取消。
+- 单文件 Blame、Reflog 恢复记录，以及预览后强确认的未跟踪文件清理（不会删除已忽略文件）。
+- 冲突文件可交给应用本地配置的外部编辑器处理；用户返回后刷新、暂存并继续或中止原 Git 操作。
 - remote 管理，以及按 ahead/behind 状态收敛为 Fetch / Pull / Push 的一个主按钮；force-with-lease 保留在次级确认入口。
 
 ### 认证与代码托管
@@ -63,6 +65,9 @@
 - `RepositoryRecord` 的 `group`、`host`、`namespace` 与 `lastOpenedAt` 是向后兼容的持久化字段。注册仓库时必须保留这些字段；存储上限为 200，避免手动分组的仓库被旧的“最近 40 个”策略静默淘汰。
 - `list_accounts` 只能返回缓存的 `AccountProfile.status`，不能在路由加载时调用 CLI、SSH agent 或钥匙串。耗时检测必须经 `refresh_account_statuses` 的后台 worker，并在结果回来后按账号 ID 合并；刷新期间若账号被删除，不能将其重新写入。
 
+- 外部冲突编辑器只使用应用元数据中保存的可执行文件和独立参数；冲突文件会先验证仍位于仓库内，再作为独立进程参数传入。不得通过 Git 或仓库本地 mergetool 配置拼接或执行 shell 命令。编辑器启动后不等待其退出，用户完成处理后必须刷新状态、暂存文件，再继续操作。
+- 未跟踪文件清理始终先使用 Git dry-run 预览；执行阶段只使用正常 clean 语义删除未跟踪且非忽略的文件/目录，必须有明确的不可撤销确认。
+
 ### 桌面调试入口
 
 - 开发服务器固定使用高位端口：Vite 为 `51420`，远程主机场景下的 HMR 为 `51421`。不要恢复默认的 `1420`；修改端口时必须同时更新 `vite.config.ts`、`src-tauri/tauri.conf.json` 的 `devUrl`，以及 CSP 中对应的 HTTP / WebSocket 地址。生产 `csp` 只放行本地开发地址；`devCsp` 单独以 `ws:` 放行 `TAURI_DEV_HOST` 的 HMR，不能把这个开发期宽松规则复制到生产 CSP。
@@ -72,10 +77,10 @@
 
 ## 已完成验证
 
-2026-07-22 的回归结果：
+2026-07-23 的回归结果：
 
 - `pnpm build`：通过（Vue 类型检查与 Vite 打包）。
-- `cargo test --manifest-path src-tauri/Cargo.toml`：98/98 通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：105/105 通过。
 - `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`：无告警。
 - Windows `x86_64-pc-windows-msvc`：生产的凭据与进程树模块已在 `-D warnings` 下完成 API 编译检查，覆盖 Job Object 与 capability ACL 代码。本 Linux 主机不能直接完成 Tauri 应用级交叉检查，因为 Tauri 的 Windows 资源步骤需要 `llvm-rc`；完整 Windows 包必须在具备 Windows SDK 的 Windows CI / 主机上验证。
 - 代码审查后新增覆盖：控制字符提交标题的历史解析、普通相对路径 remote（包括含 `@` 的本地路径）、`file://host/...` 不关联 Endpoint、所有可解析 remote 的 URL 脱敏、`ext::` remote 拒绝、Git 子进程认证环境清理、HTTP 凭据拒绝、askpass authority（显式默认端口 / IPv6）匹配、密码提示中的已回填用户名、一次性 askpass capability 消费与 capability 账号引用校验、PAT Git 命令的 hook 禁用、SSH 状态探测超时、并发 Clone destination lease、linked worktree 的双路径 operation lease、同一仓库的全部写入 Git / 平台上下文 operation lease、remote 名复用的遗留 binding 清理、GitHub Endpoint 的 gh API 路由一致性、无账号 Clone 的 URL 前置校验、Windows / POSIX 的 `c:` remote 区分、SSH/CLI/系统 helper 账号不会成为 Git remote 的指定 profile、CLI/GitHub 子进程并发排空 stdout/stderr 与可过期的清理 permit、Unix process group / Windows Job Object 子树清理、Windows askpass capability DACL、macOS 目录同步兼容、AdapterContext 端点一致性、主题 IPC capability、浏览器演示分支与 remote 存在性保护、损坏 profile store 备份恢复、前向 schema 保护、owner-only profile store、最近打开仓库前移，以及 remote 双 URL binding 校验与 pending clone / publish 的 authority + slug / `HEAD + slug` 身份校验。
@@ -87,6 +92,7 @@
   - 未跟踪文件 → 单文件暂存 → 单文件取消暂存；
   - 部分选择状态 → 全部加入提交 → 全部移出提交；
   - 暂存后右侧显示 staged diff，取消暂存后状态和提交按钮同步更新。
+- 新增 GitCore 真实仓库覆盖：Blame、Reflog、未跟踪文件 clean 的 dry-run 与执行，以及真实 merge 冲突下由配置的无 Shell 外部编辑器接收冲突文件路径。
 
 测试没有创建提交。结束测试前应运行 `git diff --cached --name-only`，确保输出为空；不要用 `reset --hard` 清理测试状态。
 
@@ -111,9 +117,11 @@ XDG_DATA_HOME=/tmp/bkm-e2e-data pnpm tauri dev
 1. 已有 `HEAD` 的仓库：修改文件、暂存、取消暂存、提交前确认 diff 来源正确。
 2. 无 `HEAD` 的新仓库：添加文件、暂存、取消暂存，确认文件仍在工作区。
 3. 有部分暂存的文件：确认三态勾选先补全暂存，再可取消全部暂存。
-4. 有 remote 的仓库：主按钮分别在落后、领先、同步时呈现 Pull、Push、Fetch；force push 仍需二次确认。
+4. 有 remote 的仓库：主按钮分别在落后、领先、同步时呈现 Pull、Push、Fetch；在“分支与远程”中获取远程分支后，确认 `remote/branch` 可创建对应本地跟踪分支，并在有本地改动时正确显示暂存 / 直接切换 / 取消；force push 仍需二次确认。
 5. 破坏性操作：取消确认后不得改变 index 或工作区。
 6. 仓库侧栏：分别切换手动分组、远端组织 / 用户、最近使用；编辑分组、留空取消分组，重启后确认手动分组仍在。确认列表刷新不改变最近使用顺序；首次打开有 remote 的仓库后，组织归属与最近使用均正确更新。
+7. 冲突工作流：配置外部编辑器（例如 `code` 与单独一行的 `--wait`），制造 merge / rebase / cherry-pick 冲突；确认应用仅打开冲突文件，回到应用刷新、暂存后可继续或中止。
+8. Clean：创建未跟踪文件和目录，先检查预览和确认文案，再确认只删除未跟踪、非忽略文件；取消确认时文件必须保留。
 
 ## 后续优先级
 
@@ -125,9 +133,10 @@ XDG_DATA_HOME=/tmp/bkm-e2e-data pnpm tauri dev
 
 ### P1：工作流完整度
 
-- 提供真正的冲突编辑/外部编辑器衔接；当前仅检测冲突并支持继续/中止 Git 操作。
 - 改善二进制、图片和大 diff 的预览与性能策略；当前没有文本 diff 时只显示明确占位。
 - 为提交过程增加 hook 输出/失败定位的可视化回归。
+- 在保持安全边界的前提下，逐步增加 Git 配置管理、交互式 rebase、sparse-checkout、bisect、签名提交/标签和补丁邮件流等专业工作流。
+- 扩展子模块与 LFS 的完整生命周期，而不把网络认证或仓库本地 hook/配置的执行权交给前端。
 
 ### P2：平台能力
 
