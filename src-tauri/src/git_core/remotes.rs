@@ -6,6 +6,45 @@ use super::validation::*;
 use super::*;
 
 impl GitCore {
+    /// Builds a protected environment for operations intentionally delegated
+    /// to the user's normal Git credential manager. Repository-local helpers
+    /// are never trusted: read only system/global `credential.*` values, then
+    /// reapply them at command scope after clearing lower-priority helpers.
+    pub(crate) fn unbound_network_environment(&self) -> Result<GitEnvironment, AppError> {
+        let mut trusted_credential_configuration = Vec::new();
+        for scope in ["--system", "--global"] {
+            let output = self.execute(
+                None,
+                &os_arguments(&[
+                    "config",
+                    scope,
+                    "--includes",
+                    "--null",
+                    "--get-regexp",
+                    "^credential\\..*$",
+                ]),
+                &GitEnvironment::default(),
+            )?;
+            if output.status.success() {
+                trusted_credential_configuration
+                    .extend(parse_trusted_credential_configuration(&output.stdout)?);
+            } else if output.status.code() != Some(1) {
+                return Err(git_command_error("读取系统凭据配置", &output));
+            }
+        }
+        if trusted_credential_configuration.len() > 128 {
+            return Err(AppError::new(
+                "unsafe_git_config",
+                "系统凭据配置数量过多，拒绝执行网络操作。",
+            ));
+        }
+        let mut environment = GitEnvironment::new();
+        environment.isolate_network_transport_and_disable_hooks_with_trusted_credentials(
+            &trusted_credential_configuration,
+        );
+        Ok(environment)
+    }
+
     /// Lists tags with their object IDs, newest first according to Git's
     /// creator date ordering.
     pub fn tags(&self, repository: &Path) -> Result<Vec<TagInfo>, AppError> {
@@ -34,12 +73,10 @@ impl GitCore {
     ) -> Result<(), AppError> {
         validate_ref_name(name, "标签名")?;
         if let Some(target) = target {
-            validate_ref_name(target, "标签目标")?;
+            validate_revision(target, "标签目标")?;
         }
         if let Some(message) = message {
-            if message.trim().is_empty() {
-                return Err(AppError::new("invalid_tag_message", "注释标签信息不能为空"));
-            }
+            validate_tag_message(message)?;
         }
 
         let mut arguments = vec![OsString::from("tag")];
@@ -89,11 +126,9 @@ impl GitCore {
 
         let endpoints = CodeHostEndpoint::builtin();
         let mut remotes = Vec::new();
-        for name in output_text(&output.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
+        let names = std::str::from_utf8(&output.stdout)
+            .map_err(|_| AppError::new("git_parse_error", "无法解析远程仓库名称"))?;
+        for name in names.lines().map(str::trim).filter(|name| !name.is_empty()) {
             let fetch_url = self.remote_url(repository, name, false)?;
             let push_url = self.remote_url(repository, name, true)?;
             let parsed = parse_remote_url(&fetch_url);
@@ -131,12 +166,25 @@ impl GitCore {
         self.remote_url(repository, name, push)
     }
 
+    /// Returns every effective URL Git would use for one remote operation.
+    /// A push remote may deliberately mirror to several destinations; callers
+    /// that authorize a credential must validate each of them rather than
+    /// silently checking only the first URL.
+    pub fn remote_urls_for_operation(
+        &self,
+        repository: &Path,
+        name: &str,
+        push: bool,
+    ) -> Result<Vec<String>, AppError> {
+        self.remote_urls(repository, name, push)
+    }
+
     /// Adds a remote.  URLs containing an HTTP(S) username, password, query,
     /// or fragment are rejected to ensure a PAT cannot become Git config.
     pub fn add_remote(&self, repository: &Path, name: &str, url: &str) -> Result<(), AppError> {
         validate_remote_name(name)?;
-        validate_git_remote_url(url)?;
-        let arguments = os_arguments(&["remote", "add", name, url]);
+        let url = validate_git_remote_url(url)?;
+        let arguments = os_arguments(&["remote", "add", name, &url]);
         self.run(
             Some(repository),
             &arguments,
@@ -155,7 +203,7 @@ impl GitCore {
         kind: RemoteUrlKind,
     ) -> Result<(), AppError> {
         validate_remote_name(name)?;
-        validate_git_remote_url(url)?;
+        let url = validate_git_remote_url(url)?;
         let mut arguments = os_arguments(&["remote", "set-url"]);
         if kind == RemoteUrlKind::Push {
             arguments.push(OsString::from("--push"));
@@ -171,27 +219,38 @@ impl GitCore {
         Ok(())
     }
 
-    /// Reject repository-local configuration that can execute a credential
-    /// helper or inject transport credentials. Local `.git/config` belongs to
-    /// the opened repository, so it is not a trusted source for an
-    /// application-selected account. Global/system helpers remain available
-    /// only for an unscoped URL-based fallback, never for a selected profile.
+    /// Reject repository-scoped configuration that can execute a credential
+    /// helper or inject transport credentials. This reads the effective local
+    /// and worktree scopes with global/system configuration disabled, so a
+    /// linked worktree's `config.worktree` cannot bypass the same boundary.
     pub fn ensure_network_configuration_is_safe(&self, repository: &Path) -> Result<(), AppError> {
+        let repository_root = self.repository_root(repository)?;
+        if !paths_match(&repository_root, repository) {
+            return Err(AppError::new(
+                "repository_root_required",
+                "网络操作必须从仓库根目录执行。",
+            ));
+        }
         let arguments = os_arguments(&[
             "config",
-            "--local",
+            "--includes",
             "--null",
             "--name-only",
             "--get-regexp",
             ".",
         ]);
-        let output = self.execute(Some(repository), &arguments, &GitEnvironment::default())?;
+        let environment = GitEnvironment::new()
+            .with_variable("GIT_CONFIG_NOSYSTEM", "1")
+            .with_variable("GIT_CONFIG_GLOBAL", DISABLED_GIT_HOOKS_PATH);
+        let output = self.execute(Some(repository), &arguments, &environment)?;
         if output.status.success() {
-            let unsafe_key = output
-                .stdout
-                .split(|byte| *byte == b'\0')
-                .filter_map(|key| std::str::from_utf8(key).ok())
-                .any(is_unsafe_network_config_key);
+            let unsafe_key = output.stdout.split(|byte| *byte == b'\0').any(|key| {
+                std::str::from_utf8(key)
+                    .map(is_unsafe_network_config_key)
+                    // A repository config with a non-UTF-8 key cannot be
+                    // safely classified, so fail closed before networking.
+                    .unwrap_or(true)
+            });
             return if unsafe_key {
                 Err(AppError::new(
                     "unsafe_git_config",
@@ -259,4 +318,40 @@ impl GitCore {
             tags: self.tags(repository)?,
         })
     }
+}
+
+fn parse_trusted_credential_configuration(raw: &[u8]) -> Result<Vec<(String, String)>, AppError> {
+    let mut configuration = Vec::new();
+    for record in raw
+        .split(|byte| *byte == b'\0')
+        .filter(|record| !record.is_empty())
+    {
+        let Some(separator) = record.iter().position(|byte| *byte == b'\n') else {
+            return Err(AppError::new(
+                "unsafe_git_config",
+                "系统凭据配置格式无效，拒绝执行网络操作。",
+            ));
+        };
+        let key = std::str::from_utf8(&record[..separator]).map_err(|_| {
+            AppError::new(
+                "unsafe_git_config",
+                "系统凭据配置格式无效，拒绝执行网络操作。",
+            )
+        })?;
+        let value = std::str::from_utf8(&record[separator + 1..]).map_err(|_| {
+            AppError::new(
+                "unsafe_git_config",
+                "系统凭据配置格式无效，拒绝执行网络操作。",
+            )
+        })?;
+        if !key.to_ascii_lowercase().starts_with("credential.") || key.contains(['\0', '\r', '\n'])
+        {
+            return Err(AppError::new(
+                "unsafe_git_config",
+                "系统凭据配置格式无效，拒绝执行网络操作。",
+            ));
+        }
+        configuration.push((key.to_owned(), value.to_owned()));
+    }
+    Ok(configuration)
 }

@@ -8,7 +8,9 @@ pub fn get_file_diff(
     staged: bool,
 ) -> Result<String, AppError> {
     let repository = repository_root(&repository_path)?;
-    let paths = (!path.trim().is_empty()).then_some(path);
+    // Git permits filenames containing only whitespace. Only an actual empty
+    // IPC value requests a repository-wide diff.
+    let paths = (!path.is_empty()).then_some(path);
     GitCore::new().diff(
         &repository,
         &DiffOptions {
@@ -37,20 +39,41 @@ pub fn preview_clean_untracked(
     state: State<'_, AppState>,
 ) -> Result<CleanUntrackedPreview, AppError> {
     let repository = repository_root(&repository_path)?;
+    let _repository_operation_lease =
+        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
     let git = GitCore::new();
-    // Capture the precise file set before producing the display text. Files
-    // created afterward can appear in the preview but are never included in
-    // the one-shot confirmation token.
+    // Generate the display text from the exact leaf paths captured in the
+    // confirmation token. A broad `git clean -nd` can collapse an untracked
+    // directory into one display line while status lists its children, which
+    // would make the confirmation authorize paths the user did not see.
     let paths = git
         .status(&repository)?
         .entries
         .into_iter()
         .filter(|entry| entry.index_status.is_empty() && entry.worktree_status == "?")
         .map(|entry| entry.path)
-        .collect();
-    let preview = git.preview_clean_untracked(&repository)?;
+        .collect::<Vec<_>>();
+    // The frontend intentionally treats an empty preview as a no-op. Do not
+    // ask the fingerprint validator to authorize an empty path list: that
+    // input is invalid for destructive operations, but perfectly valid for a
+    // read-only preview.
+    if paths.is_empty() {
+        return Ok(CleanUntrackedPreview {
+            preview: String::new(),
+            confirmation: String::new(),
+        });
+    }
+    // Capture identities before generating the preview. A separate process
+    // cannot replace a reviewed path during the preview and have that new
+    // object become the one authorized by this confirmation token.
+    let fingerprints = git.capture_clean_untracked_path_fingerprints(&repository, &paths)?;
+    let preview = git.preview_clean_untracked_paths(&repository, &paths)?;
+    // The preview command itself can take long enough for a filesystem change
+    // to occur. Refuse to issue a token unless it still represents the exact
+    // filesystem objects captured before rendering the display text.
+    git.validate_clean_untracked_path_fingerprints(&repository, &fingerprints)?;
     let confirmation =
-        state.issue_clean_untracked_confirmation(&repository.to_string_lossy(), paths)?;
+        state.issue_clean_untracked_confirmation(&repository.to_string_lossy(), fingerprints)?;
     Ok(CleanUntrackedPreview {
         preview,
         confirmation,
@@ -66,9 +89,10 @@ pub fn clean_untracked(
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    let paths =
+    let fingerprints =
         state.take_clean_untracked_confirmation(&repository.to_string_lossy(), &confirmation)?;
-    GitCore::new().clean_untracked_paths(&repository, &paths)?;
+    let git = GitCore::new();
+    git.clean_untracked_paths_with_fingerprints(&repository, &fingerprints)?;
     snapshot_for(&state, &repository)
 }
 

@@ -45,6 +45,7 @@ pub fn unstage_paths(
 #[tauri::command]
 pub fn apply_patch(
     repository_path: String,
+    path: String,
     patch: String,
     reverse: bool,
     state: State<'_, AppState>,
@@ -52,7 +53,7 @@ pub fn apply_patch(
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    GitCore::new().apply_patch(&repository, &patch, reverse)?;
+    GitCore::new().apply_patch(&repository, &path, &patch, reverse)?;
     snapshot_for(&state, &repository)
 }
 

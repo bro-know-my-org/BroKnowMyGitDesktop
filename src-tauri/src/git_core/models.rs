@@ -1,4 +1,3 @@
-use super::validation::*;
 use super::*;
 
 /// Options for cloning a worktree repository.
@@ -74,20 +73,6 @@ pub struct RepositorySnapshot {
     pub remote_branches: Vec<RemoteBranchInfo>,
     pub remotes: Vec<RemoteProfile>,
     pub tags: Vec<TagInfo>,
-}
-
-pub(super) fn fetch_arguments(options: &FetchOptions) -> Result<Vec<OsString>, AppError> {
-    validate_remote_name(&options.remote)?;
-    for refspec in &options.refspecs {
-        validate_refspec(refspec)?;
-    }
-    let mut arguments = vec![OsString::from("fetch")];
-    if options.prune {
-        arguments.push(OsString::from("--prune"));
-    }
-    arguments.push(OsString::from(&options.remote));
-    arguments.extend(options.refspecs.iter().map(OsString::from));
-    Ok(arguments)
 }
 
 pub(super) fn command_arguments(

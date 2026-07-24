@@ -40,16 +40,7 @@ impl GitEnvironment {
     /// config; an empty helper resets the configured helper list before Git
     /// could execute a repository-provided `credential.helper = !...` value.
     pub fn isolate_network_credentials(&mut self) {
-        const CONFIGURATION: [(&str, &str); 6] = [
-            ("credential.helper", ""),
-            ("http.extraheader", ""),
-            ("http.proxy", ""),
-            ("http.sslverify", "true"),
-            ("http.cookiefile", ""),
-            ("http.savecookies", "false"),
-        ];
-        self.disable_ambient_network_configuration();
-        self.set_network_credential_configuration(&CONFIGURATION);
+        self.isolate_network_credentials_and_disable_hooks();
     }
 
     /// Isolate an app-managed HTTPS credential and prevent repository or
@@ -57,7 +48,7 @@ impl GitEnvironment {
     /// hook runs inside Git's process tree and is not a trusted recipient of
     /// a PAT authorization token.
     pub fn isolate_network_credentials_and_disable_hooks(&mut self) {
-        const CONFIGURATION: [(&str, &str); 7] = [
+        const CONFIGURATION: [(&str, &str); 19] = [
             ("credential.helper", ""),
             ("http.extraheader", ""),
             ("http.proxy", ""),
@@ -65,9 +56,75 @@ impl GitEnvironment {
             ("http.cookiefile", ""),
             ("http.savecookies", "false"),
             ("core.hooksPath", DISABLED_GIT_HOOKS_PATH),
+            ("core.fsmonitor", "false"),
+            ("core.gitProxy", ""),
+            ("core.editor", ""),
+            ("sequence.editor", ""),
+            ("core.attributesFile", DISABLED_GIT_HOOKS_PATH),
+            // An explicit protocol allowlist remains in force even if a
+            // repository-local config file changes after its preflight.
+            ("protocol.allow", "never"),
+            ("protocol.http.allow", "always"),
+            ("protocol.https.allow", "always"),
+            ("protocol.ssh.allow", "always"),
+            ("protocol.git.allow", "always"),
+            ("protocol.file.allow", "always"),
+            ("protocol.ext.allow", "never"),
         ];
         self.disable_ambient_network_configuration();
+        // A fixed command takes precedence over a repository-local
+        // core.sshCommand without turning the normal SSH transport into an
+        // empty executable name.
+        self.set("GIT_SSH_COMMAND", "ssh");
         self.set_network_credential_configuration(&CONFIGURATION);
+    }
+
+    /// Neutralize repository-controlled transport and hook configuration for
+    /// a network operation that intentionally uses the user's normal Git
+    /// credential source. The leading empty helper clears every repository
+    /// helper before the supplied global/system values are appended at
+    /// command scope.
+    pub(super) fn isolate_network_transport_and_disable_hooks_with_trusted_credentials(
+        &mut self,
+        trusted_credential_configuration: &[(String, String)],
+    ) {
+        const CONFIGURATION: [(&str, &str); 18] = [
+            ("http.extraheader", ""),
+            ("http.proxy", ""),
+            ("http.sslverify", "true"),
+            ("http.cookiefile", ""),
+            ("http.savecookies", "false"),
+            ("core.hooksPath", DISABLED_GIT_HOOKS_PATH),
+            ("core.fsmonitor", "false"),
+            ("core.gitProxy", ""),
+            ("core.editor", ""),
+            ("sequence.editor", ""),
+            ("core.attributesFile", DISABLED_GIT_HOOKS_PATH),
+            ("protocol.allow", "never"),
+            ("protocol.http.allow", "always"),
+            ("protocol.https.allow", "always"),
+            ("protocol.ssh.allow", "always"),
+            ("protocol.git.allow", "always"),
+            ("protocol.file.allow", "always"),
+            ("protocol.ext.allow", "never"),
+        ];
+        // The selected credential helpers are re-added below at command
+        // scope, so no unrelated global/system transport or URL rewrite
+        // configuration needs to remain visible to this Git child.
+        self.disable_ambient_network_configuration();
+        let mut configuration = CONFIGURATION.to_vec();
+        // An empty helper resets lower-priority helper lists, including a
+        // `credential.<url>.helper = !...` added to repository config after
+        // the preflight scan. The selected global/system settings below are
+        // then the only helpers this child can execute.
+        configuration.push(("credential.helper", ""));
+        configuration.extend(
+            trusted_credential_configuration
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
+        self.set("GIT_SSH_COMMAND", "ssh");
+        self.set_network_credential_configuration(&configuration);
     }
 
     /// A selected account is an explicit authorization decision. Global and
@@ -78,6 +135,11 @@ impl GitEnvironment {
     fn disable_ambient_network_configuration(&mut self) {
         self.set("GIT_CONFIG_NOSYSTEM", "1");
         self.set("GIT_CONFIG_GLOBAL", DISABLED_GIT_HOOKS_PATH);
+        // Unknown transports otherwise use Git's `user` policy, which can be
+        // enabled by an inherited environment. Never let a remote race turn a
+        // credential-bearing command into a custom `git-remote-*` helper.
+        self.set("GIT_PROTOCOL_FROM_USER", "0");
+        self.set("GIT_ALLOW_PROTOCOL", "http:https:ssh:git:git+ssh:file");
     }
 
     pub(super) fn set_network_credential_configuration(&mut self, configuration: &[(&str, &str)]) {
@@ -95,6 +157,26 @@ impl GitEnvironment {
     }
 }
 
+/// Returns a platform-independent no-op editor backed by this packaged
+/// application binary. Git's conventional `true` helper is not available in
+/// every Git-for-Windows GUI environment, while batch files would route
+/// repository-controlled paths through `cmd.exe`.
+pub(super) fn noninteractive_git_editor_environment() -> Result<GitEnvironment, AppError> {
+    let executable = std::env::current_exe()
+        .map_err(|_| AppError::new("git_editor_unavailable", "无法配置 Git 非交互编辑器。"))?;
+    let executable = executable
+        .to_str()
+        .ok_or_else(|| AppError::new("git_editor_unavailable", "无法配置 Git 非交互编辑器。"))?;
+    // Git editor values are command strings. POSIX-style single quoting is
+    // understood by Git's shell launcher on Unix and Git for Windows; escape
+    // the only character that may terminate the quote.
+    let executable = executable.replace('\'', "'\"'\"'");
+    Ok(GitEnvironment::new().with_variable(
+        "GIT_EDITOR",
+        format!("'{executable}' {GIT_NOOP_EDITOR_ARGUMENT}"),
+    ))
+}
+
 /// Every Git child starts from a credential-neutral environment. A parent
 /// shell, IDE, or another app process must not silently choose an askpass
 /// program or inject an alternate credential helper into a resolved operation.
@@ -102,14 +184,31 @@ pub(super) fn apply_git_environment(command: &mut Command, environment: &GitEnvi
     for name in [
         "GIT_ASKPASS",
         "SSH_ASKPASS",
+        "GIT_SSL_NO_VERIFY",
+        "GIT_SSL_VERSION",
+        "GIT_SSL_CIPHER_LIST",
+        "GIT_SSL_CERT",
+        "GIT_SSL_KEY",
+        "GIT_SSL_CERT_PASSWORD_PROTECTED",
+        "GIT_SSL_CAINFO",
+        "GIT_SSL_CAPATH",
+        "GIT_SSL_TRY",
         "GIT_SSH",
         "GIT_SSH_COMMAND",
+        "GIT_EXEC_PATH",
+        "GIT_EDITOR",
+        "GIT_SEQUENCE_EDITOR",
+        "VISUAL",
+        "EDITOR",
         "GIT_TERMINAL_PROMPT",
+        "GIT_PROTOCOL_FROM_USER",
+        "GIT_ALLOW_PROTOCOL",
         "GIT_CONFIG_COUNT",
         "GIT_CONFIG_PARAMETERS",
         "GIT_CONFIG_NOSYSTEM",
         "GIT_CONFIG_SYSTEM",
         "GIT_CONFIG_GLOBAL",
+        "GIT_TEMPLATE_DIR",
         "GIT_DIR",
         "GIT_WORK_TREE",
         "GIT_COMMON_DIR",
@@ -124,7 +223,11 @@ pub(super) fn apply_git_environment(command: &mut Command, environment: &GitEnvi
     }
     for (name, _) in std::env::vars_os() {
         let normalized = name.to_string_lossy().to_ascii_uppercase();
-        if normalized.starts_with("GIT_CONFIG_") || normalized.starts_with("BKM_GIT_ASKPASS_") {
+        if normalized.starts_with("GIT_CONFIG_")
+            || normalized.starts_with("BKM_GIT_ASKPASS_")
+            || normalized.starts_with("GIT_HTTP_")
+            || normalized.starts_with("GIT_SSL_")
+        {
             command.env_remove(name);
         }
     }

@@ -1,10 +1,130 @@
+use super::account_support::account_profile_identity_matches;
+use super::credential_support::resolve_clone_credential_target_from_store;
+use super::repository_support::pending_publish_matches_requested_identity;
 use super::support::*;
 use super::*;
+
+struct TestDirectoryCleanup(std::path::PathBuf);
+
+impl Drop for TestDirectoryCleanup {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 #[test]
 fn login_validation_rejects_whitespace() {
     assert!(required_login("work account").is_err());
     assert_eq!(required_login(" account ").unwrap(), "account");
+}
+
+#[test]
+fn account_profile_identity_is_case_insensitive_for_logins() {
+    let account = AccountProfile {
+        id: "account-a".into(),
+        endpoint_id: "github.com".into(),
+        login: "Alice".into(),
+        display_name: None,
+        auth_method: AuthenticationMethod::GhCli,
+        secret_ref: None,
+        status: AuthenticationStatus::Valid,
+        is_default_candidate: false,
+    };
+    let same_identity = AccountProfile {
+        id: "account-b".into(),
+        login: "alice".into(),
+        ..account.clone()
+    };
+    let different_method = AccountProfile {
+        auth_method: AuthenticationMethod::SshAgent,
+        ..same_identity.clone()
+    };
+
+    assert!(account_profile_identity_matches(&account, &same_identity));
+    assert!(!account_profile_identity_matches(
+        &account,
+        &different_method
+    ));
+}
+
+#[test]
+fn clone_destination_lease_key_normalizes_parent_aliases() {
+    let root = std::env::temp_dir().join(format!("bkm-clone-key-{}", Uuid::new_v4()));
+    let _cleanup = TestDirectoryCleanup(root.clone());
+    std::fs::create_dir_all(&root).expect("temporary parent is created");
+    std::fs::create_dir(root.join("child")).expect("alias component is created");
+
+    let canonical = clone_destination_key(&root.join("project"))
+        .expect("a normal destination produces a lease key");
+    let lexical_alias = clone_destination_key(&root.join("child").join("..").join("project"))
+        .expect("a lexical parent alias produces a lease key");
+    assert_eq!(canonical, lexical_alias);
+    assert_eq!(
+        clone_destination_key(&root.join("project").join(".."))
+            .expect_err("a destination cannot end in a parent component")
+            .code(),
+        "invalid_clone_destination"
+    );
+}
+
+#[test]
+fn pinned_clone_resolution_fails_instead_of_switching_accounts() {
+    let endpoint = CodeHostEndpoint::builtin()
+        .into_iter()
+        .find(|endpoint| endpoint.id == "github.com")
+        .expect("GitHub endpoint is built in");
+    let first_account = AccountProfile {
+        id: "clone-account-a".into(),
+        endpoint_id: endpoint.id.clone(),
+        login: "alice".into(),
+        display_name: None,
+        auth_method: AuthenticationMethod::PersonalAccessToken,
+        secret_ref: Some(default_pat_keychain_reference("clone-account-a")),
+        status: AuthenticationStatus::Valid,
+        is_default_candidate: true,
+    };
+    let second_account = AccountProfile {
+        id: "clone-account-b".into(),
+        login: "bob".into(),
+        is_default_candidate: false,
+        ..first_account.clone()
+    };
+    let mut store = ProfileStore {
+        accounts: vec![first_account, second_account],
+        ..ProfileStore::default()
+    };
+    let destination = Path::new("/work/clone-target");
+    let initial = resolve_clone_credential_target_from_store(
+        &store,
+        "https://github.com/example/project.git",
+        destination,
+        Some(&endpoint.id),
+        None,
+        None,
+    )
+    .expect("an automatic selection resolves")
+    .expect("an endpoint selection uses an account");
+    assert_eq!(initial.account_profile_id(), "clone-account-a");
+    assert!(matches!(
+        initial.binding.account_selection,
+        AccountSelection::Auto
+    ));
+
+    store
+        .accounts
+        .retain(|account| account.id != "clone-account-a");
+    let error = match resolve_clone_credential_target_from_store(
+        &store,
+        "https://github.com/example/project.git",
+        destination,
+        Some(&endpoint.id),
+        None,
+        Some("clone-account-a"),
+    ) {
+        Ok(_) => panic!("the recheck must not silently choose the remaining account"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), "account_selection_required");
 }
 
 #[test]
@@ -42,6 +162,22 @@ fn generic_endpoint_needs_only_a_safe_git_host() {
         is_builtin: false,
     };
     assert!(validate_custom_endpoint(&github).is_ok());
+
+    let mut credential_bearing_endpoint = github.clone();
+    credential_bearing_endpoint.web_url = "https://token@example.invalid".into();
+    assert_eq!(
+        validate_custom_endpoint(&credential_bearing_endpoint)
+            .expect_err("Endpoint URLs must never persist userinfo")
+            .code(),
+        "invalid_endpoint"
+    );
+    credential_bearing_endpoint.web_url = "https://github.example.test/?access_token=hidden".into();
+    assert_eq!(
+        validate_custom_endpoint(&credential_bearing_endpoint)
+            .expect_err("Endpoint URLs must not retain query parameters")
+            .code(),
+        "invalid_endpoint"
+    );
 
     let mut mismatched_github = github;
     mismatched_github.api_url = "https://api.other.test/api/v3".into();
@@ -213,7 +349,24 @@ fn unauthenticated_remote_url_cannot_hide_userinfo_or_tokens() {
 }
 
 #[test]
-fn remote_binding_requires_both_effective_operation_urls_to_match() {
+fn scp_style_binding_url_keeps_path_characters_out_of_url_semantics() {
+    let endpoint = CodeHostEndpoint::builtin()
+        .into_iter()
+        .find(|endpoint| endpoint.id == "github.com")
+        .expect("GitHub endpoint is built in");
+    for remote_url in [
+        "git@github.com:example/project.git?release=archive",
+        "git@github.com:example/project.git#archive",
+    ] {
+        assert!(
+            validate_codehost_binding_url(remote_url, &endpoint).is_ok(),
+            "SCP-style SSH paths do not have URI query or fragment semantics"
+        );
+    }
+}
+
+#[test]
+fn remote_binding_requires_all_effective_operation_urls_to_match() {
     let repository_path = "/work/project";
     let store = ProfileStore {
         remote_bindings: vec![RemoteBinding {
@@ -225,26 +378,59 @@ fn remote_binding_requires_both_effective_operation_urls_to_match() {
         ..ProfileStore::default()
     };
 
-    assert!(remote_binding_matches_urls(
+    assert!(remote_binding_matches_all_urls(
         &store,
         repository_path,
         "origin",
-        "https://github.com/example/project.git",
-        "git@github.com:example/project.git",
+        &["https://github.com/example/project.git".into()],
+        &["git@github.com:example/project.git".into()],
     ));
-    assert!(!remote_binding_matches_urls(
+    assert!(!remote_binding_matches_all_urls(
         &store,
         repository_path,
         "origin",
-        "https://gitlab.com/example/project.git",
-        "https://github.com/example/project.git",
+        &["https://gitlab.com/example/project.git".into()],
+        &["https://github.com/example/project.git".into()],
     ));
-    assert!(!remote_binding_matches_urls(
+    assert!(!remote_binding_matches_all_urls(
         &store,
         repository_path,
         "origin",
-        "https://github.com/example/project.git",
-        "https://gitlab.com/example/project.git",
+        &["https://github.com/example/project.git".into()],
+        &[
+            "https://github.com/example/project.git".into(),
+            "https://gitlab.com/example/project.git".into(),
+        ],
+    ));
+}
+
+#[test]
+fn codehost_adapter_requires_all_operation_urls_to_match_endpoint() {
+    let endpoint = CodeHostEndpoint::builtin()
+        .into_iter()
+        .find(|endpoint| endpoint.id == "github.com")
+        .expect("GitHub endpoint is built in");
+
+    assert!(codehost_adapter_urls_match_endpoint(
+        &["https://github.com/example/project.git".into()],
+        &["git@github.com:example/project.git".into()],
+        &endpoint,
+    ));
+    assert!(!codehost_adapter_urls_match_endpoint(
+        &[
+            "https://github.com/example/project.git".into(),
+            "https://gitlab.com/example/project.git".into(),
+        ],
+        &["git@github.com:example/project.git".into()],
+        &endpoint,
+    ));
+    assert!(!codehost_adapter_urls_match_endpoint(
+        &["https://github.com/example/project.git".into()],
+        &[
+            "git@github.com:example/project.git".into(),
+            "git@gitlab.com:example/project.git".into(),
+        ],
+        &endpoint,
     ));
 }
 
@@ -303,6 +489,27 @@ fn pending_clone_identity_requires_the_expected_repository_on_both_urls() {
 }
 
 #[test]
+fn pending_clone_binding_rejects_additional_cross_endpoint_operation_urls() {
+    let endpoint = CodeHostEndpoint::builtin()
+        .into_iter()
+        .find(|endpoint| endpoint.id == "github.com")
+        .expect("GitHub endpoint is built in");
+    let fetch_urls = vec!["https://github.com/octo/project.git".into()];
+    let push_urls = vec![
+        "git@github.com:octo/project.git".into(),
+        "git@gitlab.com:octo/project.git".into(),
+    ];
+
+    assert!(!pending_clone_operation_urls_match(
+        &fetch_urls,
+        &push_urls,
+        &endpoint,
+        "github.com",
+        "octo/project",
+    ));
+}
+
+#[test]
 fn pending_clone_binding_requires_its_selected_profile_to_still_exist() {
     let binding = RemoteBinding {
         repository_path: "/work/project".into(),
@@ -328,6 +535,34 @@ fn pending_clone_binding_requires_its_selected_profile_to_still_exist() {
 
     store.accounts[0].endpoint_id = "github.com".into();
     assert!(binding_selected_account_is_current(&store, &binding));
+}
+
+#[test]
+fn pending_publish_reconciliation_requires_the_original_identity() {
+    let pending = PendingPublish {
+        repository_path: "/work/project".into(),
+        endpoint_id: "github.com".into(),
+        account_profile_id: "account-a".into(),
+        remote_name: "origin".into(),
+        expected_head: "a".repeat(40),
+        expected_repository_slug: "owner/project".into(),
+    };
+
+    assert!(pending_publish_matches_requested_identity(
+        &pending,
+        "github.com",
+        "account-a"
+    ));
+    assert!(!pending_publish_matches_requested_identity(
+        &pending,
+        "github.com",
+        "account-b"
+    ));
+    assert!(!pending_publish_matches_requested_identity(
+        &pending,
+        "github.example.test",
+        "account-a"
+    ));
 }
 
 #[test]

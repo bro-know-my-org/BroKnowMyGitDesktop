@@ -104,7 +104,13 @@ impl GitCore {
     /// Lists initialized, uninitialized, stale, and conflicted submodule
     /// checkouts. Git's leading status marker is retained as a typed state.
     pub fn submodules(&self, repository: &Path) -> Result<Vec<SubmoduleInfo>, AppError> {
-        let arguments = os_arguments(&["submodule", "status", "--recursive"]);
+        let arguments = os_arguments(&[
+            "-c",
+            "core.quotePath=true",
+            "submodule",
+            "status",
+            "--recursive",
+        ]);
         let output = self.run(
             Some(repository),
             &arguments,
@@ -123,25 +129,12 @@ impl GitCore {
         initialize: bool,
         recursive: bool,
     ) -> Result<(), AppError> {
-        self.update_submodules_with_environment(
-            repository,
-            initialize,
+        let repository_root = self.repository_root(repository)?;
+        self.ensure_network_configuration_is_safe(&repository_root)?;
+        self.ensure_initialized_submodule_network_configurations_are_safe(
+            &repository_root,
             recursive,
-            &GitEnvironment::default(),
-        )
-    }
-
-    /// Initializes and/or updates submodules with the credential environment
-    /// selected by the command layer. Askpass additionally verifies the host
-    /// in every prompt before returning a credential.
-    pub fn update_submodules_with_environment(
-        &self,
-        repository: &Path,
-        initialize: bool,
-        recursive: bool,
-        environment: &GitEnvironment,
-    ) -> Result<(), AppError> {
-        self.ensure_network_configuration_is_safe(repository)?;
+        )?;
         let mut arguments = os_arguments(&["submodule", "update"]);
         if initialize {
             arguments.push(OsString::from("--init"));
@@ -149,13 +142,247 @@ impl GitCore {
         if recursive {
             arguments.push(OsString::from("--recursive"));
         }
+        // Submodule update procedures and URLs are repository-controlled.
+        // Do not inherit one parent account's single-use askpass capability;
+        // Git may use the user's ordinary credential source, but repository
+        // transport, hook, and custom-protocol settings are neutralized for
+        // the spawned process.
+        let environment = self.unbound_network_environment()?;
         self.run_network(
-            Some(repository),
+            Some(&repository_root),
             &arguments,
-            environment,
+            &environment,
             "初始化或更新子模块",
         )?;
         Ok(())
+    }
+
+    /// Returns the repository roots that an update can mutate, including the
+    /// parent worktree and every initialized configured submodule reachable at
+    /// the requested depth. Command handlers use these canonical paths for a
+    /// single operation lease before starting Git.
+    pub fn initialized_submodule_repository_paths(
+        &self,
+        repository: &Path,
+        recursive: bool,
+    ) -> Result<Vec<String>, AppError> {
+        Ok(self
+            .initialized_submodule_roots(repository, recursive)?
+            .into_iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect())
+    }
+
+    /// Returns every repository path a submodule update may mutate. In
+    /// addition to initialized child repositories, this reserves configured
+    /// destinations that `--init` can create while the update is running.
+    /// Their lexical paths are rooted at an already canonical parent, so a
+    /// command addressed to the child after initialization acquires the same
+    /// operation-lease key.
+    pub fn submodule_operation_repository_paths(
+        &self,
+        repository: &Path,
+        recursive: bool,
+    ) -> Result<Vec<String>, AppError> {
+        let roots = self.initialized_submodule_roots(repository, recursive)?;
+        let mut paths = roots
+            .iter()
+            .map(|root| root.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for (index, root) in roots.iter().enumerate() {
+            // A non-recursive update only touches the requested superproject
+            // and its direct children. With --recursive, every initialized
+            // child can initialize its own configured descendants as well.
+            if index != 0 && !recursive {
+                continue;
+            }
+            for relative_path in self.configured_submodule_paths(root)? {
+                paths.push(
+                    self.submodule_operation_destination(root, &relative_path)?
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+        paths.sort_unstable();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// A recursive update runs Git inside already initialized nested
+    /// repositories. Read configured paths from `.gitmodules` instead of
+    /// parsing `git submodule status`'s display text, then check each
+    /// initialized child's local configuration before an app-selected
+    /// credential environment can reach those child processes.
+    fn ensure_initialized_submodule_network_configurations_are_safe(
+        &self,
+        repository: &Path,
+        recursive: bool,
+    ) -> Result<(), AppError> {
+        for submodule_root in self
+            .initialized_submodule_roots(repository, recursive)?
+            .into_iter()
+            .skip(1)
+        {
+            self.ensure_network_configuration_is_safe(&submodule_root)?;
+        }
+        Ok(())
+    }
+
+    fn initialized_submodule_roots(
+        &self,
+        repository: &Path,
+        recursive: bool,
+    ) -> Result<Vec<PathBuf>, AppError> {
+        let repository_root = self.repository_root(repository)?;
+        let canonical_repository = fs::canonicalize(&repository_root)
+            .map_err(|_| AppError::new("unsafe_git_config", "无法安全检查子模块网络配置。"))?;
+        let mut roots = vec![canonical_repository.clone()];
+        let mut seen = HashSet::from([canonical_repository]);
+        self.collect_initialized_submodule_roots(&mut roots, &mut seen, recursive)?;
+        Ok(roots)
+    }
+
+    fn collect_initialized_submodule_roots(
+        &self,
+        roots: &mut Vec<PathBuf>,
+        seen: &mut HashSet<PathBuf>,
+        recursive: bool,
+    ) -> Result<(), AppError> {
+        let Some(repository) = roots.last().cloned() else {
+            return Ok(());
+        };
+        let configured_paths = self.configured_submodule_paths(&repository)?;
+        for relative_path in configured_paths {
+            validate_worktree_relative_path(&relative_path)?;
+            let submodule_path = repository.join(&relative_path);
+            let metadata = match fs::symlink_metadata(&submodule_path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => {
+                    return Err(AppError::new(
+                        "unsafe_git_config",
+                        "无法安全检查子模块网络配置。",
+                    ));
+                }
+            };
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(AppError::new(
+                    "unsafe_git_config",
+                    "子模块路径不安全，拒绝使用其网络配置。",
+                ));
+            }
+            let canonical_submodule = fs::canonicalize(&submodule_path)
+                .map_err(|_| AppError::new("unsafe_git_config", "无法安全检查子模块网络配置。"))?;
+            if !canonical_submodule.starts_with(&repository) {
+                return Err(AppError::new(
+                    "unsafe_git_config",
+                    "子模块路径不安全，拒绝使用其网络配置。",
+                ));
+            }
+            let Some(submodule_root) = self
+                .try_repository_root(&canonical_submodule)
+                .map_err(|_| AppError::new("unsafe_git_config", "无法安全检查子模块网络配置。"))?
+            else {
+                // `git submodule deinit` can leave an empty directory behind.
+                continue;
+            };
+            if submodule_root != canonical_submodule || !seen.insert(submodule_root.clone()) {
+                // A plain directory inside its parent resolves back to the
+                // parent's root. Do not recurse into it or create a cycle.
+                continue;
+            }
+            roots.push(submodule_root.clone());
+            if recursive {
+                self.collect_initialized_submodule_roots(roots, seen, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn configured_submodule_paths(&self, repository: &Path) -> Result<Vec<String>, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "config",
+                "--no-includes",
+                "--null",
+                "--file",
+                ".gitmodules",
+                "--get-regexp",
+                "^submodule\\..*\\.path$",
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.success() {
+            return parse_submodule_config_paths(&output.stdout);
+        }
+        if output.status.code() == Some(1) {
+            return Ok(Vec::new());
+        }
+        Err(git_command_error("读取子模块配置", &output))
+    }
+
+    fn submodule_operation_destination(
+        &self,
+        repository: &Path,
+        relative_path: &str,
+    ) -> Result<PathBuf, AppError> {
+        validate_worktree_relative_path(relative_path)?;
+        let destination = repository.join(relative_path);
+        let mut current = repository.to_path_buf();
+        let components = Path::new(relative_path)
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(component) => Some(component),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (index, component) in components.iter().enumerate() {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(AppError::new(
+                        "unsafe_git_config",
+                        "子模块路径不安全，拒绝初始化。",
+                    ));
+                }
+                Ok(metadata) if index + 1 < components.len() && !metadata.is_dir() => {
+                    return Err(AppError::new(
+                        "unsafe_git_config",
+                        "子模块路径不安全，拒绝初始化。",
+                    ));
+                }
+                Ok(metadata) if index + 1 == components.len() && !metadata.is_dir() => {
+                    return Err(AppError::new(
+                        "unsafe_git_config",
+                        "子模块路径不安全，拒绝初始化。",
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Missing components will be created by `git submodule
+                    // update --init`; the canonical superproject root makes
+                    // this future lease key stable.
+                    return Ok(destination);
+                }
+                Err(_) => {
+                    return Err(AppError::new(
+                        "unsafe_git_config",
+                        "无法安全检查子模块路径。",
+                    ));
+                }
+            }
+        }
+        let canonical = fs::canonicalize(&destination)
+            .map_err(|_| AppError::new("unsafe_git_config", "无法安全检查子模块路径。"))?;
+        if !canonical.starts_with(repository) {
+            return Err(AppError::new(
+                "unsafe_git_config",
+                "子模块路径不安全，拒绝初始化。",
+            ));
+        }
+        Ok(canonical)
     }
 
     /// Detects Git LFS without treating an optional LFS installation as a Git
@@ -183,6 +410,13 @@ impl GitCore {
             &os_arguments(&["config", "--get", "filter.lfs.process"]),
             &GitEnvironment::default(),
         )?;
+        let initialized = if config_output.status.success() {
+            true
+        } else if config_output.status.code() == Some(1) {
+            false
+        } else {
+            return Err(git_command_error("检查 Git LFS 配置", &config_output));
+        };
         let files_output = self.run(
             Some(repository),
             &os_arguments(&["lfs", "ls-files", "--name-only"]),
@@ -191,7 +425,7 @@ impl GitCore {
         )?;
         Ok(LfsStatus {
             available: true,
-            initialized: config_output.status.success(),
+            initialized,
             version: Some(output_text(&version_output.stdout).trim().to_owned())
                 .filter(|version| !version.is_empty()),
             files: parse_lfs_files(&files_output.stdout),

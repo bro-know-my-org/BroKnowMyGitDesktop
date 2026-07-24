@@ -4,75 +4,65 @@ use super::models::*;
 use super::validation::*;
 use super::*;
 
+struct PushUpstream {
+    local_branch: String,
+    remote_branch: String,
+}
+
 impl GitCore {
+    /// Reads the current tip of one remote branch without updating local refs.
+    /// Publish reconciliation uses this to prove that a successful-looking
+    /// `gh repo create --push` really delivered the local commit before it
+    /// clears its durable recovery intent.
+    pub(crate) fn remote_branch_tip(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        branch: &str,
+        environment: &GitEnvironment,
+    ) -> Result<Option<String>, AppError> {
+        validate_remote_name(remote_name)?;
+        validate_ref_name(branch, "远程分支名")?;
+        // Publish reconciliation is a network operation too. In particular,
+        // it must not let a repository-local credential helper or transport
+        // setting run just because it is only reading a remote branch tip.
+        self.ensure_network_configuration_is_safe(repository)?;
+        let remote_url = self.remote_url_for_operation(repository, remote_name, false)?;
+        let remote_url = validate_git_remote_url(&remote_url)?;
+        let reference = format!("refs/heads/{branch}");
+        let arguments = network_execution_arguments(os_arguments(&[
+            "ls-remote",
+            "--heads",
+            "--refs",
+            &remote_url,
+            &reference,
+        ]));
+        let output = self.run_network(
+            Some(repository),
+            &arguments,
+            environment,
+            "验证远程发布状态",
+        )?;
+        let output = output_text(&output.stdout);
+        let Some(line) = output.lines().next() else {
+            return Ok(None);
+        };
+        let Some((commit, returned_reference)) = line.split_once('\t') else {
+            return Err(AppError::new("git_parse_error", "无法读取远程分支提交。"));
+        };
+        if returned_reference != reference
+            || !(40..=64).contains(&commit.len())
+            || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::new("git_parse_error", "无法读取远程分支提交。"));
+        }
+        Ok(Some(commit.to_owned()))
+    }
+
     /// Fetches exactly one remote.  The caller must resolve its credentials
     /// before calling this method.
     pub fn fetch(&self, repository: &Path, options: &FetchOptions) -> Result<(), AppError> {
         self.fetch_with_environment(repository, options, &GitEnvironment::default())
-    }
-
-    /// Makes a remote's normal fetch operation include every branch it
-    /// advertises. Git creates a restrictive refspec for `--single-branch`
-    /// clones (and implicitly for shallow clones), which otherwise leaves
-    /// branches absent from both the remote-branch list and `--track`
-    /// checkout.
-    ///
-    /// Branch-tracking refspecs are replaced rather than supplemented:
-    /// retaining an exact single-branch source makes every later `git fetch`
-    /// fail once that branch is deleted on the server, even if a wildcard
-    /// refspec was added alongside it. Non-branch custom fetch rules, such as
-    /// Gerrit change refs, are kept intact.
-    pub fn ensure_remote_fetches_all_branches(
-        &self,
-        repository: &Path,
-        remote_name: &str,
-    ) -> Result<(), AppError> {
-        validate_remote_name(remote_name)?;
-        if !self
-            .remotes(repository)?
-            .iter()
-            .any(|remote| remote.name == remote_name)
-        {
-            return Err(AppError::new("remote_not_found", "找不到该 remote。"));
-        }
-
-        let refspec = all_remote_branches_fetch_refspec(remote_name)?;
-        let config_key = remote_fetch_refspec_config_key(remote_name);
-        let existing = self.execute(
-            Some(repository),
-            &os_arguments(&["config", "--local", "--get-all", &config_key]),
-            &GitEnvironment::default(),
-        )?;
-        if existing.status.success() {
-            let configured = output_text(&existing.stdout);
-            if configured.lines().eq([refspec.as_str()]) {
-                return Ok(());
-            }
-            if configured.lines().any(is_remote_branch_fetch_refspec) {
-                self.run(
-                    Some(repository),
-                    &os_arguments(&[
-                        "config",
-                        "--local",
-                        "--unset-all",
-                        &config_key,
-                        REMOTE_BRANCH_FETCH_REFSPEC_PATTERN,
-                    ]),
-                    &GitEnvironment::default(),
-                    "迁移远程分支获取规则",
-                )?;
-            }
-        } else if existing.status.code() != Some(1) {
-            return Err(git_command_error("读取远程分支获取规则", &existing));
-        }
-
-        self.run(
-            Some(repository),
-            &os_arguments(&["config", "--local", "--add", &config_key, &refspec]),
-            &GitEnvironment::default(),
-            "启用全部远程分支获取",
-        )?;
-        Ok(())
     }
 
     /// Backend-only equivalent of [`Self::fetch`] with a controlled process
@@ -83,8 +73,70 @@ impl GitCore {
         options: &FetchOptions,
         environment: &GitEnvironment,
     ) -> Result<(), AppError> {
+        self.ensure_configured_remote(repository, &options.remote)?;
+        let refspecs = if options.refspecs.is_empty() {
+            self.fetch_refspecs_for_remote(repository, &options.remote)?
+        } else {
+            options.refspecs.clone()
+        };
+        let remote_url = self.remote_url_for_operation(repository, &options.remote, false)?;
+        self.fetch_with_environment_at_url(
+            repository,
+            &FetchOptions {
+                remote: options.remote.clone(),
+                refspecs,
+                prune: options.prune,
+            },
+            &remote_url,
+            environment,
+        )
+    }
+
+    /// Captures the refspecs that a normal fetch would use before credentials
+    /// are selected. The all-branches mapping replaces restrictive
+    /// single-branch mappings, while non-branch namespaces such as Gerrit
+    /// changes remain part of the operation.
+    pub(crate) fn fetch_refspecs_for_remote(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+    ) -> Result<Vec<String>, AppError> {
+        self.ensure_configured_remote(repository, remote_name)?;
         self.ensure_network_configuration_is_safe(repository)?;
-        let arguments = fetch_arguments(options)?;
+        let config_key = remote_fetch_refspec_config_key(remote_name)?;
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["config", "--local", "--get-all", &config_key]),
+            &GitEnvironment::default(),
+        )?;
+        let mut refspecs = vec![all_remote_branches_fetch_refspec(remote_name)?];
+        if output.status.success() {
+            for refspec in output_text(&output.stdout).lines().map(str::trim) {
+                if refspec.is_empty() || is_remote_branch_fetch_refspec(refspec) {
+                    continue;
+                }
+                validate_refspec(refspec)?;
+                refspecs.push(refspec.to_owned());
+            }
+        } else if output.status.code() != Some(1) {
+            return Err(git_command_error("读取远程分支获取规则", &output));
+        }
+        Ok(refspecs)
+    }
+
+    /// Executes a fetch against the exact URL validated during credential
+    /// resolution. This prevents a later rewrite of `remote.<name>.url` from
+    /// changing where an app-selected credential is offered.
+    pub(crate) fn fetch_with_environment_at_url(
+        &self,
+        repository: &Path,
+        options: &FetchOptions,
+        remote_url: &str,
+        environment: &GitEnvironment,
+    ) -> Result<(), AppError> {
+        self.ensure_network_configuration_is_safe(repository)?;
+        let remote_url = validate_git_remote_url(remote_url)?;
+        let arguments = network_execution_arguments(fetch_arguments_for_url(options, &remote_url)?);
         self.run_network(Some(repository), &arguments, environment, "获取远程更新")?;
         Ok(())
     }
@@ -103,15 +155,91 @@ impl GitCore {
         options: &PullOptions,
         environment: &GitEnvironment,
     ) -> Result<(), AppError> {
+        self.ensure_configured_remote(repository, &options.remote)?;
+        let refspec = match options.refspec.clone() {
+            Some(refspec) => refspec,
+            None => self.pull_refspec_for_remote(repository, &options.remote)?,
+        };
+        let remote_url = self.remote_url_for_operation(repository, &options.remote, false)?;
+        self.pull_with_environment_at_url(
+            repository,
+            &PullOptions {
+                remote: options.remote.clone(),
+                refspec: Some(refspec),
+            },
+            &remote_url,
+            environment,
+        )
+    }
+
+    /// Captures the current branch's configured upstream ref before a
+    /// credential-bearing operation is prepared. Passing a raw URL to
+    /// `git pull` bypasses `remote.<name>.fetch`, so omitting this ref would
+    /// otherwise make Git merge that URL's advertised default branch.
+    pub(crate) fn pull_refspec_for_remote(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+    ) -> Result<String, AppError> {
+        self.ensure_configured_remote(repository, remote_name)?;
         self.ensure_network_configuration_is_safe(repository)?;
-        validate_remote_name(&options.remote)?;
-        if let Some(refspec) = options.refspec.as_deref() {
-            validate_refspec(refspec)?;
+        let branch = self.current_branch_name(repository)?;
+        let branch_reference = format!("refs/heads/{branch}");
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "for-each-ref",
+                "--format=%(upstream:remotename)%00%(upstream:remoteref)",
+                &branch_reference,
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if !output.status.success() {
+            return Err(git_command_error("读取当前分支上游", &output));
         }
-        let mut arguments = os_arguments(&["pull", &options.remote]);
-        if let Some(refspec) = options.refspec.as_deref() {
-            arguments.push(OsString::from(refspec));
+
+        let mut records = output
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|record| !record.is_empty());
+        let record = records
+            .next()
+            .ok_or_else(pull_upstream_not_configured_error)?;
+        if records.next().is_some() {
+            return Err(AppError::new("git_parse_error", "无法读取当前分支上游。"));
         }
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\0')
+            .ok_or_else(pull_upstream_not_configured_error)?;
+        let configured_remote = std::str::from_utf8(&record[..separator])
+            .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
+        let refspec = std::str::from_utf8(&record[separator + 1..])
+            .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
+        if configured_remote.is_empty() || refspec.is_empty() {
+            return Err(pull_upstream_not_configured_error());
+        }
+        if configured_remote != remote_name {
+            return Err(AppError::new(
+                "pull_upstream_remote_mismatch",
+                "当前分支没有跟踪所选 remote。",
+            ));
+        }
+        validate_refspec(refspec)?;
+        Ok(refspec.to_owned())
+    }
+
+    /// Pulls from an immutable, previously validated operation URL.
+    pub(crate) fn pull_with_environment_at_url(
+        &self,
+        repository: &Path,
+        options: &PullOptions,
+        remote_url: &str,
+        environment: &GitEnvironment,
+    ) -> Result<(), AppError> {
+        self.ensure_network_configuration_is_safe(repository)?;
+        let remote_url = validate_git_remote_url(remote_url)?;
+        let arguments = network_execution_arguments(pull_arguments_for_url(options, &remote_url)?);
         self.run_network(Some(repository), &arguments, environment, "拉取远程改动")?;
         Ok(())
     }
@@ -130,24 +258,287 @@ impl GitCore {
         options: &PushOptions,
         environment: &GitEnvironment,
     ) -> Result<(), AppError> {
+        self.ensure_configured_remote(repository, &options.remote)?;
+        let remote_urls = self.remote_urls_for_operation(repository, &options.remote, true)?;
+        self.push_with_environment_at_urls(repository, options, &remote_urls, environment)
+    }
+
+    /// Pushes to every URL captured before credential resolution. Git treats
+    /// multiple push URLs as mirrors; running them one at a time preserves
+    /// that behavior while avoiding a mutable remote-name lookup after the
+    /// selected credential environment exists.
+    pub(crate) fn push_with_environment_at_urls(
+        &self,
+        repository: &Path,
+        options: &PushOptions,
+        remote_urls: &[String],
+        environment: &GitEnvironment,
+    ) -> Result<(), AppError> {
         self.ensure_network_configuration_is_safe(repository)?;
         validate_remote_name(&options.remote)?;
+        if remote_urls.is_empty() {
+            return Err(AppError::new("remote_not_found", "找不到该 remote。"));
+        }
         for refspec in &options.refspecs {
             validate_refspec(refspec)?;
         }
-        let mut arguments = vec![OsString::from("push")];
-        if options.set_upstream {
-            arguments.push(OsString::from("--set-upstream"));
+        let (refspecs, upstream) = self.push_refspecs_for_url(repository, options)?;
+        for remote_url in remote_urls {
+            let remote_url = validate_git_remote_url(remote_url)?;
+            let mut arguments = vec![
+                OsString::from("push"),
+                OsString::from("--recurse-submodules=no"),
+            ];
+            if options.force_with_lease {
+                arguments.push(OsString::from("--force-with-lease"));
+            }
+            if options.follow_tags {
+                arguments.push(OsString::from("--follow-tags"));
+            }
+            arguments.push(OsString::from(remote_url.as_str()));
+            arguments.extend(refspecs.iter().map(OsString::from));
+            let arguments = network_execution_arguments(arguments);
+            self.run_network(Some(repository), &arguments, environment, "推送改动")?;
         }
-        if options.force_with_lease {
-            arguments.push(OsString::from("--force-with-lease"));
+        if let Some(upstream) = upstream {
+            self.configure_push_upstream(repository, &options.remote, &upstream)?;
         }
-        if options.follow_tags {
-            arguments.push(OsString::from("--follow-tags"));
-        }
-        arguments.push(OsString::from(&options.remote));
-        arguments.extend(options.refspecs.iter().map(OsString::from));
-        self.run_network(Some(repository), &arguments, environment, "推送改动")?;
         Ok(())
     }
+
+    /// Passing a URL in place of a remote name preserves the credential
+    /// binding, but Git cannot associate that URL with `branch.*.remote`.
+    /// `push.default=upstream` therefore rejects an otherwise valid push.
+    /// Capture the configured upstream and express it as an explicit refspec
+    /// before using the immutable URL. A `--set-upstream` request is also
+    /// converted to an explicit current-branch refspec: the network child
+    /// holds the config lock, then this process records the named remote only
+    /// after the credential-bearing push has completed.
+    fn push_refspecs_for_url(
+        &self,
+        repository: &Path,
+        options: &PushOptions,
+    ) -> Result<(Vec<String>, Option<PushUpstream>), AppError> {
+        if options.set_upstream {
+            let upstream = self.push_upstream_for_url(repository, options)?;
+            let refspec = format!(
+                "refs/heads/{}:refs/heads/{}",
+                upstream.local_branch, upstream.remote_branch
+            );
+            validate_refspec(&refspec)?;
+            return Ok((vec![refspec], Some(upstream)));
+        }
+        if !options.refspecs.is_empty() || !self.push_default_is_upstream(repository)? {
+            return Ok((options.refspecs.clone(), None));
+        }
+        let local_branch = self.current_branch_name(repository)?;
+        let upstream_branch = self.pull_refspec_for_remote(repository, &options.remote)?;
+        let refspec = format!("refs/heads/{local_branch}:{upstream_branch}");
+        validate_refspec(&refspec)?;
+        Ok((vec![refspec], None))
+    }
+
+    fn push_upstream_for_url(
+        &self,
+        repository: &Path,
+        options: &PushOptions,
+    ) -> Result<PushUpstream, AppError> {
+        let local_branch = self.current_branch_name(repository)?;
+        let remote_branch = match options.refspecs.as_slice() {
+            [] => local_branch.clone(),
+            [refspec] => remote_branch_for_push_upstream_refspec(refspec, &local_branch)?,
+            _ => {
+                return Err(AppError::new(
+                    "set_upstream_requires_single_branch",
+                    "设置上游只能推送当前分支到一个远程分支。",
+                ));
+            }
+        };
+        Ok(PushUpstream {
+            local_branch,
+            remote_branch,
+        })
+    }
+
+    fn configure_push_upstream(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        upstream: &PushUpstream,
+    ) -> Result<(), AppError> {
+        let remote_key = format!("branch.{}.remote", upstream.local_branch);
+        let merge_key = format!("branch.{}.merge", upstream.local_branch);
+        let remote_reference = format!("refs/heads/{}", upstream.remote_branch);
+        for (key, value) in [
+            (remote_key.as_str(), remote_name),
+            (merge_key.as_str(), remote_reference.as_str()),
+        ] {
+            self.run(
+                Some(repository),
+                &os_arguments(&["config", "--local", "--replace-all", key, value]),
+                &GitEnvironment::default(),
+                "设置当前分支上游",
+            )?;
+        }
+        Ok(())
+    }
+
+    fn push_default_is_upstream(&self, repository: &Path) -> Result<bool, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["config", "--get", "push.default"]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.code() == Some(1) {
+            return Ok(false);
+        }
+        if !output.status.success() {
+            return Err(git_command_error("读取推送默认规则", &output));
+        }
+        Ok(output_text(&output.stdout)
+            .trim()
+            .eq_ignore_ascii_case("upstream"))
+    }
+
+    /// Git accepts a URL in the positional repository slot for fetch, pull,
+    /// and push. The desktop API accepts a remote *name* only, because its
+    /// credential resolution is bound to one persisted remote configuration.
+    fn ensure_configured_remote(&self, repository: &Path, name: &str) -> Result<(), AppError> {
+        if self
+            .remotes(repository)?
+            .iter()
+            .any(|remote| remote.name == name)
+        {
+            // The name came from a configured remote, but it will later be
+            // interpolated into refspecs. Reject names that Git can store yet
+            // cannot safely use in that generated namespace.
+            validate_remote_name(name)?;
+            Ok(())
+        } else {
+            Err(AppError::new("remote_not_found", "找不到该 remote。"))
+        }
+    }
+}
+
+fn remote_branch_for_push_upstream_refspec(
+    refspec: &str,
+    local_branch: &str,
+) -> Result<String, AppError> {
+    let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
+    let (source, destination) = refspec
+        .split_once(':')
+        .map_or((refspec, None), |(source, destination)| {
+            (source, Some(destination))
+        });
+    let local_reference = format!("refs/heads/{local_branch}");
+    if source != "HEAD" && source != local_branch && source != local_reference {
+        return Err(AppError::new(
+            "set_upstream_requires_current_branch",
+            "设置上游只能推送当前分支。",
+        ));
+    }
+    let destination = destination.unwrap_or(local_branch);
+    if destination.starts_with("refs/") && !destination.starts_with("refs/heads/") {
+        return Err(AppError::new(
+            "set_upstream_requires_remote_branch",
+            "设置上游必须指定一个远程分支。",
+        ));
+    }
+    let remote_branch = destination
+        .strip_prefix("refs/heads/")
+        .unwrap_or(destination);
+    validate_ref_name(remote_branch, "远程分支名")?;
+    Ok(remote_branch.to_owned())
+}
+
+/// Command-scope overrides complement the preflight: a repository config may
+/// still change after it has been inspected. The remote URL itself is passed
+/// positionally, while these transport and hook settings prevent that raced
+/// config from selecting a proxy, SSH command, protocol, or hook helper.
+fn network_execution_arguments(mut arguments: Vec<OsString>) -> Vec<OsString> {
+    let mut protected = Vec::with_capacity(arguments.len() + 30);
+    for (key, value) in [
+        ("http.extraheader", ""),
+        ("http.proxy", ""),
+        ("http.sslverify", "true"),
+        ("core.hooksPath", DISABLED_GIT_HOOKS_PATH),
+        ("core.gitProxy", ""),
+        ("core.fsmonitor", "false"),
+        ("protocol.allow", "never"),
+        ("protocol.http.allow", "always"),
+        ("protocol.https.allow", "always"),
+        ("protocol.ssh.allow", "always"),
+        ("protocol.git.allow", "always"),
+        ("protocol.file.allow", "always"),
+        ("protocol.ext.allow", "never"),
+    ] {
+        protected.push(OsString::from("-c"));
+        protected.push(OsString::from(format!("{key}={value}")));
+    }
+    protected.append(&mut arguments);
+    protected
+}
+
+pub(super) fn fetch_arguments_for_url(
+    options: &FetchOptions,
+    remote_url: &str,
+) -> Result<Vec<OsString>, AppError> {
+    validate_remote_name(&options.remote)?;
+    let remote_url = validate_git_remote_url(remote_url)?;
+    for refspec in &options.refspecs {
+        validate_refspec(refspec)?;
+    }
+    let mut arguments = vec![
+        OsString::from("fetch"),
+        OsString::from("--no-recurse-submodules"),
+    ];
+    if options.prune {
+        arguments.push(OsString::from("--prune"));
+    }
+    arguments.push(OsString::from(remote_url));
+    if options.refspecs.is_empty() {
+        return Err(AppError::new(
+            "fetch_refspec_required",
+            "获取远程更新需要已确认的引用规格。",
+        ));
+    }
+    arguments.extend(options.refspecs.iter().map(OsString::from));
+    Ok(arguments)
+}
+
+fn remote_fetch_refspec_config_key(remote_name: &str) -> Result<String, AppError> {
+    validate_remote_name(remote_name)?;
+    Ok(format!("remote.{remote_name}.fetch"))
+}
+
+fn is_remote_branch_fetch_refspec(refspec: &str) -> bool {
+    let source = refspec.strip_prefix('+').unwrap_or(refspec);
+    source.starts_with("refs/heads/") || source.starts_with("^refs/heads/")
+}
+
+pub(super) fn pull_arguments_for_url(
+    options: &PullOptions,
+    remote_url: &str,
+) -> Result<Vec<OsString>, AppError> {
+    validate_remote_name(&options.remote)?;
+    let remote_url = validate_git_remote_url(remote_url)?;
+    let refspec = options
+        .refspec
+        .as_deref()
+        .ok_or_else(pull_upstream_not_configured_error)?;
+    validate_refspec(refspec)?;
+    Ok(os_arguments(&[
+        "pull",
+        "--no-edit",
+        "--no-recurse-submodules",
+        &remote_url,
+        refspec,
+    ]))
+}
+
+fn pull_upstream_not_configured_error() -> AppError {
+    AppError::new(
+        "pull_upstream_not_configured",
+        "当前分支未配置可拉取的上游。",
+    )
 }

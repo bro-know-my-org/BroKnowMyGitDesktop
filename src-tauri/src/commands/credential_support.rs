@@ -1,32 +1,79 @@
 use super::account_support::*;
 use super::repository_support::*;
 use super::*;
+use crate::domain::CredentialResolution;
+
+/// Credential state and the immutable remote URLs selected before a network
+/// command starts. Git receives these URLs positionally rather than looking
+/// up the mutable remote name again after an account strategy is resolved.
+pub(super) struct NetworkOperationTarget {
+    pub(super) environment: GitEnvironment,
+    pub(super) urls: Vec<String>,
+}
+
+/// A selected Clone identity. Resolving it does not access a PAT; the caller
+/// must hold the returned account's operation lease before materializing the
+/// Git environment that can invoke the askpass helper.
+pub(super) struct CloneCredentialTarget {
+    pub(super) binding: RemoteBinding,
+    account_profile_id: String,
+    resolution: CredentialResolution,
+    account: AccountProfile,
+}
+
+impl CloneCredentialTarget {
+    pub(super) fn account_profile_id(&self) -> &str {
+        &self.account_profile_id
+    }
+
+    pub(super) fn environment(&self) -> Result<GitEnvironment, AppError> {
+        credential_environment_for_resolution(&self.resolution, &self.account)
+    }
+}
 
 /// Resolve an explicitly selected clone identity before a repository exists.
 /// Leaving both optional inputs empty deliberately retains normal system Git
 /// behavior, which is the correct path for public repositories and users who
 /// rely on their existing credential helper.
-pub(super) fn clone_environment(
+pub(super) fn resolve_clone_credential_target(
     state: &AppState,
     remote_url: &str,
     destination: &Path,
     endpoint_id: Option<&str>,
     account_profile_id: Option<&str>,
-) -> Result<(Option<GitEnvironment>, Option<RemoteBinding>), AppError> {
+    pinned_account_profile_id: Option<&str>,
+) -> Result<Option<CloneCredentialTarget>, AppError> {
+    let mut store = state.snapshot()?;
+    let endpoints = store.all_endpoints();
+    refresh_account_statuses_in_place(&mut store.accounts, &endpoints);
+    resolve_clone_credential_target_from_store(
+        &store,
+        remote_url,
+        destination,
+        endpoint_id,
+        account_profile_id,
+        pinned_account_profile_id,
+    )
+}
+
+pub(super) fn resolve_clone_credential_target_from_store(
+    store: &ProfileStore,
+    remote_url: &str,
+    destination: &Path,
+    endpoint_id: Option<&str>,
+    account_profile_id: Option<&str>,
+    pinned_account_profile_id: Option<&str>,
+) -> Result<Option<CloneCredentialTarget>, AppError> {
     let endpoint_id = endpoint_id.map(str::trim).filter(|value| !value.is_empty());
     let account_profile_id = account_profile_id
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
     if endpoint_id.is_none() && account_profile_id.is_none() {
-        return Ok((None, None));
+        return Ok(None);
     }
 
-    let mut store = state.snapshot()?;
     let endpoints = store.all_endpoints();
-    for account in &mut store.accounts {
-        account.status = current_account_status(account, &endpoints);
-    }
 
     let endpoint = match (endpoint_id, account_profile_id) {
         (Some(endpoint_id), _) => endpoints
@@ -60,23 +107,38 @@ pub(super) fn clone_environment(
         endpoint_id: endpoint.id.clone(),
         account_selection: selection,
     };
+    // The persisted binding preserves the caller's Auto/Profile choice. A
+    // second resolution after taking the account-operation lease temporarily
+    // pins the initially selected account, so a concurrent metadata change
+    // cannot silently switch the Clone to a different identity.
+    let resolution_binding = pinned_account_profile_id
+        .map(|account_id| RemoteBinding {
+            account_selection: AccountSelection::Profile(account_id.to_owned()),
+            ..temporary_binding.clone()
+        })
+        .unwrap_or_else(|| temporary_binding.clone());
     let resolution = CredentialBroker.resolve(CredentialResolutionRequest {
         repository_path: &temporary_binding.repository_path,
         remote_name: &temporary_binding.remote_name,
         remote_url,
         endpoint: Some(&endpoint),
         endpoints: &endpoints,
-        bindings: std::slice::from_ref(&temporary_binding),
+        bindings: std::slice::from_ref(&resolution_binding),
         accounts: &store.accounts,
     })?;
     let account = store
         .accounts
         .iter()
         .find(|account| account.id == resolution.account_profile_id)
+        .cloned()
         .ok_or_else(|| AppError::new("account_not_found", "找不到已解析的账号。"))?;
-    let environment = credential_environment_for_resolution(&resolution, account)?;
 
-    Ok((Some(environment), Some(temporary_binding)))
+    Ok(Some(CloneCredentialTarget {
+        binding: temporary_binding,
+        account_profile_id: resolution.account_profile_id.clone(),
+        resolution,
+        account,
+    }))
 }
 
 pub(super) fn network_environment(
@@ -84,11 +146,20 @@ pub(super) fn network_environment(
     repository: &Path,
     remote_name: &str,
     push: bool,
-) -> Result<GitEnvironment, AppError> {
+) -> Result<NetworkOperationTarget, AppError> {
     let git = GitCore::new();
     let repository_record = git.repository_record(repository)?;
-    let raw_remote_url = git.remote_url_for_operation(repository, remote_name, push)?;
-    let parsed_remote = parse_remote_url(&raw_remote_url);
+    let raw_remote_urls = git.remote_urls_for_operation(repository, remote_name, push)?;
+    let raw_remote_url = raw_remote_urls
+        .first()
+        .ok_or_else(|| AppError::new("remote_not_found", "找不到该 remote。"))?;
+    let parsed_remotes = raw_remote_urls
+        .iter()
+        .map(|url| parse_remote_url(url))
+        .collect::<Vec<_>>();
+    let parsed_remote = parsed_remotes
+        .first()
+        .expect("a parsed remote exists for every non-empty URL list");
     // Every remote transport can honor repository-local upload-pack,
     // receive-pack, include, or SSH configuration. Check it before the
     // unauthenticated transport fast path as well.
@@ -96,21 +167,28 @@ pub(super) fn network_environment(
     // `git://` and local-path remotes carry no account identity.  Preserve
     // normal system Git behavior instead of requiring an artificial Endpoint
     // or credential profile for them.
-    if matches!(
-        &parsed_remote.transport,
-        crate::domain::RemoteTransport::Git | crate::domain::RemoteTransport::Local
-    ) {
-        validate_unauthenticated_remote_url(&raw_remote_url)?;
-        return Ok(GitEnvironment::default());
+    if parsed_remotes.iter().all(|parsed| {
+        matches!(
+            &parsed.transport,
+            crate::domain::RemoteTransport::Git | crate::domain::RemoteTransport::Local
+        )
+    }) {
+        for remote_url in &raw_remote_urls {
+            validate_unauthenticated_remote_url(remote_url)?;
+        }
+        return Ok(NetworkOperationTarget {
+            environment: git.unbound_network_environment()?,
+            urls: raw_remote_urls,
+        });
     }
     // Reject cleartext, malformed, and credential-bearing remote URLs before
     // either a selected profile or the unscoped system helper sees them.
-    validate_remote_url_for_credentials(&raw_remote_url, &parsed_remote.transport)?;
+    for (remote_url, parsed_remote) in raw_remote_urls.iter().zip(&parsed_remotes) {
+        validate_remote_url_for_credentials(remote_url, &parsed_remote.transport)?;
+    }
     let mut store = state.snapshot()?;
     let endpoints = store.all_endpoints();
-    for account in &mut store.accounts {
-        account.status = current_account_status(account, &endpoints);
-    }
+    refresh_account_statuses_in_place(&mut store.accounts, &endpoints);
     let binding = store.binding_for(&repository_record.path, remote_name);
     let endpoint = binding
         .as_ref()
@@ -146,19 +224,35 @@ pub(super) fn network_environment(
                 ) => {}
             Some(endpoint) => {
                 if binding.is_some() {
-                    validate_codehost_binding_url(&raw_remote_url, endpoint)?;
+                    for remote_url in &raw_remote_urls {
+                        validate_codehost_binding_url(remote_url, endpoint)?;
+                    }
                 }
-                return Ok(GitEnvironment::default());
+                return Ok(NetworkOperationTarget {
+                    environment: git.unbound_network_environment()?,
+                    urls: raw_remote_urls,
+                });
             }
-            None if binding.is_none() => return Ok(GitEnvironment::default()),
+            None if binding.is_none() => {
+                return Ok(NetworkOperationTarget {
+                    environment: git.unbound_network_environment()?,
+                    urls: raw_remote_urls,
+                });
+            }
             None => {}
+        }
+    }
+
+    if let Some(endpoint) = endpoint.as_ref() {
+        for remote_url in &raw_remote_urls {
+            validate_codehost_binding_url(remote_url, endpoint)?;
         }
     }
 
     let resolution = CredentialBroker.resolve(CredentialResolutionRequest {
         repository_path: &repository_record.path,
         remote_name,
-        remote_url: &raw_remote_url,
+        remote_url: raw_remote_url,
         endpoint: endpoint.as_ref(),
         endpoints: &endpoints,
         bindings: &store.remote_bindings,
@@ -169,26 +263,10 @@ pub(super) fn network_environment(
         .iter()
         .find(|account| account.id == resolution.account_profile_id)
         .ok_or_else(|| AppError::new("account_not_found", "找不到已解析的账号。"))?;
-    credential_environment_for_resolution(&resolution, account)
-}
-
-/// A submodule update is one Git process, so it can carry one selected
-/// askpass strategy. Prefer the parent repository's origin (then its first
-/// remote); askpass refuses any prompt whose HTTPS host does not match that
-/// selected endpoint, preventing a parent credential from crossing hosts.
-pub(super) fn submodule_update_environment(
-    state: &AppState,
-    repository: &Path,
-) -> Result<GitEnvironment, AppError> {
-    let remotes = GitCore::new().remotes(repository)?;
-    let remote = remotes
-        .iter()
-        .find(|remote| remote.name == "origin")
-        .or_else(|| remotes.first());
-    let Some(remote) = remote else {
-        return Ok(GitEnvironment::default());
-    };
-    network_environment(state, repository, &remote.name, false)
+    Ok(NetworkOperationTarget {
+        environment: credential_environment_for_resolution(&resolution, account)?,
+        urls: raw_remote_urls,
+    })
 }
 
 pub(super) fn credential_environment_for_resolution(
@@ -245,12 +323,12 @@ pub(super) fn validate_unauthenticated_remote_url(raw_remote_url: &str) -> Resul
     Ok(())
 }
 
-pub(super) fn remote_binding_matches_urls(
+pub(super) fn remote_binding_matches_all_urls(
     store: &ProfileStore,
     repository_path: &str,
     remote_name: &str,
-    fetch_url: &str,
-    push_url: &str,
+    fetch_urls: &[String],
+    push_urls: &[String],
 ) -> bool {
     let Some(binding) = store.binding_for(repository_path, remote_name) else {
         return true;
@@ -258,8 +336,14 @@ pub(super) fn remote_binding_matches_urls(
     let Some(endpoint) = store.endpoint(&binding.endpoint_id) else {
         return false;
     };
-    validate_codehost_binding_url(fetch_url, &endpoint).is_ok()
-        && validate_codehost_binding_url(push_url, &endpoint).is_ok()
+    !fetch_urls.is_empty()
+        && !push_urls.is_empty()
+        && fetch_urls
+            .iter()
+            .all(|url| validate_codehost_binding_url(url, &endpoint).is_ok())
+        && push_urls
+            .iter()
+            .all(|url| validate_codehost_binding_url(url, &endpoint).is_ok())
 }
 
 /// Pending clone metadata is intentionally replayed after a failed profile
@@ -329,19 +413,20 @@ pub(super) fn github_adapter_context(
         .into_iter()
         .find(|remote| remote.name == remote_name)
         .ok_or_else(|| AppError::new("remote_not_found", "找不到该 remote。"))?;
-    let raw_remote_url = git.remote_url_for_operation(&repository, remote_name, false)?;
-    let push_remote_url = git.remote_url_for_operation(&repository, remote_name, true)?;
+    let fetch_urls = git.remote_urls_for_operation(&repository, remote_name, false)?;
+    let push_urls = git.remote_urls_for_operation(&repository, remote_name, true)?;
+    let raw_remote_url = fetch_urls
+        .first()
+        .ok_or_else(|| AppError::new("remote_not_found", "找不到该 remote 的 fetch 地址。"))?;
     let mut store = state.snapshot()?;
     let endpoints = store.all_endpoints();
-    for account in &mut store.accounts {
-        account.status = current_account_status(account, &endpoints);
-    }
+    refresh_account_statuses_in_place(&mut store.accounts, &endpoints);
     let binding = store.binding_for(&repository_record.path, remote_name);
     let endpoint = binding
         .as_ref()
         .and_then(|binding| store.endpoint(&binding.endpoint_id))
         .or_else(|| {
-            parse_remote_url(&raw_remote_url)
+            parse_remote_url(raw_remote_url)
                 .authority()
                 .as_deref()
                 .and_then(|authority| endpoint_for_host(authority, &endpoints))
@@ -354,8 +439,7 @@ pub(super) fn github_adapter_context(
             )
         })?;
     if endpoint.kind != CodeHostKind::GitHub
-        || validate_codehost_binding_url(&raw_remote_url, &endpoint).is_err()
-        || validate_codehost_binding_url(&push_remote_url, &endpoint).is_err()
+        || !codehost_adapter_urls_match_endpoint(&fetch_urls, &push_urls, &endpoint)
     {
         return Err(AppError::new(
             "github_adapter_auth_unsupported",
@@ -366,6 +450,23 @@ pub(super) fn github_adapter_context(
     remote.endpoint_id = Some(endpoint.id.clone());
     remote.code_host_kind = endpoint.kind.clone();
     AdapterContext::new(endpoint, remote, account)
+}
+
+/// Platform API calls use one selected account, so every Git operation URL
+/// associated with the remote must resolve to that same endpoint. A later
+/// `pushurl` mirror cannot be allowed to inherit a GitHub platform identity
+/// that was determined from only the first URL.
+pub(super) fn codehost_adapter_urls_match_endpoint(
+    fetch_urls: &[String],
+    push_urls: &[String],
+    endpoint: &CodeHostEndpoint,
+) -> bool {
+    !fetch_urls.is_empty()
+        && !push_urls.is_empty()
+        && fetch_urls
+            .iter()
+            .chain(push_urls.iter())
+            .all(|url| validate_codehost_binding_url(url, endpoint).is_ok())
 }
 
 /// Platform API authentication is deliberately separate from Git credential

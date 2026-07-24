@@ -5,6 +5,9 @@ use super::parser::*;
 use super::validation::*;
 use super::*;
 
+const MAX_COMMIT_HISTORY_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_COMMIT_DIFF_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+
 impl GitCore {
     /// Creates a commit while preserving the user's normal Git hooks and
     /// credential/configuration behavior.
@@ -14,9 +17,7 @@ impl GitCore {
         message: &str,
         amend: bool,
     ) -> Result<CommitResult, AppError> {
-        if message.trim().is_empty() {
-            return Err(AppError::new("invalid_commit_message", "提交信息不能为空"));
-        }
+        validate_commit_message(message)?;
         if amend && !self.has_head(repository)? {
             return Err(AppError::new(
                 "no_commit_to_amend",
@@ -60,6 +61,9 @@ impl GitCore {
         let arguments = vec![
             OsString::from("log"),
             OsString::from("--no-ext-diff"),
+            // Repository/user configuration can otherwise append GPG
+            // signature presentation text to this machine-readable stream.
+            OsString::from("--no-show-signature"),
             OsString::from(format!("--max-count={limit}")),
             // `tformat:` appends a newline after every record. With our
             // explicit record separator that trailing newline becomes a
@@ -77,16 +81,17 @@ impl GitCore {
             &os_arguments(&["rev-parse", "--verify", "--quiet", "HEAD"]),
             &GitEnvironment::default(),
         )?;
-        if head.status.code() == Some(1) {
+        if head.status.code() == Some(1) && self.has_unborn_head(repository)? {
             return Ok(Vec::new());
         }
         if !head.status.success() {
             return Err(git_command_error("读取提交历史", &head));
         }
-        let output = self.run(
+        let output = self.run_with_output_limit(
             Some(repository),
             &arguments,
             &GitEnvironment::default(),
+            MAX_COMMIT_HISTORY_OUTPUT_BYTES,
             "读取提交历史",
         )?;
         parse_commits(&output.stdout)
@@ -96,22 +101,38 @@ impl GitCore {
     /// raw diagnostic output on failure.
     pub fn commit_diff(&self, repository: &Path, revision: &str) -> Result<String, AppError> {
         validate_revision(revision, "提交引用")?;
+        let commit_expression = format!("{revision}^{{commit}}");
+        let resolved = self.run(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", &commit_expression]),
+            &GitEnvironment::default(),
+            "验证提交引用",
+        )?;
+        let commit = output_text(&resolved.stdout).trim().to_owned();
+        if !(40..=64).contains(&commit.len())
+            || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::new("git_parse_error", "无法读取提交标识。"));
+        }
         let arguments = vec![
             OsString::from("show"),
             OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
             OsString::from("--format="),
+            OsString::from("--binary"),
             OsString::from("--find-renames"),
             OsString::from("--unified=3"),
-            OsString::from(revision),
+            OsString::from(commit),
             OsString::from("--"),
         ];
-        let output = self.run(
+        let output = self.run_with_output_limit(
             Some(repository),
             &arguments,
             &GitEnvironment::default(),
+            MAX_COMMIT_DIFF_OUTPUT_BYTES,
             "读取提交改动",
         )?;
-        Ok(output_text(&output.stdout))
+        commit_diff_output_text(output.stdout)
     }
 
     /// Lists local branches and their configured upstreams.
@@ -161,4 +182,11 @@ impl GitCore {
         )?;
         parse_remote_branches(&output.stdout, remote_names)
     }
+}
+
+/// Commit diffs are display-only on this IPC surface. Git can emit raw bytes
+/// from a text blob even when every path is valid UTF-8, so decode lossy text
+/// rather than misreporting such blob content as an unsupported filename.
+pub(super) fn commit_diff_output_text(bytes: Vec<u8>) -> Result<String, AppError> {
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

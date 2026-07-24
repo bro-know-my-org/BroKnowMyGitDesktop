@@ -4,6 +4,110 @@ use super::error::*;
 use super::models::*;
 use super::validation::*;
 use super::*;
+use crate::process_tree::attach_process_tree;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+const MAX_CONCURRENT_GIT_PIPE_OPERATIONS: usize = 32;
+
+static ACTIVE_GIT_PIPE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// A permit remains owned by every pipe worker until it finishes. A hostile
+/// hook or transport helper can escape the direct Git process group and keep
+/// an inherited pipe open forever; Rust cannot safely cancel that blocking
+/// read from another thread. Retaining the permit gives the backend a hard
+/// bound on both detached workers and buffered patch input instead of letting
+/// repeated IPC calls consume unbounded resources.
+struct GitPipeOperationPermit;
+
+impl GitPipeOperationPermit {
+    fn acquire() -> Result<Arc<Self>, AppError> {
+        let mut active = ACTIVE_GIT_PIPE_OPERATIONS.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_CONCURRENT_GIT_PIPE_OPERATIONS {
+                return Err(AppError::new(
+                    "git_operation_busy",
+                    "Git 操作过多，请等待正在执行的操作完成。",
+                ));
+            }
+            match ACTIVE_GIT_PIPE_OPERATIONS.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Arc::new(Self)),
+                Err(observed) => active = observed,
+            }
+        }
+    }
+}
+
+impl Drop for GitPipeOperationPermit {
+    fn drop(&mut self) {
+        ACTIVE_GIT_PIPE_OPERATIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GitExecutionLimits {
+    timeout: Duration,
+    maximum_stdout_bytes: usize,
+    maximum_stderr_bytes: usize,
+    timeout_code: &'static str,
+    timeout_message: &'static str,
+}
+
+/// Git serializes configuration writers through sibling .lock files. Retain
+/// those locks from the final safety preflight until the network child exits,
+/// so another ordinary Git client cannot add a URL rewrite after it is checked.
+pub(super) struct NetworkConfigurationLock {
+    files: Vec<NetworkConfigurationLockFile>,
+}
+
+struct NetworkConfigurationLockFile {
+    path: PathBuf,
+    file: fs::File,
+}
+
+impl NetworkConfigurationLock {
+    fn acquire(configurations: Vec<PathBuf>) -> Result<Self, AppError> {
+        let mut lock = Self { files: Vec::new() };
+        for configuration in configurations {
+            let name = configuration
+                .file_name()
+                .ok_or_else(|| AppError::new("git_command_failed", "无法锁定仓库 Git 配置。"))?;
+            let mut lock_name = name.to_os_string();
+            lock_name.push(".lock");
+            let path = configuration.with_file_name(lock_name);
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => lock.files.push(NetworkConfigurationLockFile { path, file }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(AppError::new(
+                        "git_config_locked",
+                        "仓库 Git 配置正被其他 Git 操作修改，请稍后重试。",
+                    ));
+                }
+                Err(error) => return Err(AppError::io("锁定仓库 Git 配置", error)),
+            }
+        }
+        Ok(lock)
+    }
+}
+
+impl Drop for NetworkConfigurationLock {
+    fn drop(&mut self) {
+        while let Some(lock) = self.files.pop() {
+            let path = lock.path;
+            drop(lock.file);
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
 impl GitCore {
     pub(super) fn try_repository_root(&self, path: &Path) -> Result<Option<PathBuf>, AppError> {
@@ -12,11 +116,8 @@ impl GitCore {
         if !output.status.success() {
             return Ok(None);
         }
-        let value = output_text(&output.stdout).trim().to_owned();
-        if value.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(normalize_path(Path::new(&value))))
+        let path = git_path_from_output(&output.stdout, "无法读取 Git 工作区路径")?;
+        Ok(Some(normalize_path(&path)))
     }
 
     /// Returns whether this worktree has at least one commit. An unborn
@@ -27,7 +128,46 @@ impl GitCore {
             &os_arguments(&["rev-parse", "--verify", "--quiet", "HEAD"]),
             &GitEnvironment::default(),
         )?;
-        Ok(output.status.success())
+        if output.status.success() {
+            return Ok(true);
+        }
+        if output.status.code() == Some(1) && self.has_unborn_head(repository)? {
+            return Ok(false);
+        }
+        Err(git_command_error("检查当前提交", &output))
+    }
+
+    /// Distinguishes an ordinary unborn symbolic branch from a detached or
+    /// corrupt HEAD that failed to resolve. Only the former may be presented
+    /// as an empty history.
+    pub(super) fn has_unborn_head(&self, repository: &Path) -> Result<bool, AppError> {
+        let symbolic = self.execute(
+            Some(repository),
+            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
+            &GitEnvironment::default(),
+        )?;
+        if symbolic.status.code() == Some(1) {
+            return Ok(false);
+        }
+        if !symbolic.status.success() {
+            return Err(git_command_error("检查当前分支", &symbolic));
+        }
+        let reference = output_text(&symbolic.stdout).trim().to_owned();
+        if !reference.starts_with("refs/heads/") {
+            return Err(AppError::new("git_parse_error", "无法读取当前分支引用。"));
+        }
+        let exists = self.execute(
+            Some(repository),
+            &os_arguments(&["show-ref", "--verify", "--quiet", &reference]),
+            &GitEnvironment::default(),
+        )?;
+        if exists.status.success() {
+            Ok(false)
+        } else if exists.status.code() == Some(1) {
+            Ok(true)
+        } else {
+            Err(git_command_error("检查当前分支", &exists))
+        }
     }
 
     /// Returns the immutable commit currently checked out at `HEAD`. Durable
@@ -36,7 +176,7 @@ impl GitCore {
     pub fn head_commit_id(&self, repository: &Path) -> Result<String, AppError> {
         let output = self.run(
             Some(repository),
-            &os_arguments(&["rev-parse", "--verify", "HEAD"]),
+            &os_arguments(&["rev-parse", "--verify", "HEAD^{commit}"]),
             &GitEnvironment::default(),
             "读取当前提交",
         )?;
@@ -57,10 +197,7 @@ impl GitCore {
             &GitEnvironment::default(),
             "读取 Git 操作状态",
         )?;
-        let git_dir = PathBuf::from(output_text(&output.stdout).trim());
-        if git_dir.as_os_str().is_empty() {
-            return Err(AppError::new("git_parse_error", "无法读取 Git 元数据目录"));
-        }
+        let git_dir = git_path_from_output(&output.stdout, "无法读取 Git 元数据目录")?;
         Ok(if git_dir.is_absolute() {
             git_dir
         } else {
@@ -98,11 +235,24 @@ impl GitCore {
         name: &str,
         push: bool,
     ) -> Result<String, AppError> {
+        self.remote_urls(repository, name, push)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AppError::new("git_parse_error", "无法读取远程地址"))
+    }
+
+    pub(super) fn remote_urls(
+        &self,
+        repository: &Path,
+        name: &str,
+        push: bool,
+    ) -> Result<Vec<String>, AppError> {
         validate_remote_name(name)?;
         let mut arguments = os_arguments(&["remote", "get-url"]);
         if push {
             arguments.push(OsString::from("--push"));
         }
+        arguments.push(OsString::from("--all"));
         arguments.push(OsString::from(name));
         let output = self.run(
             Some(repository),
@@ -110,7 +260,16 @@ impl GitCore {
             &GitEnvironment::default(),
             "读取远程地址",
         )?;
-        Ok(output_text(&output.stdout).trim().to_owned())
+        let urls = output_text(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if urls.is_empty() {
+            return Err(AppError::new("git_parse_error", "无法读取远程地址"));
+        }
+        Ok(urls)
     }
 
     pub(super) fn run(
@@ -138,7 +297,75 @@ impl GitCore {
         environment: &GitEnvironment,
         operation: &'static str,
     ) -> Result<Output, AppError> {
+        let _configuration_lock = if let Some(repository) = repository {
+            // Recheck after the lock is acquired. A competing Git client may
+            // have committed a config update between an earlier preflight and
+            // this operation's lock acquisition.
+            self.ensure_network_configuration_is_safe(repository)?;
+            let lock = self.lock_network_configuration(repository)?;
+            self.ensure_network_configuration_is_safe(repository)?;
+            Some(lock)
+        } else {
+            None
+        };
         let output = self.execute_network_with_timeout(repository, arguments, environment)?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(git_command_error(operation, &output))
+        }
+    }
+
+    pub(super) fn lock_network_configuration(
+        &self,
+        repository: &Path,
+    ) -> Result<NetworkConfigurationLock, AppError> {
+        let mut configurations = Vec::new();
+        for name in ["config", "config.worktree"] {
+            let output = self.execute(
+                Some(repository),
+                &os_arguments(&["rev-parse", "--git-path", name]),
+                &GitEnvironment::default(),
+            )?;
+            if !output.status.success() {
+                return Err(git_command_error("读取仓库 Git 配置位置", &output));
+            }
+            let path = git_path_from_output(&output.stdout, "无法读取仓库 Git 配置位置。")?;
+            let path = if path.is_absolute() {
+                path
+            } else {
+                repository.join(path)
+            };
+            if !configurations.contains(&path) {
+                configurations.push(path);
+            }
+        }
+        NetworkConfigurationLock::acquire(configurations)
+    }
+
+    /// Executes a local Git query with a bounded stdout capture. This is used
+    /// for data returned over IPC, where an arbitrarily large history subject
+    /// or patch must not allocate without limit in the desktop backend.
+    pub(super) fn run_with_output_limit(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[OsString],
+        environment: &GitEnvironment,
+        maximum_stdout_bytes: usize,
+        operation: &'static str,
+    ) -> Result<Output, AppError> {
+        let output = self.execute_with_timeout_and_output_limits(
+            repository,
+            arguments,
+            environment,
+            GitExecutionLimits {
+                timeout: BOUNDED_GIT_COMMAND_TIMEOUT,
+                maximum_stdout_bytes,
+                maximum_stderr_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                timeout_code: "git_command_timeout",
+                timeout_message: "Git 命令超时，请缩小范围后重试。",
+            },
+        )?;
         if output.status.success() {
             Ok(output)
         } else {
@@ -154,42 +381,19 @@ impl GitCore {
         environment: &GitEnvironment,
         operation: &'static str,
     ) -> Result<Output, AppError> {
-        let mut command = Command::new(&self.executable);
-        command
-            .args(command_arguments(repository, arguments))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        apply_git_environment(&mut command, environment);
-        let mut child = command.spawn().map_err(|_| {
-            AppError::with_safe_details(
-                "git_unavailable",
-                "无法启动系统 Git",
-                "请确认 Git 已安装且可从应用进程的 PATH 访问。",
-            )
-        })?;
-        let write_result = match child.stdin.take() {
-            Some(mut stdin) => stdin.write_all(input),
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AppError::new("git_command_failed", "无法向 Git 写入补丁。"));
-            }
-        };
-        if write_result.is_err() {
-            // Git can reject a patch before consuming stdin. Reap the child
-            // on this early return so repeated failed hunk requests cannot
-            // accumulate zombies on Unix.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(AppError::new("git_command_failed", "无法向 Git 写入补丁。"));
-        }
-        let output = child.wait_with_output().map_err(|_| {
-            AppError::new(
-                "git_command_failed",
-                "Git 未能完成补丁操作；请检查仓库状态。",
-            )
-        })?;
+        let output = self.execute_with_input_timeout_and_output_limits(
+            repository,
+            arguments,
+            input,
+            environment,
+            GitExecutionLimits {
+                timeout: BOUNDED_GIT_COMMAND_TIMEOUT,
+                maximum_stdout_bytes: MAX_LOCAL_GIT_OUTPUT_BYTES,
+                maximum_stderr_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                timeout_code: "git_command_timeout",
+                timeout_message: "Git 补丁操作超时，请检查仓库状态后重试。",
+            },
+        )?;
         if output.status.success() {
             Ok(output)
         } else {
@@ -203,16 +407,18 @@ impl GitCore {
         arguments: &[OsString],
         environment: &GitEnvironment,
     ) -> Result<Output, AppError> {
-        let mut command = Command::new(&self.executable);
-        command.args(command_arguments(repository, arguments));
-        apply_git_environment(&mut command, environment);
-        command.output().map_err(|_| {
-            AppError::with_safe_details(
-                "git_unavailable",
-                "无法启动系统 Git",
-                "请确认 Git 已安装且可从应用进程的 PATH 访问。",
-            )
-        })
+        self.execute_with_timeout_and_output_limits(
+            repository,
+            arguments,
+            environment,
+            GitExecutionLimits {
+                timeout: BOUNDED_GIT_COMMAND_TIMEOUT,
+                maximum_stdout_bytes: MAX_LOCAL_GIT_OUTPUT_BYTES,
+                maximum_stderr_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                timeout_code: "git_command_timeout",
+                timeout_message: "Git 命令超时，请缩小范围后重试。",
+            },
+        )
     }
 
     pub(super) fn execute_network_with_timeout(
@@ -221,11 +427,71 @@ impl GitCore {
         arguments: &[OsString],
         environment: &GitEnvironment,
     ) -> Result<Output, AppError> {
+        self.execute_with_timeout_and_output_limits(
+            repository,
+            arguments,
+            environment,
+            GitExecutionLimits {
+                timeout: NETWORK_GIT_COMMAND_TIMEOUT,
+                maximum_stdout_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                maximum_stderr_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                timeout_code: "git_network_timeout",
+                timeout_message: "Git 网络操作超时，请检查网络、认证和远程服务状态后重试。",
+            },
+        )
+    }
+
+    fn execute_with_timeout_and_output_limits(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[OsString],
+        environment: &GitEnvironment,
+        limits: GitExecutionLimits,
+    ) -> Result<Output, AppError> {
+        self.execute_with_optional_input_timeout_and_output_limits(
+            repository,
+            arguments,
+            None,
+            environment,
+            limits,
+        )
+    }
+
+    fn execute_with_input_timeout_and_output_limits(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[OsString],
+        input: &[u8],
+        environment: &GitEnvironment,
+        limits: GitExecutionLimits,
+    ) -> Result<Output, AppError> {
+        self.execute_with_optional_input_timeout_and_output_limits(
+            repository,
+            arguments,
+            Some(input),
+            environment,
+            limits,
+        )
+    }
+
+    fn execute_with_optional_input_timeout_and_output_limits(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[OsString],
+        input: Option<&[u8]>,
+        environment: &GitEnvironment,
+        limits: GitExecutionLimits,
+    ) -> Result<Output, AppError> {
+        let pipe_operation = GitPipeOperationPermit::acquire()?;
         let mut command = Command::new(&self.executable);
         configure_git_network_process_group(&mut command);
         command
             .args(command_arguments(repository, arguments))
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         apply_git_environment(&mut command, environment);
@@ -237,47 +503,121 @@ impl GitCore {
             )
         })?;
         let process_id = child.id();
+        let process_tree = match attach_process_tree(&child) {
+            Ok(process_tree) => process_tree,
+            Err(error) => {
+                terminate_git_network_child(&mut child, process_id, None);
+                return Err(AppError::io("配置 Git 子进程树", error));
+            }
+        };
+        if let Err(error) = resume_git_network_process(process_id) {
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+            return Err(AppError::io("启动 Git 子进程", error));
+        }
+        let input_writer = if let Some(input) = input {
+            let Some(stdin) = child.stdin.take() else {
+                terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                return Err(AppError::new("git_command_failed", "无法向 Git 写入补丁。"));
+            };
+            Some(spawn_git_input_writer(
+                stdin,
+                input.to_vec(),
+                Arc::clone(&pipe_operation),
+            ))
+        } else {
+            None
+        };
         let stdout = child.stdout.take().ok_or_else(|| {
-            terminate_git_network_child(&mut child, process_id);
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
             AppError::new("git_command_failed", "无法读取 Git 网络命令输出。")
         })?;
         let stderr = child.stderr.take().ok_or_else(|| {
-            terminate_git_network_child(&mut child, process_id);
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
             AppError::new("git_command_failed", "无法读取 Git 网络命令输出。")
         })?;
-        let stdout_reader = spawn_network_git_pipe_reader(stdout);
-        let stderr_reader = spawn_network_git_pipe_reader(stderr);
-        let deadline = Instant::now() + NETWORK_GIT_COMMAND_TIMEOUT;
+        let stdout_reader = spawn_network_git_pipe_reader(
+            stdout,
+            limits.maximum_stdout_bytes,
+            Arc::clone(&pipe_operation),
+        );
+        let stderr_reader = spawn_network_git_pipe_reader(
+            stderr,
+            limits.maximum_stderr_bytes,
+            Arc::clone(&pipe_operation),
+        );
+        let deadline = Instant::now() + limits.timeout;
+        let mut stdout_ready = None;
+        let mut stderr_ready = None;
+        let mut input_ready = input_writer.is_none();
         let status = loop {
+            if let Some(writer) = &input_writer {
+                if let Err(error) = poll_git_input_writer(writer, &mut input_ready) {
+                    terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                    return Err(error);
+                }
+            }
+            if let Err(error) = poll_network_git_pipe(&stdout_reader, &mut stdout_ready) {
+                terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                return Err(error);
+            }
+            if let Err(error) = poll_network_git_pipe(&stderr_reader, &mut stderr_ready) {
+                terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                return Err(error);
+            }
             match child.try_wait() {
                 Ok(Some(status)) => {
                     break status;
                 }
                 Ok(None) if Instant::now() >= deadline => {
-                    terminate_git_network_child(&mut child, process_id);
-                    return Err(AppError::new(
-                        "git_network_timeout",
-                        "Git 网络操作超时，请检查网络、认证和远程服务状态后重试。",
-                    ));
+                    terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                    return Err(AppError::new(limits.timeout_code, limits.timeout_message));
                 }
                 Ok(None) => thread::sleep(Duration::from_millis(25)),
                 Err(error) => {
-                    terminate_git_network_child(&mut child, process_id);
+                    terminate_git_network_child(&mut child, process_id, Some(&process_tree));
                     return Err(AppError::io("等待 Git", error));
                 }
             }
         };
-        let stdout = match collect_network_git_pipe(stdout_reader, deadline) {
+        // `try_wait` above has already reaped the direct Git child. Do not
+        // target its numeric PID again when collecting a pipe fails: on
+        // Windows it may already identify an unrelated process, and there is
+        // no child left for `terminate_git_network_child` to reap.
+        if let Some(writer) = input_writer {
+            if let Err(error) = collect_git_input_writer(
+                writer,
+                input_ready,
+                deadline,
+                limits.timeout_code,
+                limits.timeout_message,
+            ) {
+                terminate_remaining_git_network_process_tree(&process_tree, process_id);
+                return Err(error);
+            }
+        }
+        let stdout = match collect_network_git_pipe(
+            stdout_reader,
+            stdout_ready,
+            deadline,
+            limits.timeout_code,
+            limits.timeout_message,
+        ) {
             Ok(stdout) => stdout,
             Err(error) => {
-                terminate_git_network_process_group(process_id);
+                terminate_remaining_git_network_process_tree(&process_tree, process_id);
                 return Err(error);
             }
         };
-        let stderr = match collect_network_git_pipe(stderr_reader, deadline) {
+        let stderr = match collect_network_git_pipe(
+            stderr_reader,
+            stderr_ready,
+            deadline,
+            limits.timeout_code,
+            limits.timeout_message,
+        ) {
             Ok(stderr) => stderr,
             Err(error) => {
-                terminate_git_network_process_group(process_id);
+                terminate_remaining_git_network_process_tree(&process_tree, process_id);
                 return Err(error);
             }
         };
@@ -289,6 +629,32 @@ impl GitCore {
     }
 }
 
+/// Git prints filesystem paths as bytes. Preserve Unix bytes exactly rather
+/// than decoding them lossily and accidentally directing a later operation at
+/// a different U+FFFD-containing path.
+pub(super) fn git_path_from_output(
+    bytes: &[u8],
+    message: &'static str,
+) -> Result<PathBuf, AppError> {
+    let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
+    if bytes.is_empty() || bytes.contains(&0) {
+        return Err(AppError::new("git_parse_error", message));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        Ok(PathBuf::from(OsString::from_vec(bytes.to_vec())))
+    }
+    #[cfg(not(unix))]
+    {
+        let value =
+            std::str::from_utf8(bytes).map_err(|_| AppError::new("git_parse_error", message))?;
+        Ok(PathBuf::from(value))
+    }
+}
+
 #[derive(Debug)]
 enum NetworkGitPipeError {
     TooLarge,
@@ -297,68 +663,152 @@ enum NetworkGitPipeError {
 
 fn spawn_network_git_pipe_reader(
     pipe: impl Read + Send + 'static,
+    maximum_bytes: usize,
+    pipe_operation: Arc<GitPipeOperationPermit>,
 ) -> Receiver<Result<Vec<u8>, NetworkGitPipeError>> {
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let _ = sender.send(read_network_git_pipe(pipe));
+        let _pipe_operation = pipe_operation;
+        let _ = sender.send(read_network_git_pipe(pipe, maximum_bytes));
     });
     receiver
 }
 
-fn read_network_git_pipe(mut pipe: impl Read) -> Result<Vec<u8>, NetworkGitPipeError> {
+fn spawn_git_input_writer(
+    mut stdin: std::process::ChildStdin,
+    input: Vec<u8>,
+    pipe_operation: Arc<GitPipeOperationPermit>,
+) -> Receiver<std::io::Result<()>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _pipe_operation = pipe_operation;
+        let result = stdin.write_all(&input);
+        drop(stdin);
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+fn poll_git_input_writer(
+    writer: &Receiver<std::io::Result<()>>,
+    ready: &mut bool,
+) -> Result<(), AppError> {
+    if *ready {
+        return Ok(());
+    }
+    match writer.try_recv() {
+        Ok(Ok(())) => {
+            *ready = true;
+            Ok(())
+        }
+        Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            Err(AppError::new("git_command_failed", "无法向 Git 写入补丁。"))
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
+    }
+}
+
+fn collect_git_input_writer(
+    writer: Receiver<std::io::Result<()>>,
+    ready: bool,
+    deadline: Instant,
+    timeout_code: &'static str,
+    timeout_message: &'static str,
+) -> Result<(), AppError> {
+    if ready {
+        return Ok(());
+    }
+    let timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .min(NETWORK_GIT_PIPE_COLLECTION_TIMEOUT);
+    if timeout.is_zero() {
+        return Err(AppError::new(timeout_code, timeout_message));
+    }
+    match writer.recv_timeout(timeout) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => {
+            Err(AppError::new("git_command_failed", "无法向 Git 写入补丁。"))
+        }
+        Err(RecvTimeoutError::Timeout) => Err(AppError::new(timeout_code, timeout_message)),
+    }
+}
+
+fn read_network_git_pipe(
+    mut pipe: impl Read,
+    maximum_bytes: usize,
+) -> Result<Vec<u8>, NetworkGitPipeError> {
     let mut bytes = Vec::new();
-    let mut exceeded_limit = false;
     let mut buffer = [0_u8; 8 * 1024];
     loop {
         let count = pipe.read(&mut buffer).map_err(NetworkGitPipeError::Io)?;
         if count == 0 {
             break;
         }
-        let remaining = MAX_NETWORK_GIT_DIAGNOSTIC_BYTES.saturating_sub(bytes.len());
-        let retained = count.min(remaining);
-        bytes.extend_from_slice(&buffer[..retained]);
-        exceeded_limit |= retained != count;
+        let remaining = maximum_bytes.saturating_sub(bytes.len());
+        if count > remaining {
+            return Err(NetworkGitPipeError::TooLarge);
+        }
+        bytes.extend_from_slice(&buffer[..count]);
     }
-    if exceeded_limit {
-        Err(NetworkGitPipeError::TooLarge)
-    } else {
-        Ok(bytes)
+    Ok(bytes)
+}
+
+fn poll_network_git_pipe(
+    reader: &Receiver<Result<Vec<u8>, NetworkGitPipeError>>,
+    ready: &mut Option<Vec<u8>>,
+) -> Result<(), AppError> {
+    if ready.is_some() {
+        return Ok(());
+    }
+    match reader.try_recv() {
+        Ok(Ok(bytes)) => {
+            *ready = Some(bytes);
+            Ok(())
+        }
+        Ok(Err(error)) => Err(network_git_pipe_error(error)),
+        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(AppError::new(
+            "git_command_failed",
+            "无法读取 Git 网络命令输出。",
+        )),
     }
 }
 
 fn collect_network_git_pipe(
     reader: Receiver<Result<Vec<u8>, NetworkGitPipeError>>,
+    ready: Option<Vec<u8>>,
     deadline: Instant,
+    timeout_code: &'static str,
+    timeout_message: &'static str,
 ) -> Result<Vec<u8>, AppError> {
+    if let Some(bytes) = ready {
+        return Ok(bytes);
+    }
     let timeout = deadline
         .saturating_duration_since(Instant::now())
         .min(NETWORK_GIT_PIPE_COLLECTION_TIMEOUT);
     if timeout.is_zero() {
-        return Err(AppError::new(
-            "git_network_timeout",
-            "Git 网络操作超时，请检查网络、认证和远程服务状态后重试。",
-        ));
+        return Err(AppError::new(timeout_code, timeout_message));
     }
     match reader.recv_timeout(timeout) {
         Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(NetworkGitPipeError::TooLarge)) => Err(AppError::new(
-            "git_command_failed",
-            "Git 网络命令输出过大，已停止该操作。",
-        )),
-        Ok(Err(NetworkGitPipeError::Io(error))) => {
-            let _ = error.kind();
-            Err(AppError::new(
-                "git_command_failed",
-                "无法读取 Git 网络命令输出。",
-            ))
-        }
-        Err(RecvTimeoutError::Timeout) => Err(AppError::new(
-            "git_network_timeout",
-            "Git 网络操作超时，请检查网络、认证和远程服务状态后重试。",
-        )),
+        Ok(Err(error)) => Err(network_git_pipe_error(error)),
+        Err(RecvTimeoutError::Timeout) => Err(AppError::new(timeout_code, timeout_message)),
         Err(RecvTimeoutError::Disconnected) => Err(AppError::new(
             "git_command_failed",
             "无法读取 Git 网络命令输出。",
         )),
+    }
+}
+
+fn network_git_pipe_error(error: NetworkGitPipeError) -> AppError {
+    match error {
+        NetworkGitPipeError::TooLarge => {
+            AppError::new("git_output_too_large", "Git 命令输出过大，已停止该操作。")
+        }
+        NetworkGitPipeError::Io(error) => {
+            let _ = error.kind();
+            AppError::new("git_command_failed", "无法读取 Git 网络命令输出。")
+        }
     }
 }

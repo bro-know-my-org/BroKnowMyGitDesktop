@@ -71,10 +71,36 @@ pub async fn publish_github_repository(
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
         let _publish_lease = state.acquire_publish_lease(&repository.to_string_lossy())?;
-        if reconcile_pending_publish(&state, &repository)? {
+        // Hold this before inspecting account metadata so a concurrent account
+        // removal cannot delete the durable publish intent after `gh` starts.
+        let _account_operation_lease =
+            state.acquire_account_operation_lease(&account_profile_id)?;
+        if reconcile_pending_publish(&state, &repository, &endpoint_id, &account_profile_id)? {
             return snapshot_for(&state, &repository);
         }
         let git = GitCore::new();
+        let repository_record = git.repository_record(&repository)?;
+        // A previous `gh repo create --push` can fail before creating either
+        // the GitHub repository or local `origin`. `reconcile_pending_publish`
+        // above already handled every locally provable completion; when there
+        // is still no origin, this explicit user retry safely replaces the
+        // stale intent. GitHub enforces repository-name uniqueness, so an
+        // ambiguous remote-side creation cannot become a duplicate publish.
+        if let Some(pending) = state
+            .snapshot()?
+            .pending_publish_for(&repository_record.path)
+        {
+            state.mutate(|store| {
+                if store.pending_publish_for(&repository_record.path).as_ref() != Some(&pending) {
+                    return Err(AppError::new(
+                        "github_publish_reconciliation_required",
+                        "待完成的 GitHub 发布状态已变化，请刷新后重试。",
+                    ));
+                }
+                store.clear_pending_publish(&repository_record.path);
+                Ok(())
+            })?;
+        }
         if !git.remotes(&repository)?.is_empty() {
             return Err(AppError::new(
                 "repository_already_has_remote",
@@ -118,7 +144,6 @@ pub async fn publish_github_repository(
             ));
         }
 
-        let repository_record = git.repository_record(&repository)?;
         let expected_head = git.head_commit_id(&repository)?;
         let expected_repository_slug = github_publish_expected_slug(&name, &account.login)?;
         let pending = PendingPublish {
@@ -130,30 +155,38 @@ pub async fn publish_github_repository(
             expected_repository_slug,
         };
         state.mutate(|store| {
-            store.queue_pending_publish(pending);
+            store.queue_pending_publish(pending.clone());
             Ok(())
         })?;
 
-        // `gh repo create --push` can create the remote and configure origin
-        // before a later push step fails. The `?` intentionally leaves the
-        // durable intent in place so the next invocation reconciles that
-        // completed side effect instead of attempting a second publish.
-        GitHubAdapter.publish_repository(&endpoint, &repository, &name, is_private)?;
+        // `gh repo create --push` can create the remote through GitHub's API
+        // before a later local-origin or push step fails. The absence of a
+        // local origin therefore proves nothing about the remote side effect;
+        // retain the durable intent for every post-invocation failure so a
+        // retry can reconcile instead of attempting a duplicate publish.
+        GitHubAdapter.publish_repository(
+            &endpoint,
+            &repository,
+            &name,
+            &account.login,
+            is_private,
+        )?;
         let origin_exists = git
             .remotes(&repository)?
             .iter()
             .any(|remote| remote.name == "origin");
         if !origin_exists {
-            state.mutate(|store| {
-                store.clear_pending_publish(&repository_record.path);
-                Ok(())
-            })?;
             return Err(AppError::new(
-                "github_publish_failed",
-                "GitHub 已返回成功，但本地未找到 origin remote；请刷新后检查仓库配置。",
+                "github_publish_reconciliation_required",
+                "GitHub 已返回成功，但本地未找到 origin remote；发布状态已保留，请检查仓库配置后重试。",
             ));
         }
-        reconcile_pending_publish(&state, &repository)?;
+        if !reconcile_pending_publish(&state, &repository, &endpoint_id, &account_profile_id)? {
+            return Err(AppError::new(
+                "github_publish_reconciliation_required",
+                "GitHub 已返回成功，但发布状态尚未完成确认；请检查仓库配置后重试。",
+            ));
+        }
         snapshot_for(&state, &repository)
     })
     .await

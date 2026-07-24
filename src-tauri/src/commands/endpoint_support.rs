@@ -31,10 +31,16 @@ pub(super) fn validate_custom_endpoint(endpoint: &CodeHostEndpoint) -> Result<()
         }
         let url = url::Url::parse(value)
             .map_err(|_| AppError::new("invalid_endpoint", "Endpoint URL 无效。"))?;
-        if !matches!(url.scheme(), "https" | "http") || url.host_str().is_none() {
+        if !matches!(url.scheme(), "https" | "http")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
             return Err(AppError::new(
                 "invalid_endpoint",
-                "Endpoint URL 必须是 HTTP(S) 地址。",
+                "Endpoint URL 必须是不含认证信息、查询参数或片段的 HTTP(S) 地址。",
             ));
         }
     }

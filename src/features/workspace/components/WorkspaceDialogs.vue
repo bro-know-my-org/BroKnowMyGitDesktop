@@ -28,14 +28,14 @@ export default defineComponent({
       {{ tr("发生冲突时，应用会把所有冲突文件作为独立参数交给此编辑器。不会执行 Git 或仓库配置中的 shell 命令。", "When conflicts occur, the app passes every conflicted file to this editor as a separate argument. It never runs a shell command from Git or repository configuration.") }}
     </n-alert>
     <n-form label-placement="top">
-      <n-form-item :label="tr('可执行文件', 'Executable')">
-        <n-input v-model:value="externalEditorForm.executable" :placeholder="tr('例如：code 或 /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code', 'For example: code or /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code')" />
+      <n-form-item :label="tr('可执行文件（绝对路径）', 'Executable (absolute path)')">
+        <n-input v-model:value="externalEditorForm.executable" :placeholder="tr('例如：/usr/bin/code 或 /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code', 'For example: /usr/bin/code or /Applications/Visual Studio Code.app/Contents/Resources/app/bin/code')" />
       </n-form-item>
       <n-form-item :label="tr('附加参数（每行一个，可选）', 'Additional arguments (one per line, optional)')">
         <n-input v-model:value="externalEditorForm.arguments" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" placeholder="--wait" />
       </n-form-item>
     </n-form>
-    <n-text depth="3">{{ tr("VS Code 通常可使用可执行文件 code 和参数 --wait。保存后，在冲突提示中点击“在外部编辑器中解决”。", "For VS Code, use executable code with argument --wait. After saving, click Resolve in external editor from the conflict alert.") }}</n-text>
+    <n-text depth="3">{{ tr("请填写已安装编辑器的绝对可执行文件路径。VS Code 可搭配参数 --wait；保存后，在冲突提示中点击“在外部编辑器中解决”。", "Enter the installed editor's absolute executable path. VS Code can use argument --wait; after saving, click Resolve in external editor from the conflict alert.") }}</n-text>
     <template #action>
       <n-space justify="space-between">
         <n-button v-if="externalEditor" type="error" tertiary :loading="mutationBusy" @click="confirmClearExternalEditor">{{ tr("清除配置", "Clear configuration") }}</n-button>
@@ -73,7 +73,7 @@ export default defineComponent({
       <n-form-item :label="tr('CodeHost Endpoint（私有仓库可选）', 'Git service endpoint (optional for private repositories)')"><n-select v-model:value="cloneForm.endpointId" clearable :options="endpoints.map((endpoint) => ({ label: endpoint.displayName, value: endpoint.id }))" :placeholder="tr('留空则使用系统 Git 的默认行为', 'Leave empty to use normal system Git behavior')" /></n-form-item>
       <n-form-item :label="tr('Clone 使用的账号', 'Account used for clone')"><n-select v-model:value="cloneForm.accountId" :options="cloneAccountOptions" /></n-form-item>
     </n-form>
-    <n-alert type="info" :bordered="false">{{ tr("不指定账号时，Clone 使用系统 Git；SSH、LFS、hooks 与现有 credential helper 保持兼容。选择账号后，会安全地使用该账号并在成功后保存 origin 绑定。", "Without an app account, clone uses system Git and keeps SSH, LFS, hooks, and your existing credential helper compatible. Selecting an account uses it safely and saves the origin binding after success.") }}</n-alert>
+      <n-alert type="info" :bordered="false">{{ tr("不指定账号时，Clone 使用系统 Git；SSH、LFS、hooks 与现有 credential helper 保持兼容。选择 PAT 后会安全地使用该账号并在成功后保存 origin 绑定；选择 SSH agent 时由系统 SSH 配置选择实际密钥。", "Without an app account, clone uses system Git and keeps SSH, LFS, hooks, and your existing credential helper compatible. Selecting a PAT uses it safely and saves the origin binding after success; an SSH-agent selection leaves key choice to your system SSH configuration.") }}</n-alert>
     <template #action><n-space justify="end"><n-button @click="cloneModalShown = false">{{ tr("取消", "Cancel") }}</n-button><n-button type="primary" :loading="mutationBusy" @click="cloneRepository">{{ tr("Clone", "Clone") }}</n-button></n-space></template>
   </n-modal>
 

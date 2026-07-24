@@ -3,6 +3,7 @@ use crate::codehost::{
     AdapterContext, CodeHostAdapter, CodeHostRepositoryInfo, CreatePullRequestInput,
     PullRequestSummary,
 };
+use crate::credential_broker::gh_auth_status;
 use crate::domain::{
     git_authority_has_explicit_port, github_endpoint_has_gh_compatible_api,
     hostname_from_git_authority, CodeHostCapabilities, CodeHostEndpoint, CodeHostKind,
@@ -198,6 +199,7 @@ impl GitHubAdapter {
         endpoint: &CodeHostEndpoint,
         repository: &Path,
         name: &str,
+        expected_login: &str,
         private: bool,
     ) -> Result<(), AppError> {
         if endpoint.kind != CodeHostKind::GitHub {
@@ -208,6 +210,18 @@ impl GitHubAdapter {
         }
         validate_repository_name(name)?;
         let hostname = gh_hostname(endpoint)?;
+        let active_account = gh_auth_status(&hostname);
+        if !active_account.is_usable()
+            || !active_account
+                .login
+                .as_deref()
+                .is_some_and(|login| login.eq_ignore_ascii_case(expected_login))
+        {
+            return Err(AppError::new(
+                "cli_auth_unavailable",
+                "当前 gh 登录与所选发布账号不匹配或已失效。",
+            ));
+        }
         let mut command = Command::new("gh");
         command
             .arg("repo")
@@ -574,17 +588,9 @@ fn github_api_timeout() -> AppError {
 fn configure_gh_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
-    // SAFETY: the child executes only `setpgid(0, 0)` before exec so it can be
-    // terminated together with its descendants on timeout.
-    unsafe {
-        command.pre_exec(|| {
-            // SAFETY: setpgid is async-signal-safe and uses only the child PID.
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // Delegate the post-fork setup to the standard library rather than
+    // invoking Rust code from a `pre_exec` closure in this multithreaded app.
+    command.process_group(0);
 }
 
 #[cfg(windows)]

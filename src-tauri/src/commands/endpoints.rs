@@ -31,8 +31,8 @@ pub fn save_remote_binding(
             "仓库中不存在要绑定的 remote。",
         ));
     }
-    let fetch_url = git.remote_url_for_operation(&repository, &binding.remote_name, false)?;
-    let push_url = git.remote_url_for_operation(&repository, &binding.remote_name, true)?;
+    let fetch_urls = git.remote_urls_for_operation(&repository, &binding.remote_name, false)?;
+    let push_urls = git.remote_urls_for_operation(&repository, &binding.remote_name, true)?;
 
     let mut binding = binding;
     binding.repository_path = canonical_path;
@@ -40,8 +40,16 @@ pub fn save_remote_binding(
         let endpoint = store
             .endpoint(&binding.endpoint_id)
             .ok_or_else(|| AppError::new("endpoint_not_found", "找不到该代码托管 Endpoint。"))?;
-        validate_codehost_binding_url(&fetch_url, &endpoint)?;
-        validate_codehost_binding_url(&push_url, &endpoint)?;
+        if fetch_urls
+            .iter()
+            .chain(push_urls.iter())
+            .any(|url| validate_codehost_binding_url(url, &endpoint).is_err())
+        {
+            return Err(AppError::new(
+                "endpoint_association_required",
+                "该 remote 地址与所选代码托管 Endpoint 不匹配。",
+            ));
+        }
         if let AccountSelection::Profile(account_profile_id) = &binding.account_selection {
             let account = store
                 .accounts
@@ -102,7 +110,10 @@ pub fn save_custom_endpoint(
         .ok_or_else(|| AppError::new("invalid_endpoint", "Endpoint 标识或 Git host 无效。"))?;
     endpoint.is_builtin = false;
     validate_custom_endpoint(&endpoint)?;
-    state.mutate(|store| {
+    // Account status probes derive CLI compatibility from Endpoint fields
+    // such as `api_url`. Change those fields and advance the generation as
+    // one operation so a probe using the old configuration cannot commit.
+    state.mutate_and_invalidate_account_status_refreshes(|store| {
         if CodeHostEndpoint::builtin()
             .iter()
             .any(|builtin| builtin.id == endpoint.id)

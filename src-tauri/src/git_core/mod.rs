@@ -27,9 +27,15 @@ use url::Url;
 const NETWORK_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 const NETWORK_GIT_PIPE_COLLECTION_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_NETWORK_GIT_DIAGNOSTIC_BYTES: usize = 256 * 1024;
+const BOUNDED_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_LOCAL_GIT_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_EXTERNAL_EDITOR_ARGUMENTS: usize = 32;
 const MAX_EXTERNAL_EDITOR_VALUE_LENGTH: usize = 4096;
-const REMOTE_BRANCH_FETCH_REFSPEC_PATTERN: &str = "^[+]?refs/heads/.*";
+
+/// Fixed first argument used when the packaged application acts as a harmless
+/// Git editor for a sequencer continuation. It is intentionally not user
+/// configurable; see `main.rs` for the early-exit handler.
+pub const GIT_NOOP_EDITOR_ARGUMENT: &str = "--bkm-git-noop-editor";
 
 #[cfg(windows)]
 const DISABLED_GIT_HOOKS_PATH: &str = "NUL";
@@ -65,6 +71,7 @@ mod workspace;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use changes::CleanUntrackedPathFingerprint;
 pub use editor::normalize_external_editor_config;
 pub use environment::GitEnvironment;
 pub use models::{

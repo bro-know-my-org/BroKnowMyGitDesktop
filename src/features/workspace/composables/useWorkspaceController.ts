@@ -112,6 +112,7 @@ const activeTab = ref<RepositoryTab>("changes");
 const repositories = ref<RepositoryRecord[]>([]);
 const repositoryGrouping = ref<RepositoryGrouping>(initialRepositoryGrouping());
 const activeRepositoryPath = ref<string | null>(null);
+let repositorySelectionGeneration = 0;
 const snapshot = ref<RepositorySnapshot | null>(null);
 const accounts = ref<AccountProfile[]>([]);
 const selectedRemoteName = ref("");
@@ -121,6 +122,7 @@ const pullRequests = ref<PullRequestSummary[]>([]);
 const selectedChange = ref<GitStatusEntry | null>(null);
 const diffText = ref("");
 const selectedDiffStaged = ref(false);
+let diffRequestGeneration = 0;
 const blameText = ref("");
 const commits = ref<CommitSummary[]>([]);
 const stashes = ref<StashEntry[]>([]);
@@ -309,13 +311,21 @@ const accountMethodOptions = computed(() => [
   { label: "SSH agent", value: "sshAgent" },
 ]);
 function supportsGitRemoteCredentials(account: AccountProfile): boolean {
+  // A saved binding is an explicit account-selection promise. Only the
+  // app-managed PAT implementation can keep that promise; an SSH agent picks
+  // its identity from the user's SSH configuration at connection time.
+  return account.authMethod === "personalAccessToken";
+}
+function supportsCloneCredentials(account: AccountProfile): boolean {
+  // Clone has no durable remote binding yet, so an SSH-agent account remains
+  // useful as a UI hint while Git/SSH selects the actual key.
   return account.authMethod === "personalAccessToken" || account.authMethod === "sshAgent";
 }
 const bindingAccounts = computed(() => accounts.value.filter(
   (account) => account.endpointId === bindingForm.endpointId && supportsGitRemoteCredentials(account),
 ));
 const bindingAccountOptions = computed(() => [
-  { label: tr("自动选择（唯一 PAT/SSH 候选；否则系统 Git）", "Auto-select (one PAT/SSH candidate; otherwise system Git)"), value: "auto" },
+  { label: tr("自动选择（唯一 PAT 候选；否则系统 Git）", "Auto-select (one PAT candidate; otherwise system Git)"), value: "auto" },
   ...bindingAccounts.value.map((account) => ({
     label: `${account.displayName || account.login} · ${authenticationStatusLabel(account.status, appLocale.value)}`,
     value: account.id,
@@ -331,7 +341,7 @@ const bindingEndpointOptions = computed(() => {
   return options;
 });
 const cloneAccounts = computed(() => accounts.value.filter(
-  (account) => account.endpointId === cloneForm.endpointId && supportsGitRemoteCredentials(account),
+  (account) => account.endpointId === cloneForm.endpointId && supportsCloneCredentials(account),
 ));
 const cloneAccountOptions = computed(() => [
   { label: tr("使用系统 Git / 不指定账号", "Use system Git / no app account"), value: "none" },
@@ -559,7 +569,14 @@ function handleDevtoolsShortcut(event: KeyboardEvent): void {
   void toggleDevtools().catch(() => undefined);
 }
 
-function applySnapshot(nextSnapshot: RepositorySnapshot): void {
+function repositorySelectionIsCurrent(repositoryPath: string, generation: number): boolean {
+  return activeRepositoryPath.value === repositoryPath && repositorySelectionGeneration === generation;
+}
+
+function applySnapshot(nextSnapshot: RepositorySnapshot): boolean {
+  // Every backend snapshot is scoped to one repository. Never let a late
+  // mutation response overwrite the currently selected repository.
+  if (activeRepositoryPath.value !== nextSnapshot.repository.path) return false;
   const selectedPath = selectedChange.value?.path;
   snapshot.value = nextSnapshot;
   replaceRepositoryRecord(nextSnapshot.repository);
@@ -574,20 +591,29 @@ function applySnapshot(nextSnapshot: RepositorySnapshot): void {
       clearDiffSelection();
     }
   }
+  return true;
 }
 
 function clearDiffSelection(): void {
+  diffRequestGeneration += 1;
   selectedChange.value = null;
   diffText.value = "";
   selectedDiffStaged.value = false;
+  diffLoading.value = false;
 }
 
-async function syncSelectedDiff(nextSnapshot: RepositorySnapshot, selectedPath?: string, selectFirst = false): Promise<void> {
+async function syncSelectedDiff(
+  nextSnapshot: RepositorySnapshot,
+  selectedPath?: string,
+  selectFirst = false,
+  repositoryPath = activeRepositoryPath.value,
+): Promise<void> {
+  if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
   const nextChange =
     (selectedPath ? nextSnapshot.status.entries.find((entry) => entry.path === selectedPath) : null) ??
     (selectFirst ? nextSnapshot.status.entries[0] : null);
   if (nextChange) {
-    await loadDiff(nextChange);
+    await loadDiff(nextChange, repositoryPath);
   } else {
     clearDiffSelection();
   }
@@ -692,12 +718,14 @@ async function loadEndpoints(): Promise<void> {
 
 async function selectRepository(repositoryPath: string): Promise<void> {
   activeRepositoryPath.value = repositoryPath;
+  const selectionGeneration = ++repositorySelectionGeneration;
   section.value = "repositories";
   snapshotLoading.value = true;
   clearLastError();
   try {
     clearDiffSelection();
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     applySnapshot(nextSnapshot);
     activeTab.value = "changes";
     repositoryInfo.value = null;
@@ -713,25 +741,54 @@ async function selectRepository(repositoryPath: string): Promise<void> {
     await syncSelectedDiff(nextSnapshot, undefined, true);
     await Promise.all([loadCapabilities(), loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
   } catch (error) {
-    reportError(error, tr("打开仓库失败", "Could not open repository"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      reportError(error, tr("打开仓库失败", "Could not open repository"));
+    }
   } finally {
-    snapshotLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      snapshotLoading.value = false;
+    }
   }
 }
 
 async function refreshSnapshot(): Promise<void> {
   if (!activeRepositoryPath.value) return;
+  const repositoryPath = activeRepositoryPath.value;
+  const selectionGeneration = repositorySelectionGeneration;
   snapshotLoading.value = true;
   try {
     const selectedPath = selectedChange.value?.path;
-    const nextSnapshot = await api.getRepositorySnapshot(activeRepositoryPath.value);
+    const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     applySnapshot(nextSnapshot);
     await syncSelectedDiff(nextSnapshot, selectedPath, !selectedPath);
     await Promise.all([loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
   } catch (error) {
-    reportError(error, tr("刷新仓库失败", "Could not refresh repository"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      reportError(error, tr("刷新仓库失败", "Could not refresh repository"));
+    }
   } finally {
-    snapshotLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      snapshotLoading.value = false;
+    }
+  }
+}
+
+// A backend mutation can succeed before its follow-up snapshot read fails.
+// Reconcile silently on an error path so the UI does not invite the user to
+// retry a non-idempotent action from stale state.
+async function reconcileSnapshotAfterMutationError(repositoryPath: string): Promise<void> {
+  try {
+    const selectedPath = selectedChange.value?.path;
+    const selectionGeneration = repositorySelectionGeneration;
+    const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      applySnapshot(nextSnapshot);
+      await syncSelectedDiff(nextSnapshot, selectedPath, !selectedPath, repositoryPath);
+    }
+  } catch {
+    // Preserve the original mutation error; a best-effort reconciliation must
+    // not replace it with a secondary refresh failure.
   }
 }
 
@@ -766,11 +823,19 @@ async function cloneRepository(): Promise<void> {
   }
   mutationBusy.value = true;
   try {
+    const selectedCloneAccount = cloneForm.accountId === "none" || cloneForm.accountId === "auto"
+      ? null
+      : accounts.value.find((account) => account.id === cloneForm.accountId) ?? null;
+    // An SSH agent chooses its key from the user's SSH configuration, so its
+    // profile cannot be pinned into Clone's durable origin binding. Keep the
+    // selection as a UI hint only and let normal system Git/SSH handle it.
+    const usesPinnedCloneAccount = selectedCloneAccount?.authMethod === "personalAccessToken";
+    const usesAutomaticCloneAccount = cloneForm.accountId === "auto";
     const repository = await api.cloneRepository({
       url: cloneForm.url.trim(),
       destinationPath: cloneForm.destinationPath.trim(),
-      ...(cloneForm.accountId !== "none" ? { endpointId: cloneForm.endpointId } : {}),
-      ...(cloneForm.accountId !== "none" && cloneForm.accountId !== "auto" ? { accountProfileId: cloneForm.accountId } : {}),
+      ...(usesPinnedCloneAccount || usesAutomaticCloneAccount ? { endpointId: cloneForm.endpointId } : {}),
+      ...(usesPinnedCloneAccount ? { accountProfileId: cloneForm.accountId } : {}),
     });
     if (!repositories.value.some((item) => item.path === repository.path)) repositories.value = [...repositories.value, repository];
     cloneModalShown.value = false;
@@ -811,17 +876,30 @@ async function initRepository(): Promise<void> {
   }
 }
 
-async function loadDiff(entry: GitStatusEntry): Promise<void> {
-  if (!activeRepositoryPath.value) return;
+async function loadDiff(entry: GitStatusEntry, repositoryPath = activeRepositoryPath.value): Promise<void> {
+  if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
+  const requestGeneration = ++diffRequestGeneration;
   selectedChange.value = entry;
   selectedDiffStaged.value = Boolean(entry.indexStatus) && !entry.worktreeStatus;
   diffLoading.value = true;
   try {
-    diffText.value = await api.getFileDiff(activeRepositoryPath.value, entry.path, Boolean(entry.indexStatus) && !entry.worktreeStatus);
+    const diff = await api.getFileDiff(repositoryPath, entry.path, Boolean(entry.indexStatus) && !entry.worktreeStatus);
+    if (
+      activeRepositoryPath.value !== repositoryPath ||
+      selectedChange.value?.path !== entry.path ||
+      requestGeneration !== diffRequestGeneration
+    ) {
+      return;
+    }
+    diffText.value = diff;
   } catch (error) {
-    reportError(error, tr("读取差异失败", "Could not load diff"));
+    if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
+      reportError(error, tr("读取差异失败", "Could not load diff"));
+    }
   } finally {
-    diffLoading.value = false;
+    if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
+      diffLoading.value = false;
+    }
   }
 }
 
@@ -842,15 +920,17 @@ async function openFileBlame(): Promise<void> {
 
 async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
   if (!activeRepositoryPath.value || !selectedChange.value) return;
+  const repositoryPath = activeRepositoryPath.value;
+  const selectionGeneration = repositorySelectionGeneration;
   const selectedPath = selectedChange.value.path;
   const reverse = selectedDiffStaged.value;
   mutationBusy.value = true;
   try {
-    const nextSnapshot = await api.applyPatch(activeRepositoryPath.value, hunk.patch, reverse);
-    applySnapshot(nextSnapshot);
+    const nextSnapshot = await api.applyPatch(repositoryPath, selectedPath, hunk.patch, reverse);
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
     const nextEntry = nextSnapshot.status.entries.find((entry) => entry.path === selectedPath);
     if (nextEntry) {
-      await loadDiff(nextEntry);
+      await loadDiff(nextEntry, repositoryPath);
     } else {
       selectedChange.value = null;
       diffText.value = "";
@@ -1120,7 +1200,7 @@ function openExternalEditorModal(): void {
 async function saveExternalEditor(): Promise<void> {
   const executable = externalEditorForm.executable.trim();
   if (!executable) {
-    message.warning(tr("请输入外部编辑器的可执行文件。", "Enter the external editor executable."));
+    message.warning(tr("请输入外部编辑器的绝对可执行文件路径。", "Enter the external editor's absolute executable path."));
     return;
   }
   const editorArguments = externalEditorForm.arguments
@@ -1297,6 +1377,10 @@ async function switchLocalBranch(branch: BranchInfo, stashLocalChanges: boolean)
         : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branch.name }),
     );
   } catch (error) {
+    await reconcileSnapshotAfterMutationError(repositoryPath);
+    if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
+      await loadHistory().catch(() => undefined);
+    }
     reportError(error, tr("切换分支失败", "Could not switch branch"));
   } finally {
     mutationBusy.value = false;
@@ -1331,6 +1415,10 @@ async function switchRemoteBranch(remoteBranch: RemoteBranchInfo, stashLocalChan
         : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branchLabel }),
     );
   } catch (error) {
+    await reconcileSnapshotAfterMutationError(repositoryPath);
+    if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
+      await loadHistory().catch(() => undefined);
+    }
     reportError(error, tr("切换远程分支失败", "Could not switch remote branch"));
   } finally {
     mutationBusy.value = false;
@@ -1352,16 +1440,19 @@ async function createBranch(): Promise<void> {
     message.warning(tr("请输入分支名称。", "Enter a branch name."));
     return;
   }
+  const repositoryPath = activeRepositoryPath.value;
+  const selectionGeneration = repositorySelectionGeneration;
   mutationBusy.value = true;
   try {
-    applySnapshot(
-      await api.createBranch({ repositoryPath: activeRepositoryPath.value, name: branchForm.name.trim(), checkout: branchForm.checkout }),
-    );
+    const nextSnapshot = await api.createBranch({ repositoryPath, name: branchForm.name.trim(), checkout: branchForm.checkout });
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+    applySnapshot(nextSnapshot);
     branchModalShown.value = false;
     branchForm.name = "";
     branchForm.checkout = true;
     message.success(tr("分支已创建。", "Branch created."));
   } catch (error) {
+    await reconcileSnapshotAfterMutationError(repositoryPath);
     reportError(error, tr("创建分支失败", "Could not create branch"));
   } finally {
     mutationBusy.value = false;
@@ -1706,7 +1797,7 @@ function confirmPopStash(stash: StashEntry): void {
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
-        applySnapshot(await api.popStash(activeRepositoryPath.value!, stash.reference));
+        applySnapshot(await api.popStash(activeRepositoryPath.value!, stash.reference, stash.commitId));
         await loadHistory();
         message.success(tr("暂存栈已恢复。", "Stash restored."));
       } catch (error) {
@@ -1732,7 +1823,7 @@ function confirmDropStash(stash: StashEntry): void {
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
-        await api.dropStash(activeRepositoryPath.value!, stash.reference);
+        await api.dropStash(activeRepositoryPath.value!, stash.reference, stash.commitId);
         await loadHistory();
         message.success(tr("暂存栈已删除。", "Stash dropped."));
       } catch (error) {
@@ -2023,7 +2114,7 @@ async function saveBinding(): Promise<void> {
     return;
   }
   if (selectedAccount && !supportsGitRemoteCredentials(selectedAccount)) {
-    message.warning(tr("指定账号绑定仅支持 PAT 或 SSH agent。系统 Git credential helper 会按 remote URL 自动处理，无需绑定账号。", "An account-bound remote supports only a PAT or SSH agent. The system Git credential helper works automatically by remote URL and needs no account binding."));
+    message.warning(tr("指定账号绑定仅支持应用管理的 PAT。SSH agent 与系统 Git credential helper 会按 remote URL 自动处理，无需绑定账号。", "An account-bound remote supports only an app-managed PAT. SSH agent and the system Git credential helper work automatically by remote URL and need no account binding."));
     return;
   }
   const binding: RemoteBinding = {

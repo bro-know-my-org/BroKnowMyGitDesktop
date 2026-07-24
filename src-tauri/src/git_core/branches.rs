@@ -5,6 +5,25 @@ use super::validation::*;
 use super::*;
 
 impl GitCore {
+    /// Returns the checked-out local branch name. Publish recovery requires a
+    /// symbolic branch so it can prove the exact commit reached the remote.
+    pub(crate) fn current_branch_name(&self, repository: &Path) -> Result<String, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["symbolic-ref", "--quiet", "--short", "HEAD"]),
+            &GitEnvironment::default(),
+        )?;
+        if !output.status.success() {
+            if output.status.code() == Some(1) {
+                return Err(AppError::new("detached_head", "当前仓库未检出本地分支。"));
+            }
+            return Err(git_command_error("读取当前分支", &output));
+        }
+        let branch = output_text(&output.stdout).trim().to_owned();
+        validate_ref_name(&branch, "当前分支名")?;
+        Ok(branch)
+    }
+
     /// Creates a local branch without switching to it.
     pub fn create_branch(
         &self,
@@ -14,8 +33,9 @@ impl GitCore {
     ) -> Result<(), AppError> {
         validate_ref_name(branch, "分支名")?;
         if let Some(start_point) = start_point {
-            validate_ref_name(start_point, "起点引用")?;
+            validate_revision(start_point, "起点引用")?;
         }
+        self.ensure_no_operation(repository)?;
         let mut arguments = os_arguments(&["branch", "--", branch]);
         if let Some(start_point) = start_point {
             arguments.push(OsString::from(start_point));
@@ -32,6 +52,7 @@ impl GitCore {
     /// Switches the worktree to an existing local branch.
     pub fn switch_branch(&self, repository: &Path, branch: &str) -> Result<(), AppError> {
         validate_ref_name(branch, "分支名")?;
+        self.ensure_no_operation(repository)?;
         let arguments = os_arguments(&["switch", "--", branch]);
         self.run(
             Some(repository),
@@ -55,6 +76,7 @@ impl GitCore {
     ) -> Result<(), AppError> {
         validate_remote_name(remote_name)?;
         validate_ref_name(branch, "远程分支名")?;
+        self.ensure_no_operation(repository)?;
         if !self
             .remotes(repository)?
             .iter()
@@ -79,21 +101,30 @@ impl GitCore {
             return Err(git_command_error("检查远程分支", &reference_exists));
         }
 
-        if self
+        let remote_tracking_branch = remote_tracking_branch_name(remote_name, branch);
+        if let Some(local_branch) = self
             .branches(repository)?
-            .iter()
-            .any(|local_branch| local_branch.name == branch)
+            .into_iter()
+            .find(|local_branch| local_branch.name == branch)
         {
-            return self.switch_branch(repository, branch);
+            if local_branch.upstream.as_deref() == Some(remote_tracking_branch.as_str())
+                || self.branch_tracks_remote(repository, branch, remote_name, branch)?
+            {
+                if local_branch.is_current {
+                    return Ok(());
+                }
+                return self.switch_branch(repository, branch);
+            }
+            return Err(AppError::new(
+                "local_branch_remote_conflict",
+                "同名本地分支没有跟踪所选远程分支；请先重命名、删除或切换到其他分支。",
+            ));
         }
-
         // `git switch --track` accepts a short remote-tracking name such as
         // `origin/release`, rather than its fully-qualified
-        // `refs/remotes/origin/release` form. A single-branch clone also
-        // needs the matching fetch refspec before Git will allow the upstream
-        // to be configured.
-        self.ensure_remote_fetches_all_branches(repository, remote_name)?;
-        let remote_tracking_branch = remote_tracking_branch_name(remote_name, branch);
+        // `refs/remotes/origin/release` form. Fetch requests the full branch
+        // refspec positionally, so creating this branch never rewrites the
+        // repository's persisted remote configuration.
         let arguments = os_arguments(&[
             "switch",
             "--track",
@@ -111,6 +142,98 @@ impl GitCore {
         Ok(())
     }
 
+    /// Reports whether the requested remote branch already resolves to the
+    /// currently checked-out local tracking branch. Command handlers use this
+    /// before stashing local changes, because switching to the current branch
+    /// is a no-op and must not create an unexpected stash entry.
+    pub(crate) fn is_current_remote_branch_target(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        branch: &str,
+    ) -> Result<bool, AppError> {
+        validate_remote_name(remote_name)?;
+        validate_ref_name(branch, "远程分支名")?;
+        let remote_tracking_branch = remote_tracking_branch_name(remote_name, branch);
+        let Some(local_branch) = self
+            .branches(repository)?
+            .into_iter()
+            .find(|local_branch| local_branch.name == branch && local_branch.is_current)
+        else {
+            return Ok(false);
+        };
+        Ok(
+            local_branch.upstream.as_deref() == Some(remote_tracking_branch.as_str())
+                || self.branch_tracks_remote(repository, branch, remote_name, branch)?,
+        )
+    }
+
+    /// `%(upstream:short)` is empty when a valid upstream lies outside a
+    /// single-branch clone's current fetch refspec. Read the branch's durable
+    /// configuration as a fallback before deciding that an existing same-name
+    /// branch conflicts with the requested remote branch.
+    fn branch_tracks_remote(
+        &self,
+        repository: &Path,
+        branch: &str,
+        remote_name: &str,
+        remote_branch: &str,
+    ) -> Result<bool, AppError> {
+        // Git's command-line config key grammar cannot quote a subsection;
+        // asking for `branch."name".remote` therefore does not address a
+        // branch whose name contains a dot or quote. Enumerate the two
+        // branch fields as NUL-delimited records and compare the recovered
+        // subsection exactly instead.
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "config",
+                "--local",
+                "--null",
+                "--get-regexp",
+                "^branch\\..*\\.(remote|merge)$",
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.code() == Some(1) {
+            return Ok(false);
+        }
+        if !output.status.success() {
+            return Err(git_command_error("读取本地分支上游", &output));
+        }
+        let mut configured_remote = None;
+        let mut configured_merge = None;
+        for record in output.stdout.split(|byte| *byte == b'\0') {
+            let Some(separator) = record.iter().position(|byte| *byte == b'\n') else {
+                continue;
+            };
+            let (key, value) = record.split_at(separator);
+            let value = &value[1..];
+            let key = std::str::from_utf8(key)
+                .map_err(|_| AppError::new("git_parse_error", "无法读取本地分支上游。"))?;
+            let value = std::str::from_utf8(value)
+                .map_err(|_| AppError::new("git_parse_error", "无法读取本地分支上游。"))?;
+            if let Some(configured_branch) = key
+                .strip_prefix("branch.")
+                .and_then(|key| key.strip_suffix(".remote"))
+            {
+                if configured_branch == branch {
+                    configured_remote = Some(value.to_owned());
+                }
+            }
+            if let Some(configured_branch) = key
+                .strip_prefix("branch.")
+                .and_then(|key| key.strip_suffix(".merge"))
+            {
+                if configured_branch == branch {
+                    configured_merge = Some(value.to_owned());
+                }
+            }
+        }
+        Ok(configured_remote.as_deref() == Some(remote_name)
+            && configured_merge.as_deref() == Some(&format!("refs/heads/{remote_branch}")))
+    }
+
     /// Renames a local branch. Git itself enforces that the destination does
     /// not collide with another branch.
     pub fn rename_branch(
@@ -121,6 +244,7 @@ impl GitCore {
     ) -> Result<(), AppError> {
         validate_ref_name(old_name, "原分支名")?;
         validate_ref_name(new_name, "新分支名")?;
+        self.ensure_no_operation(repository)?;
         let arguments = os_arguments(&["branch", "-m", old_name, new_name]);
         self.run(
             Some(repository),
@@ -140,6 +264,7 @@ impl GitCore {
         force: bool,
     ) -> Result<(), AppError> {
         validate_ref_name(name, "分支名")?;
+        self.ensure_no_operation(repository)?;
         let option = if force { "-D" } else { "-d" };
         let arguments = os_arguments(&["branch", option, name]);
         self.run(
@@ -161,8 +286,9 @@ impl GitCore {
     ) -> Result<(), AppError> {
         validate_ref_name(branch, "分支名")?;
         if let Some(start_point) = start_point {
-            validate_ref_name(start_point, "起点引用")?;
+            validate_revision(start_point, "起点引用")?;
         }
+        self.ensure_no_operation(repository)?;
         let mut arguments = os_arguments(&["switch", "-c", branch]);
         if let Some(start_point) = start_point {
             arguments.push(OsString::from(start_point));
@@ -180,6 +306,7 @@ impl GitCore {
     /// reported, the worktree remains available for the UI to show its status.
     pub fn merge_branch(&self, repository: &Path, branch: &str) -> Result<(), AppError> {
         validate_ref_name(branch, "分支名")?;
+        self.ensure_no_operation(repository)?;
         let arguments = os_arguments(&["merge", "--no-edit", "--", branch]);
         self.run(
             Some(repository),
@@ -234,18 +361,18 @@ impl GitCore {
     /// Git's own git-dir resolution so linked worktrees are handled correctly.
     pub fn operation_kind(&self, repository: &Path) -> Result<Option<GitOperationKind>, AppError> {
         let git_dir = self.git_directory(repository)?;
-        if git_dir.join("rebase-merge").exists()
-            || git_dir.join("rebase-apply").join("rebasing").exists()
+        if operation_marker_exists(&git_dir.join("rebase-merge"))?
+            || operation_marker_exists(&git_dir.join("rebase-apply").join("rebasing"))?
         {
             return Ok(Some(GitOperationKind::Rebase));
         }
-        if git_dir.join("CHERRY_PICK_HEAD").exists() {
+        if operation_marker_exists(&git_dir.join("CHERRY_PICK_HEAD"))? {
             return Ok(Some(GitOperationKind::CherryPick));
         }
-        if git_dir.join("REVERT_HEAD").exists() {
+        if operation_marker_exists(&git_dir.join("REVERT_HEAD"))? {
             return Ok(Some(GitOperationKind::Revert));
         }
-        if git_dir.join("MERGE_HEAD").exists() {
+        if operation_marker_exists(&git_dir.join("MERGE_HEAD"))? {
             return Ok(Some(GitOperationKind::Merge));
         }
         Ok(None)
@@ -269,7 +396,7 @@ impl GitCore {
         let environment = match &kind {
             GitOperationKind::Merge => GitEnvironment::default(),
             GitOperationKind::Rebase | GitOperationKind::CherryPick | GitOperationKind::Revert => {
-                GitEnvironment::new().with_variable("GIT_EDITOR", "true")
+                noninteractive_git_editor_environment()?
             }
         };
         self.run(Some(repository), &arguments, &environment, "继续 Git 操作")?;
@@ -298,4 +425,9 @@ impl GitCore {
         )?;
         Ok(())
     }
+}
+
+fn operation_marker_exists(path: &Path) -> Result<bool, AppError> {
+    path.try_exists()
+        .map_err(|_| AppError::new("git_operation_state_unavailable", "无法读取 Git 操作状态。"))
 }

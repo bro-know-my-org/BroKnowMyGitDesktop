@@ -197,16 +197,31 @@ fn validate_remote_url(raw: &str, transport: &RemoteTransport) -> Result<(), App
         }
     }
 
-    // A username in an HTTP remote can itself be a token.  Refuse to ever
-    // carry such data forward into a command or a displayed error.
-    if Url::parse(raw).ok().is_some_and(|url| {
+    let parsed_url = Url::parse(raw).ok();
+    if matches!(transport, RemoteTransport::Https) && parsed_url.is_none() {
+        return Err(AppError::new("unsafe_remote_url", "远程 HTTPS 地址无效。"));
+    }
+    if matches!(transport, RemoteTransport::Ssh) && parsed_url.is_none() && raw.contains(['?', '#'])
+    {
+        return Err(AppError::new(
+            "unsafe_remote_url",
+            "远程地址包含不安全的认证信息或查询参数。",
+        ));
+    }
+    // A username in an HTTP remote can itself be a token. Query strings and
+    // fragments are also outside normal Git remote addressing and can retain
+    // credentials in repository configuration, so never carry them into a
+    // command or a displayed error.
+    if parsed_url.is_some_and(|url| {
         url.password().is_some()
             || (matches!(transport, RemoteTransport::Https | RemoteTransport::Http)
                 && !url.username().is_empty())
+            || url.query().is_some()
+            || url.fragment().is_some()
     }) {
         return Err(AppError::new(
             "unsafe_remote_url",
-            "远程 HTTP 地址包含凭据；请先从 remote URL 中移除凭据。",
+            "远程地址包含不安全的认证信息或查询参数。",
         ));
     }
 
@@ -1640,17 +1655,9 @@ fn terminate_remaining_platform_cli_process_tree(
 fn configure_platform_cli_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
 
-    // SAFETY: the child only creates a process group before exec so a timeout
-    // can terminate its CLI, keychain helper, and other descendants together.
-    unsafe {
-        command.pre_exec(|| {
-            // SAFETY: setpgid is async-signal-safe and uses the child PID only.
-            if libc::setpgid(0, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    // Delegate the post-fork setup to the standard library rather than
+    // invoking Rust code from a `pre_exec` closure in this multithreaded app.
+    command.process_group(0);
 }
 
 #[cfg(windows)]
@@ -2143,6 +2150,37 @@ mod tests {
         )
         .expect_err("credentials must never be sent over plain HTTP");
         assert_eq!(error.code(), "unsupported_remote_transport");
+    }
+
+    #[test]
+    fn credential_url_validation_rejects_token_bearing_queries_and_fragments() {
+        assert_eq!(
+            validate_remote_url_for_credentials(
+                "https://gitee.com/team/project.git?access_token=hidden",
+                &RemoteTransport::Https,
+            )
+            .expect_err("HTTPS remote queries can retain tokens")
+            .code(),
+            "unsafe_remote_url"
+        );
+        assert_eq!(
+            validate_remote_url_for_credentials(
+                "ssh://git@gitee.com/team/project.git#token",
+                &RemoteTransport::Ssh,
+            )
+            .expect_err("SSH URL fragments are not repository paths")
+            .code(),
+            "unsafe_remote_url"
+        );
+        assert_eq!(
+            validate_remote_url_for_credentials(
+                "git@gitee.com:team/project.git?access_token=hidden",
+                &RemoteTransport::Ssh,
+            )
+            .expect_err("SCP-style SSH remotes cannot retain token-like query data")
+            .code(),
+            "unsafe_remote_url"
+        );
     }
 
     #[test]

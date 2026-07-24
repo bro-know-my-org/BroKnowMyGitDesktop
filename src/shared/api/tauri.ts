@@ -256,7 +256,7 @@ let browserLfsStatus: LfsStatus = {
   files: [],
 };
 let browserExternalEditor: ExternalEditorConfig | null = null;
-let browserCleanUntrackedConfirmation: string | null = null;
+let browserCleanUntrackedConfirmation: { repositoryPath: string; token: string; paths: Set<string> } | null = null;
 type BrowserStash = StashEntry & { entries: GitStatusEntry[] };
 
 let browserStashes: BrowserStash[] = [];
@@ -272,6 +272,7 @@ function stashBrowserChanges(snapshot: RepositorySnapshot, message: string): voi
   if (!snapshot.status.entries.length) return;
   browserStashes = [{
     reference: "",
+    commitId: `browser-stash-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     message: `On ${snapshot.status.branch || "HEAD"}: ${message}`,
     entries: copy(snapshot.status.entries),
   }, ...browserStashes];
@@ -392,7 +393,80 @@ async function request<T>(command: string, args: object, browserFallback: () => 
 
 function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): RepositorySnapshot {
   updater(browserSnapshot);
+  // Browser confirmations only retain path strings, unlike the native
+  // fingerprinted flow. Any intervening mock mutation can therefore replace
+  // an untracked entry at the same path, so it invalidates the preview.
+  browserCleanUntrackedConfirmation = null;
   return copy(browserSnapshot);
+}
+
+function parseGitQuotedDiffPath(header: string, index: number): { path: string; end: number } | null {
+  if (header[index] !== '"') return null;
+  const bytes: number[] = [];
+  for (let cursor = index + 1; cursor < header.length; cursor += 1) {
+    const character = header[cursor];
+    if (character === '"') {
+      try {
+        return { path: new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes)), end: cursor + 1 };
+      } catch {
+        return null;
+      }
+    }
+    if (character === "\\") {
+      const escaped = header[++cursor];
+      if (escaped === undefined) return null;
+      const escapedByte = escaped === "n" ? 0x0a
+        : escaped === "r" ? 0x0d
+          : escaped === "t" ? 0x09
+            : escaped === "\\" || escaped === '"' ? escaped.charCodeAt(0)
+              : null;
+      if (escapedByte !== null) {
+        bytes.push(escapedByte);
+        continue;
+      }
+      if (!/[0-7]/u.test(escaped) || cursor + 2 >= header.length) return null;
+      const octal = header.slice(cursor, cursor + 3);
+      if (!/^[0-7]{3}$/u.test(octal)) return null;
+      bytes.push(Number.parseInt(octal, 8));
+      cursor += 2;
+      continue;
+    }
+    const code = character.charCodeAt(0);
+    if (code < 0x20) return null;
+    if (code <= 0x7e) {
+      bytes.push(code);
+    } else {
+      bytes.push(...new TextEncoder().encode(character));
+    }
+  }
+  return null;
+}
+
+function parseGitDiffHeaderPaths(header: string): [string, string] | null {
+  const prefix = "diff --git ";
+  if (!header.startsWith(prefix)) return null;
+  let index = prefix.length;
+  const paths: string[] = [];
+  for (let pathIndex = 0; pathIndex < 2; pathIndex += 1) {
+    if (index >= header.length) return null;
+    if (header[index] === '"') {
+      const parsed = parseGitQuotedDiffPath(header, index);
+      if (!parsed) return null;
+      paths.push(parsed.path);
+      index = parsed.end;
+    } else {
+      const end = header.indexOf(" ", index);
+      const tokenEnd = end === -1 ? header.length : end;
+      if (tokenEnd === index) return null;
+      paths.push(header.slice(index, tokenEnd));
+      index = tokenEnd;
+    }
+    if (pathIndex === 0) {
+      if (header[index] !== " ") return null;
+      index += 1;
+    }
+  }
+  return index === header.length ? [paths[0], paths[1]] : null;
 }
 
 function requireBrowserSnapshot(repositoryPath: string): RepositorySnapshot {
@@ -659,12 +733,14 @@ export const api = {
     return request("preview_clean_untracked", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
       const confirmation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      browserCleanUntrackedConfirmation = confirmation;
+      const paths = new Set(
+        browserSnapshot.status.entries
+          .filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?")
+          .map((entry) => entry.path),
+      );
+      browserCleanUntrackedConfirmation = { repositoryPath, token: confirmation, paths };
       return {
-        preview: browserSnapshot.status.entries
-        .filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?")
-        .map((entry) => "Would remove " + entry.path)
-        .join("\n"),
+        preview: [...paths].map((path) => "Would remove " + path).join("\n"),
         confirmation,
       };
     });
@@ -673,15 +749,22 @@ export const api = {
   cleanUntracked(repositoryPath: string, confirmation: string): Promise<RepositorySnapshot> {
     return request("clean_untracked", { repositoryPath, confirmation }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!confirmation || confirmation !== browserCleanUntrackedConfirmation) {
+      if (
+        !confirmation
+        || confirmation !== browserCleanUntrackedConfirmation?.token
+        || repositoryPath !== browserCleanUntrackedConfirmation?.repositoryPath
+      ) {
         throw {
           code: "clean_untracked_confirmation_expired",
           message: "未跟踪文件预览已过期，请重新确认后再清理。",
         } satisfies AppError;
       }
+      const previewedPaths = browserCleanUntrackedConfirmation.paths;
       browserCleanUntrackedConfirmation = null;
       return updateMockSnapshot((snapshot) => {
-        snapshot.status.entries = snapshot.status.entries.filter((entry) => entry.indexStatus || entry.worktreeStatus !== "?");
+        snapshot.status.entries = snapshot.status.entries.filter(
+          (entry) => entry.indexStatus || entry.worktreeStatus !== "?" || !previewedPaths.has(entry.path),
+        );
       });
     });
   },
@@ -698,7 +781,8 @@ export const api = {
       }
       const executable = editor.executable.trim();
       const editorArguments = editor.arguments.map((argument) => argument.trim()).filter(Boolean);
-      if (!executable || editorArguments.length > 32) {
+      const isAbsoluteExecutable = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/u.test(executable);
+      if (!executable || !isAbsoluteExecutable || editorArguments.length > 32) {
         throw { code: "external_editor_config_invalid", message: "外部编辑器配置无效。" } satisfies AppError;
       }
       browserExternalEditor = { executable, arguments: editorArguments };
@@ -779,16 +863,19 @@ export const api = {
     });
   },
 
-  applyPatch(repositoryPath: string, patch: string, reverse: boolean): Promise<RepositorySnapshot> {
-    return request("apply_patch", { repositoryPath, patch, reverse }, () => {
+  applyPatch(repositoryPath: string, path: string, patch: string, reverse: boolean): Promise<RepositorySnapshot> {
+    return request("apply_patch", { repositoryPath, path, patch, reverse }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!patch.startsWith("diff --git ")) {
         throw { code: "invalid_git_patch", message: "代码块补丁无效。" } satisfies AppError;
       }
-      const match = patch.match(/^diff --git a\/(.+?) b\//mu);
-      const path = match?.[1];
+      const diffHeaders = patch.match(/^diff --git [^\r\n]+$/gmu) ?? [];
+      const headerPaths = diffHeaders.length === 1 ? parseGitDiffHeaderPaths(diffHeaders[0]) : null;
+      if (!headerPaths || headerPaths[0] !== `a/${path}` || headerPaths[1] !== `b/${path}`) {
+        throw { code: "invalid_git_patch", message: "代码块补丁与当前选中的文件不匹配。" } satisfies AppError;
+      }
       return updateMockSnapshot((snapshot) => {
-        const entry = snapshot.status.entries.find((candidate) => candidate.path === path) ?? snapshot.status.entries[0];
+        const entry = snapshot.status.entries.find((candidate) => candidate.path === path);
         if (!entry) throw { code: "invalid_git_patch", message: "找不到补丁对应的文件。" } satisfies AppError;
         if (reverse) {
           entry.worktreeStatus = entry.worktreeStatus || entry.indexStatus || "M";
@@ -1120,7 +1207,7 @@ export const api = {
   listStashes(repositoryPath: string): Promise<StashEntry[]> {
     return request("list_stashes", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
-      return copy(browserStashes.map(({ reference, message }) => ({ reference, message })));
+      return copy(browserStashes.map(({ reference, commitId, message }) => ({ reference, commitId, message })));
     });
   },
 
@@ -1135,10 +1222,10 @@ export const api = {
     });
   },
 
-  popStash(repositoryPath: string, reference: string): Promise<RepositorySnapshot> {
-    return request("pop_stash", { repositoryPath, reference }, () => {
+  popStash(repositoryPath: string, reference: string, expectedCommitId: string): Promise<RepositorySnapshot> {
+    return request("pop_stash", { repositoryPath, reference, expectedCommitId }, () => {
       requireBrowserSnapshot(repositoryPath);
-      const index = browserStashes.findIndex((entry) => entry.reference === reference);
+      const index = browserStashes.findIndex((entry) => entry.reference === reference && entry.commitId === expectedCommitId);
       if (index === -1) throw { code: "stash_not_found", message: "找不到该暂存栈条目。" } satisfies AppError;
       const [stash] = browserStashes.splice(index, 1);
       renumberBrowserStashes();
@@ -1148,10 +1235,10 @@ export const api = {
     });
   },
 
-  dropStash(repositoryPath: string, reference: string): Promise<void> {
-    return request("drop_stash", { repositoryPath, reference }, () => {
+  dropStash(repositoryPath: string, reference: string, expectedCommitId: string): Promise<void> {
+    return request("drop_stash", { repositoryPath, reference, expectedCommitId }, () => {
       requireBrowserSnapshot(repositoryPath);
-      browserStashes = browserStashes.filter((entry) => entry.reference !== reference);
+      browserStashes = browserStashes.filter((entry) => entry.reference !== reference || entry.commitId !== expectedCommitId);
       renumberBrowserStashes();
     });
   },
@@ -1426,8 +1513,8 @@ export const api = {
       }
       if (binding.accountSelection.mode === "profile") {
         const account = requireBrowserAccountForEndpoint(binding.accountSelection.accountProfileId, endpoint.id);
-        if (account.authMethod !== "personalAccessToken" && account.authMethod !== "sshAgent") {
-          throw { code: "authentication_method_mismatch", message: "指定账号绑定仅支持 PAT 或 SSH agent。" } satisfies AppError;
+        if (account.authMethod !== "personalAccessToken") {
+          throw { code: "authentication_method_mismatch", message: "指定账号绑定仅支持应用管理的 PAT。" } satisfies AppError;
         }
       }
       updateMockSnapshot((snapshot) => {

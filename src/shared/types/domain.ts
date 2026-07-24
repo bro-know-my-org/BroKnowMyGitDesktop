@@ -170,6 +170,7 @@ export interface CommitSummary {
 
 export interface StashEntry {
   reference: string;
+  commitId: string;
   message: string;
 }
 

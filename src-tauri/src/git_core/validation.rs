@@ -71,6 +71,39 @@ pub(super) fn validate_lfs_pattern(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Git commit messages are passed as one direct process argument. A NUL byte
+/// cannot be represented by an OS argument and must be rejected before a
+/// failed spawn is misclassified as a missing Git installation.
+pub(super) fn validate_commit_message(message: &str) -> Result<(), AppError> {
+    if message.trim().is_empty() || message.contains('\0') {
+        return Err(AppError::new(
+            "invalid_commit_message",
+            "提交信息不能为空或包含无效字符",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_tag_message(message: &str) -> Result<(), AppError> {
+    if message.trim().is_empty() || message.contains('\0') {
+        return Err(AppError::new(
+            "invalid_tag_message",
+            "注释标签信息不能为空或包含无效字符",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_stash_message(message: &str) -> Result<(), AppError> {
+    if message.contains('\0') {
+        return Err(AppError::new(
+            "invalid_stash_message",
+            "暂存说明包含无效字符",
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn validate_git_patch(patch: &str) -> Result<(), AppError> {
     const MAX_PATCH_BYTES: usize = 4 * 1024 * 1024;
     if patch.is_empty()
@@ -104,16 +137,20 @@ pub(super) fn render_untracked_file_diff(path: &str, content: &UntrackedFileCont
     } else {
         "100644"
     };
+    let old_path = git_quote_diff_path(&format!("a/{path}"));
+    let new_path = git_quote_diff_path(&format!("b/{path}"));
     let header = format!(
-        "diff --git a/{path} b/{path}\nnew file mode {mode}\n--- /dev/null\n+++ b/{path}\n"
+        "diff --git {old_path} {new_path}\nnew file mode {mode}\n--- /dev/null\n+++ {new_path}\n"
     );
-    let Ok(text) = std::str::from_utf8(&content.bytes) else {
-        return format!("{header}Binary files /dev/null and b/{path} differ\n");
-    };
-    if text.is_empty() {
-        return header;
+    // Git treats a NUL-containing file as binary even though NUL itself is
+    // valid UTF-8. Never place it in an IPC patch string or offer it to hunk
+    // staging as a textual unified diff.
+    if content.bytes.contains(&0) {
+        return format!("{header}Binary files /dev/null and {new_path} differ\n");
     }
-
+    let Ok(text) = std::str::from_utf8(&content.bytes) else {
+        return format!("{header}Binary files /dev/null and {new_path} differ\n");
+    };
     let mut diff = format!("{header}@@ -0,0 +1,{} @@\n", text.lines().count());
     for line in text.split_inclusive('\n') {
         let body = line.strip_suffix('\n').unwrap_or(line);
@@ -127,6 +164,54 @@ pub(super) fn render_untracked_file_diff(path: &str, content: &UntrackedFileCont
     diff
 }
 
+pub(super) fn render_empty_untracked_file_diff(
+    path: &str,
+    is_executable: bool,
+    empty_blob_object_id: &str,
+) -> String {
+    let mode = if is_executable { "100755" } else { "100644" };
+    let old_path = git_quote_diff_path(&format!("a/{path}"));
+    let new_path = git_quote_diff_path(&format!("b/{path}"));
+    format!(
+        "diff --git {old_path} {new_path}\nnew file mode {mode}\nindex {}..{empty_blob_object_id}\n",
+        "0".repeat(empty_blob_object_id.len())
+    )
+}
+
+/// Quote a path token exactly where Git's patch grammar requires it. The
+/// ordinary form remains readable for simple paths; all whitespace, quotes,
+/// backslashes, control bytes, and non-ASCII UTF-8 bytes use Git-compatible
+/// C-style escapes so a generated untracked-file diff can be passed back to
+/// `git apply` without changing its target path.
+fn git_quote_diff_path(path: &str) -> String {
+    if path
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-'))
+    {
+        return path.to_owned();
+    }
+
+    let mut quoted = String::with_capacity(path.len() + 2);
+    quoted.push('"');
+    for byte in path.bytes() {
+        match byte {
+            b'\\' => quoted.push_str("\\\\"),
+            b'"' => quoted.push_str("\\\""),
+            b'\t' => quoted.push_str("\\t"),
+            b'\n' => quoted.push_str("\\n"),
+            b'\r' => quoted.push_str("\\r"),
+            0x20..=0x7e => quoted.push(byte as char),
+            byte => {
+                use std::fmt::Write;
+
+                let _ = write!(quoted, "\\{byte:03o}");
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 #[cfg(unix)]
 pub(super) fn read_untracked_file_safely(
     repository: &Path,
@@ -135,6 +220,7 @@ pub(super) fn read_untracked_file_safely(
     use std::ffi::CString;
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
 
     validate_worktree_relative_path(relative_path)?;
@@ -200,7 +286,9 @@ pub(super) fn read_untracked_file_safely(
         libc::openat(
             parent.as_raw_fd(),
             file_name.as_ptr(),
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            // Opening a FIFO without O_NONBLOCK can wait for a writer before
+            // the metadata check below has a chance to reject it.
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NOCTTY,
         )
     };
     if file_fd < 0 {
@@ -214,7 +302,10 @@ pub(super) fn read_untracked_file_safely(
     let metadata = file
         .metadata()
         .map_err(|_| AppError::new("untracked_diff_unavailable", "无法读取未跟踪文件。"))?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_UNTRACKED_DIFF_BYTES as u64 {
+    if !metadata.file_type().is_file()
+        || metadata.nlink() != 1
+        || metadata.len() > MAX_UNTRACKED_DIFF_BYTES as u64
+    {
         return Err(AppError::new(
             "untracked_diff_unavailable",
             "未跟踪文件不是可安全显示的常规文本文件，或内容过大。",
@@ -254,30 +345,13 @@ pub(super) fn read_untracked_file_safely(
 }
 
 pub(super) fn validate_remote_name(name: &str) -> Result<(), AppError> {
-    if name.trim().is_empty()
-        || name.starts_with('-')
-        || name.contains('\0')
-        || name.contains(['\r', '\n'])
-    {
-        return Err(AppError::new("invalid_remote_name", "远程名称无效"));
-    }
-    Ok(())
+    validate_ref_name(name, "远程名称")
+        .map_err(|_| AppError::new("invalid_remote_name", "远程名称无效"))
 }
 
 pub(super) fn all_remote_branches_fetch_refspec(remote_name: &str) -> Result<String, AppError> {
     validate_remote_name(remote_name)?;
     Ok(format!("+refs/heads/*:refs/remotes/{remote_name}/*"))
-}
-
-pub(super) fn is_remote_branch_fetch_refspec(refspec: &str) -> bool {
-    refspec
-        .strip_prefix('+')
-        .unwrap_or(refspec)
-        .starts_with("refs/heads/")
-}
-
-pub(super) fn remote_fetch_refspec_config_key(remote_name: &str) -> String {
-    format!("remote.{remote_name}.fetch")
 }
 
 pub(super) fn remote_tracking_reference(remote_name: &str, branch: &str) -> String {
@@ -289,11 +363,23 @@ pub(super) fn remote_tracking_branch_name(remote_name: &str, branch: &str) -> St
 }
 
 pub(super) fn validate_ref_name(value: &str, _label: &str) -> Result<(), AppError> {
-    if value.trim().is_empty()
+    let invalid = value.trim().is_empty()
+        || value.trim() != value
         || value.starts_with('-')
-        || value.contains('\0')
-        || value.contains(['\r', '\n'])
-    {
+        || value == "@"
+        || value.chars().any(char::is_control)
+        || value.contains([' ', '~', '^', ':', '?', '*', '[', '\\'])
+        || value.contains("..")
+        || value.contains("@{")
+        || value.starts_with('/')
+        || value.ends_with('/')
+        || value.split('/').any(|component| {
+            component.is_empty()
+                || component.starts_with('.')
+                || component.ends_with('.')
+                || component.ends_with(".lock")
+        });
+    if invalid {
         return Err(AppError::new("invalid_git_reference", "Git 引用无效。"));
     }
     Ok(())
@@ -323,12 +409,16 @@ pub(super) fn validate_refspec(value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Validate every URL form accepted by `git clone` and remote configuration.
-/// This intentionally permits public HTTP, `git://`, file, and local-path
-/// remotes while rejecting values that could inject options or credentials.
-pub(crate) fn validate_git_remote_url(raw: &str) -> Result<(), AppError> {
+/// Validates every URL form accepted by `git clone` and remote configuration,
+/// then returns the trimmed value that callers must pass to Git. This
+/// intentionally permits public HTTP, `git://`, file, and local-path remotes
+/// while rejecting values that could inject options or credentials.
+pub(crate) fn validate_git_remote_url(raw: &str) -> Result<String, AppError> {
+    if raw.chars().any(char::is_control) {
+        return Err(AppError::new("invalid_remote_url", "远程地址无效"));
+    }
     let value = raw.trim();
-    if value.is_empty() || value.starts_with('-') || value.contains(['\r', '\n', '\0']) {
+    if value.is_empty() || value.starts_with('-') {
         return Err(AppError::new("invalid_remote_url", "远程地址无效"));
     }
     if raw_http_url_contains_unsafe_metadata(value) {
@@ -337,51 +427,88 @@ pub(crate) fn validate_git_remote_url(raw: &str) -> Result<(), AppError> {
             "远程地址不能包含认证信息或令牌",
         ));
     }
+    // On Windows, `Url::parse` treats a drive letter as a custom scheme. A
+    // native absolute path is nevertheless a normal local Git remote and is
+    // safe because it remains one direct argument after `--`.
+    if Path::new(value).is_absolute() {
+        return Ok(value.to_owned());
+    }
 
-    if has_supported_url_scheme(value)
-        && (has_invalid_percent_escape(value) || Url::parse(value).is_err())
-    {
-        return Err(AppError::new("invalid_remote_url", "远程地址无效"));
-    }
-    if let Ok(url) = Url::parse(value) {
-        let scheme = url.scheme().to_ascii_lowercase();
-        let http = matches!(scheme.as_str(), "http" | "https");
-        let unauthenticated = matches!(scheme.as_str(), "git" | "file");
-        if !matches!(
-            scheme.as_str(),
-            "https" | "http" | "ssh" | "git+ssh" | "git" | "file"
-        ) {
-            return Err(AppError::new(
-                "invalid_remote_url",
-                "远程地址使用了不受支持的协议",
-            ));
-        }
-        if !matches!(scheme.as_str(), "file") && url.host_str().is_none() {
-            return Err(AppError::new("invalid_remote_url", "远程地址无效"));
-        }
-        if url.password().is_some()
-            || (http && !url.username().is_empty())
-            || (http && (url.query().is_some() || url.fragment().is_some()))
-            || (matches!(scheme.as_str(), "ssh" | "git+ssh")
-                && (url.query().is_some() || url.fragment().is_some()))
-            || (unauthenticated
-                && (!url.username().is_empty()
-                    || url.query().is_some()
-                    || url.fragment().is_some()))
-        {
-            return Err(AppError::new(
-                "credential_in_remote_url",
-                "远程地址不能包含认证信息或令牌",
-            ));
+    let scp_style_ssh = !value.contains("://")
+        && matches!(
+            crate::domain::parse_remote_url(value).transport,
+            crate::domain::RemoteTransport::Ssh
+        );
+    if !scp_style_ssh {
+        if let Some(scheme) = explicit_url_scheme(value) {
+            if !is_supported_url_scheme(scheme) {
+                return Err(AppError::new(
+                    "invalid_remote_url",
+                    "远程地址使用了不受支持的协议",
+                ));
+            }
+            if has_invalid_percent_escape(value) || Url::parse(value).is_err() {
+                return Err(AppError::new("invalid_remote_url", "远程地址无效"));
+            }
         }
     }
-    Ok(())
+    if !scp_style_ssh {
+        if let Ok(url) = Url::parse(value) {
+            let scheme = url.scheme().to_ascii_lowercase();
+            let http = matches!(scheme.as_str(), "http" | "https");
+            let unauthenticated = matches!(scheme.as_str(), "git" | "file");
+            if !matches!(
+                scheme.as_str(),
+                "https" | "http" | "ssh" | "git+ssh" | "git" | "file"
+            ) {
+                return Err(AppError::new(
+                    "invalid_remote_url",
+                    "远程地址使用了不受支持的协议",
+                ));
+            }
+            if !matches!(scheme.as_str(), "file") && url.host_str().is_none() {
+                return Err(AppError::new("invalid_remote_url", "远程地址无效"));
+            }
+            if url.password().is_some()
+                || (http && !url.username().is_empty())
+                || (http && (url.query().is_some() || url.fragment().is_some()))
+                || (matches!(scheme.as_str(), "ssh" | "git+ssh")
+                    && (url.query().is_some() || url.fragment().is_some()))
+                || (unauthenticated
+                    && (!url.username().is_empty()
+                        || url.query().is_some()
+                        || url.fragment().is_some()))
+            {
+                return Err(AppError::new(
+                    "credential_in_remote_url",
+                    "远程地址不能包含认证信息或令牌",
+                ));
+            }
+        }
+    }
+    Ok(value.to_owned())
 }
 
-pub(super) fn has_supported_url_scheme(value: &str) -> bool {
-    let Some((scheme, _)) = value.split_once(':') else {
-        return false;
-    };
+fn explicit_url_scheme(value: &str) -> Option<&str> {
+    let (scheme, remainder) = value.split_once(':')?;
+    let bytes = scheme.as_bytes();
+    if bytes.is_empty()
+        || !bytes[0].is_ascii_alphabetic()
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+    {
+        return None;
+    }
+    // Preserve Windows drive-letter paths such as `C:\\repo`; they are local
+    // Git remotes rather than a custom `c:` transport.
+    if bytes.len() == 1 && remainder.starts_with(['/', '\\']) {
+        return None;
+    }
+    Some(scheme)
+}
+
+fn is_supported_url_scheme(scheme: &str) -> bool {
     matches!(
         scheme.to_ascii_lowercase().as_str(),
         "https" | "http" | "ssh" | "git+ssh" | "git" | "file"
@@ -424,31 +551,87 @@ pub(super) fn raw_http_url_contains_unsafe_metadata(value: &str) -> bool {
 pub(super) fn is_unsafe_network_config_key(key: &str) -> bool {
     let key = key.trim().to_ascii_lowercase();
     let unsafe_http_key = key.starts_with("http.")
-        && (matches!(
-            key.as_str(),
-            "http.extraheader"
-                | "http.proxy"
-                | "http.sslverify"
-                | "http.cookiefile"
-                | "http.savecookies"
-        ) || key.ends_with(".extraheader")
-            || key.ends_with(".proxy")
-            || key.ends_with(".sslverify")
-            || key.ends_with(".cookiefile")
-            || key.ends_with(".savecookies"));
+        && has_unsafe_config_suffix(
+            &key,
+            &[
+                "extraheader",
+                "proxy",
+                "proxyauthmethod",
+                "sslverify",
+                "sslcainfo",
+                "sslcapath",
+                "sslcert",
+                "sslkey",
+                "sslcertpasswordprotected",
+                "sslbackend",
+                "sslcipherlist",
+                "pinnedpubkey",
+                "schannelcheckrevoke",
+                "schannelusesslcainfo",
+                "cookiefile",
+                "savecookies",
+            ],
+        );
     let unsafe_remote_key = key.starts_with("remote.")
-        && (key.ends_with(".sshcommand")
-            || key.ends_with(".uploadpack")
-            || key.ends_with(".receivepack"));
+        && has_unsafe_config_suffix(
+            &key,
+            &[
+                "proxy",
+                "proxyauthmethod",
+                "sshcommand",
+                "uploadpack",
+                "receivepack",
+            ],
+        );
+    let unsafe_submodule_key = key.starts_with("submodule.") && key.ends_with(".update");
+    let unsafe_filter_key = key.starts_with("filter.")
+        && (key.ends_with(".process") || key.ends_with(".smudge") || key.ends_with(".clean"));
+    let unsafe_protocol_key = key.starts_with("protocol.");
+    let unsafe_merge_driver_key = key.starts_with("merge.") && key.ends_with(".driver");
     let unsafe_url_rewrite_key =
         key.starts_with("url.") && (key.ends_with(".insteadof") || key.ends_with(".pushinsteadof"));
     key == "core.sshcommand"
+        || key == "core.askpass"
         || key == "core.gitproxy"
+        || key == "core.hookspath"
+        || key == "core.editor"
+        || key == "sequence.editor"
+        || key == "core.fsmonitor"
+        || key == "core.attributesfile"
         || key == "include.path"
         || key.starts_with("includeif.") && key.ends_with(".path")
         || key == "credential.helper"
         || key.starts_with("credential.")
         || unsafe_http_key
         || unsafe_remote_key
+        || unsafe_submodule_key
+        || unsafe_filter_key
+        || unsafe_protocol_key
+        || unsafe_merge_driver_key
         || unsafe_url_rewrite_key
+}
+
+pub(super) fn validate_stash_reference(reference: &str) -> Result<(), AppError> {
+    let Some(index) = reference
+        .strip_prefix("stash@{")
+        .and_then(|value| value.strip_suffix('}'))
+    else {
+        return Err(AppError::new("invalid_stash_reference", "暂存栈引用无效。"));
+    };
+    if index.is_empty() || !index.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(AppError::new("invalid_stash_reference", "暂存栈引用无效。"));
+    }
+    Ok(())
+}
+
+/// Git's URL-specific configuration expands a normal key such as
+/// `http.sslCAInfo` to `http.<url>.sslCAInfo`. Both forms must be rejected:
+/// a repository-local transport setting must never alter the trust or proxy
+/// boundary of an app-selected credential.
+fn has_unsafe_config_suffix(key: &str, suffixes: &[&str]) -> bool {
+    suffixes.iter().any(|suffix| {
+        key == format!("http.{suffix}")
+            || key == format!("remote.{suffix}")
+            || key.ends_with(&format!(".{suffix}"))
+    })
 }

@@ -1,5 +1,6 @@
 use super::credential_support::*;
 use super::*;
+use std::path::Component;
 
 pub(super) fn required_path(value: &str, _label: &str) -> Result<PathBuf, AppError> {
     if value.trim().is_empty() {
@@ -12,26 +13,53 @@ pub(super) fn required_path(value: &str, _label: &str) -> Result<PathBuf, AppErr
 /// and append the final path component. This makes concurrent aliases such as
 /// `./project` and an absolute path share one in-process lease without
 /// requiring the destination itself to exist.
-pub(super) fn clone_destination_key(destination: &Path) -> String {
-    let absolute = if destination.is_absolute() {
-        destination.to_path_buf()
+pub(super) fn clone_destination_key(destination: &Path) -> Result<String, AppError> {
+    let (parent, file_name) = clone_destination_parent_and_name(destination)?;
+    Ok(parent.join(file_name).to_string_lossy().into_owned())
+}
+
+/// Serializes clone and initialization requests sharing one destination
+/// parent. This deliberately uses the canonical parent rather than a final
+/// name: a not-yet-created `Project` and `project` can identify the same
+/// directory on a case-insensitive filesystem, where no canonical final path
+/// exists yet to collapse the aliases.
+pub(super) fn clone_parent_lease_key(destination: &Path) -> Result<String, AppError> {
+    Ok(clone_destination_parent_and_name(destination)?
+        .0
+        .to_string_lossy()
+        .into_owned())
+}
+
+fn clone_destination_parent_and_name(
+    destination: &Path,
+) -> Result<(PathBuf, &std::ffi::OsStr), AppError> {
+    let file_name = match destination.components().next_back() {
+        Some(Component::Normal(file_name)) => file_name,
+        _ => {
+            return Err(AppError::new(
+                "invalid_clone_destination",
+                "克隆目标必须是父目录下的一个文件夹。",
+            ))
+        }
+    };
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let absolute_parent = if parent.is_absolute() {
+        parent.to_path_buf()
     } else {
         std::env::current_dir()
-            .map(|current_directory| current_directory.join(destination))
-            .unwrap_or_else(|_| destination.to_path_buf())
+            .map(|current_directory| current_directory.join(parent))
+            .map_err(|_| AppError::new("invalid_clone_destination", "无法解析克隆目标的父目录。"))?
     };
-    let Some(file_name) = absolute.file_name() else {
-        return absolute.to_string_lossy().into_owned();
-    };
-    let Some(parent) = absolute.parent() else {
-        return absolute.to_string_lossy().into_owned();
-    };
-    parent
+    // Resolve the original parent before any lexical fallback. `link/..` is
+    // interpreted relative to the link target by the filesystem, so reducing
+    // it first would create a lease key for a different destination.
+    let parent = absolute_parent
         .canonicalize()
-        .unwrap_or_else(|_| parent.to_path_buf())
-        .join(file_name)
-        .to_string_lossy()
-        .into_owned()
+        .map_err(|_| AppError::new("invalid_clone_destination", "无法访问克隆目标的父目录。"))?;
+    Ok((parent, file_name))
 }
 
 pub(super) fn repository_root(path: &str) -> Result<PathBuf, AppError> {
@@ -64,6 +92,24 @@ pub(super) fn branch_switch_error_after_stash(
             "branch_switch_changes_stashed",
             "分支未能切换；本地改动已保存到暂存栈。",
             "请从“历史与暂存栈”恢复改动，再检查分支或工作树状态后重试。",
+        )
+    } else {
+        error
+    }
+}
+
+/// A branch switch may already have completed when assembling the refreshed
+/// snapshot fails. Preserve the same recovery guidance as a failed switch so
+/// a successful pre-switch stash is never mistaken for lost local work.
+pub(super) fn branch_switch_snapshot_error_after_stash(
+    error: AppError,
+    stashed_local_changes: bool,
+) -> AppError {
+    if stashed_local_changes {
+        AppError::with_safe_details(
+            "branch_switch_changes_stashed",
+            "分支可能已切换，但刷新仓库状态失败；本地改动已保存到暂存栈。",
+            "请刷新仓库状态，并从“历史与暂存栈”确认或恢复改动。",
         )
     } else {
         error
@@ -129,7 +175,7 @@ pub(super) fn reconcile_pending_clone(state: &AppState, repository: &Path) -> Re
         return Ok(());
     };
 
-    let binding = match pending.binding.clone() {
+    let (binding, validated_endpoint) = match pending.binding.clone() {
         // Old intents predate durable repository identity. They can still
         // register the cloned repository, but must never recreate an account
         // binding for whatever later occupies the destination path.
@@ -142,31 +188,50 @@ pub(super) fn reconcile_pending_clone(state: &AppState, repository: &Path) -> Re
                 Some(endpoint) if binding_selected_account_is_current(&store, &binding) => {
                     // A transient store or Git-config read failure must keep
                     // the durable intent intact for a later reconciliation.
-                    let fetch_url =
-                        git.remote_url_for_operation(repository, &binding.remote_name, false)?;
-                    let push_url =
-                        git.remote_url_for_operation(repository, &binding.remote_name, true)?;
-                    (validate_codehost_binding_url(&fetch_url, &endpoint).is_ok()
-                        && validate_codehost_binding_url(&push_url, &endpoint).is_ok()
-                        && pending_clone_remote_matches(
-                            &fetch_url,
-                            &pending.expected_remote_authority,
-                            &pending.expected_repository_slug,
-                        )
-                        && pending_clone_remote_matches(
-                            &push_url,
-                            &pending.expected_remote_authority,
-                            &pending.expected_repository_slug,
-                        ))
-                    .then_some(binding)
+                    let fetch_urls =
+                        git.remote_urls_for_operation(repository, &binding.remote_name, false)?;
+                    let push_urls =
+                        git.remote_urls_for_operation(repository, &binding.remote_name, true)?;
+                    let matches_expected_repository = pending_clone_operation_urls_match(
+                        &fetch_urls,
+                        &push_urls,
+                        &endpoint,
+                        &pending.expected_remote_authority,
+                        &pending.expected_repository_slug,
+                    );
+                    if matches_expected_repository {
+                        (Some(binding), Some(endpoint.clone()))
+                    } else {
+                        (None, None)
+                    }
                 }
-                _ => None,
+                _ => (None, None),
             }
         }
-        _ => None,
+        _ => (None, None),
     };
 
     state.mutate(|store| {
+        let pending_is_current = store
+            .pending_clones
+            .iter()
+            .any(|current| current == &pending);
+        let binding_is_current = match (&binding, &validated_endpoint) {
+            (Some(binding), Some(validated_endpoint)) => {
+                store
+                    .endpoint(&binding.endpoint_id)
+                    .is_some_and(|current| current == *validated_endpoint)
+                    && binding_selected_account_is_current(store, binding)
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        if !pending_is_current || !binding_is_current {
+            return Err(AppError::new(
+                "clone_reconciliation_failed",
+                "待完成的 Clone 元数据已变更；请重新打开仓库后重试。",
+            ));
+        }
         store.upsert_repository(repository_record.clone());
         if let Some(mut binding) = binding.clone() {
             binding.repository_path = repository_record.path.clone();
@@ -177,6 +242,25 @@ pub(super) fn reconcile_pending_clone(state: &AppState, repository: &Path) -> Re
     })
 }
 
+/// A recovered Clone binding is an authorization decision, so every effective
+/// fetch and push URL must still refer to the original endpoint and repository.
+/// In particular, an added `pushurl` mirror must not regain the selected
+/// account merely because the first URL remains valid.
+pub(super) fn pending_clone_operation_urls_match(
+    fetch_urls: &[String],
+    push_urls: &[String],
+    endpoint: &CodeHostEndpoint,
+    expected_authority: &str,
+    expected_repository_slug: &str,
+) -> bool {
+    !fetch_urls.is_empty()
+        && !push_urls.is_empty()
+        && fetch_urls.iter().chain(push_urls.iter()).all(|url| {
+            validate_codehost_binding_url(url, endpoint).is_ok()
+                && pending_clone_remote_matches(url, expected_authority, expected_repository_slug)
+        })
+}
+
 /// Complete a `gh repo create --push` whose external side effect succeeded
 /// before the profile store could persist the account binding. The intent is
 /// durable and contains no secret, so a retry can safely reconcile the local
@@ -184,6 +268,8 @@ pub(super) fn reconcile_pending_clone(state: &AppState, repository: &Path) -> Re
 pub(super) fn reconcile_pending_publish(
     state: &AppState,
     repository: &Path,
+    requested_endpoint_id: &str,
+    requested_account_profile_id: &str,
 ) -> Result<bool, AppError> {
     let git = GitCore::new();
     let repository_record = git.repository_record(repository)?;
@@ -191,6 +277,19 @@ pub(super) fn reconcile_pending_publish(
     let Some(pending) = store.pending_publish_for(&repository_record.path) else {
         return Ok(false);
     };
+    // A retry is an explicit request to publish using the caller's selected
+    // identity. Never let it silently finalize an earlier pending publish
+    // that belongs to a different account or Endpoint.
+    if !pending_publish_matches_requested_identity(
+        &pending,
+        requested_endpoint_id,
+        requested_account_profile_id,
+    ) {
+        return Err(AppError::new(
+            "github_publish_reconciliation_required",
+            "检测到待完成的 GitHub 发布，但所选账号或 Endpoint 与该发布不匹配；请使用原账号重试。",
+        ));
+    }
     let reconciliation_error = || {
         AppError::new(
             "github_publish_reconciliation_failed",
@@ -243,22 +342,51 @@ pub(super) fn reconcile_pending_publish(
         })?;
         return Err(reconciliation_error());
     };
-    let fetch_url = git
-        .remote_url_for_operation(repository, &pending.remote_name, false)
+    let fetch_urls = git
+        .remote_urls_for_operation(repository, &pending.remote_name, false)
         .map_err(|_| reconciliation_error())?;
-    let push_url = git
-        .remote_url_for_operation(repository, &pending.remote_name, true)
+    let push_urls = git
+        .remote_urls_for_operation(repository, &pending.remote_name, true)
         .map_err(|_| reconciliation_error())?;
     if account.endpoint_id != endpoint.id
-        || validate_codehost_binding_url(&fetch_url, &endpoint).is_err()
-        || validate_codehost_binding_url(&push_url, &endpoint).is_err()
-        || !pending_publish_remote_matches(&fetch_url, &pending.expected_repository_slug)
-        || !pending_publish_remote_matches(&push_url, &pending.expected_repository_slug)
+        || fetch_urls.iter().chain(push_urls.iter()).any(|url| {
+            validate_codehost_binding_url(url, &endpoint).is_err()
+                || !pending_publish_remote_matches(url, &pending.expected_repository_slug)
+        })
     {
+        state.mutate(|store| {
+            store.clear_pending_publish(&repository_record.path);
+            Ok(())
+        })?;
         return Err(reconciliation_error());
     }
 
+    let branch = git
+        .current_branch_name(repository)
+        .map_err(|_| reconciliation_error())?;
+    let environment = git
+        .unbound_network_environment()
+        .map_err(|_| reconciliation_error())?;
+    let remote_head = git
+        .remote_branch_tip(repository, &pending.remote_name, &branch, &environment)
+        .map_err(|_| reconciliation_error())?;
+    if remote_head.as_deref() != Some(pending.expected_head.as_str()) {
+        return Err(AppError::new(
+            "github_publish_reconciliation_required",
+            "已找到 origin，但尚未确认当前提交已推送到远程分支；请检查远程状态后重试。",
+        ));
+    }
+
     state.mutate(|store| {
+        let account_is_current = store
+            .accounts
+            .iter()
+            .any(|current| current.id == account.id && current.endpoint_id == endpoint.id);
+        let pending_is_current =
+            store.pending_publish_for(&repository_record.path).as_ref() == Some(&pending);
+        if !account_is_current || !pending_is_current {
+            return Err(reconciliation_error());
+        }
         store.upsert_repository(repository_record.clone());
         store.upsert_binding(RemoteBinding {
             repository_path: repository_record.path.clone(),
@@ -270,6 +398,14 @@ pub(super) fn reconcile_pending_publish(
         Ok(())
     })?;
     Ok(true)
+}
+
+pub(super) fn pending_publish_matches_requested_identity(
+    pending: &PendingPublish,
+    endpoint_id: &str,
+    account_profile_id: &str,
+) -> bool {
+    pending.endpoint_id == endpoint_id && pending.account_profile_id == account_profile_id
 }
 
 pub(super) fn github_publish_expected_slug(

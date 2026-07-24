@@ -444,12 +444,15 @@ pub struct CommitSummary {
     pub summary: String,
 }
 
-/// A local stash entry. Git's opaque reference is retained so a later pop or
-/// drop can target exactly the entry chosen by the user.
+/// A local stash entry. The display reference can be renumbered by another
+/// Git client, so the immutable stash commit ID accompanies destructive pop
+/// and drop requests as an identity check.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StashEntry {
     pub reference: String,
+    #[serde(default)]
+    pub commit_id: String,
     pub message: String,
 }
 
@@ -556,6 +559,12 @@ pub fn parse_remote_url(raw: &str) -> ParsedRemoteUrl {
     if is_windows_local_path(value) {
         return parsed_parts(RemoteTransport::Local, None, None, value);
     }
+    // SCP-style Git syntax intentionally has no URI scheme. Recognize it
+    // before `Url::parse`, which otherwise treats `github.com:path` as an
+    // opaque custom-scheme URL and loses its SSH authority.
+    if let Some((host, path)) = parse_scp_style_ssh_remote(value) {
+        return parsed_parts(RemoteTransport::Ssh, host, None, path);
+    }
     if let Ok(url) = Url::parse(value) {
         let transport = match url.scheme() {
             "https" => RemoteTransport::Https,
@@ -572,7 +581,7 @@ pub fn parse_remote_url(raw: &str) -> ParsedRemoteUrl {
             (None, None)
         } else {
             (
-                url.host_str().map(|host| host.to_ascii_lowercase()),
+                url.host().and_then(normalized_url_host),
                 // `Url::port()` normalizes an explicitly supplied scheme-default
                 // port away. Preserve the raw authority's port so a remote such
                 // as `https://host:443/org/repo.git` can select an Endpoint that
@@ -597,25 +606,6 @@ pub fn parse_remote_url(raw: &str) -> ParsedRemoteUrl {
         return parsed_parts(RemoteTransport::Local, None, None, value);
     }
 
-    // git@host:group/repository.git is not a generic URL, but is a standard Git SSH form.
-    if let Some((host_part, path)) = value.rsplit_once(':') {
-        if !host_part.contains('/') && !path.starts_with('/') {
-            let host = host_part
-                .rsplit_once('@')
-                .map(|(_, host)| host)
-                .unwrap_or(host_part)
-                .trim_matches(['[', ']']);
-            if !host.is_empty() && !path.is_empty() {
-                return parsed_parts(
-                    RemoteTransport::Ssh,
-                    Some(host.to_ascii_lowercase()),
-                    None,
-                    path,
-                );
-            }
-        }
-    }
-
     ParsedRemoteUrl {
         transport: RemoteTransport::Other,
         host: None,
@@ -623,6 +613,30 @@ pub fn parse_remote_url(raw: &str) -> ParsedRemoteUrl {
         namespace: None,
         repository: None,
     }
+}
+
+/// Parses Git's scheme-less `user@host:path` and `host:path` SSH forms.
+/// Restrict bare hostnames without a user component to a dotted or bracketed
+/// authority so opaque values such as `c:group/repository` retain their
+/// existing non-remote interpretation on POSIX.
+fn parse_scp_style_ssh_remote(value: &str) -> Option<(Option<String>, &str)> {
+    if value.contains("://") {
+        return None;
+    }
+    let (host_part, path) = value.rsplit_once(':')?;
+    if host_part.contains('/') || path.is_empty() || path.starts_with('/') {
+        return None;
+    }
+    let has_user = host_part.contains('@');
+    let host = host_part
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(host_part)
+        .trim_matches(['[', ']']);
+    if host.is_empty() || (!has_user && !host.contains('.') && !host_part.starts_with('[')) {
+        return None;
+    }
+    Some((normalize_remote_hostname(host), path))
 }
 
 #[cfg(windows)]
@@ -779,17 +793,22 @@ fn explicit_port_in_git_authority(value: &str) -> Option<Option<u16>> {
 
 fn normalized_url_host(host: Host<&str>) -> Option<String> {
     match host {
-        Host::Domain(domain)
-            if domain.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '-')
-            }) =>
-        {
-            Some(domain.to_ascii_lowercase())
+        Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.');
+            (!domain.is_empty()
+                && domain.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '.' | '-')
+                }))
+            .then(|| domain.to_ascii_lowercase())
         }
         Host::Ipv4(address) => Some(address.to_string()),
         Host::Ipv6(address) => Some(format!("[{address}]")),
-        Host::Domain(_) => None,
     }
+}
+
+fn normalize_remote_hostname(host: &str) -> Option<String> {
+    let host = host.trim_end_matches('.');
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 fn format_git_authority(host: &str, port: Option<u16>) -> String {
@@ -910,6 +929,14 @@ mod tests {
         assert_eq!(parsed.transport, RemoteTransport::Ssh);
         assert_eq!(parsed.host.as_deref(), Some("gitee.com"));
         assert_eq!(parsed.repository_slug().as_deref(), Some("team/project"));
+
+        let username_less = parse_remote_url("gitee.com:team/project.git");
+        assert_eq!(username_less.transport, RemoteTransport::Ssh);
+        assert_eq!(username_less.host.as_deref(), Some("gitee.com"));
+        assert_eq!(
+            username_less.repository_slug().as_deref(),
+            Some("team/project")
+        );
     }
 
     #[test]

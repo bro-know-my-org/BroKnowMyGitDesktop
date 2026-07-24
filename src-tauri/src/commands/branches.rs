@@ -31,12 +31,15 @@ pub fn checkout_branch(
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
     let git = GitCore::new();
-    if !git
-        .branches(&repository)?
-        .iter()
-        .any(|candidate| candidate.name == branch)
-    {
+    let branches = git.branches(&repository)?;
+    let Some(target) = branches.iter().find(|candidate| candidate.name == branch) else {
         return Err(AppError::new("branch_not_found", "找不到该分支。"));
+    };
+    // A direct IPC request can target the already checked-out branch even if
+    // the UI normally hides that action. Do not stash changes for a switch
+    // that Git would treat as a successful no-op.
+    if target.is_current {
+        return snapshot_for(&state, &repository);
     }
     let stashed_local_changes = stash_local_changes_before_branch_switch(
         &git,
@@ -50,6 +53,7 @@ pub fn checkout_branch(
         ));
     }
     snapshot_for(&state, &repository)
+        .map_err(|error| branch_switch_snapshot_error_after_stash(error, stashed_local_changes))
 }
 
 #[tauri::command]
@@ -74,6 +78,9 @@ pub fn checkout_remote_branch(
             "找不到该远程分支；请先获取远程更新后重试。",
         ));
     }
+    if git.is_current_remote_branch_target(&repository, &remote_name, &branch)? {
+        return snapshot_for(&state, &repository);
+    }
     let stashed_local_changes = stash_local_changes_before_branch_switch(
         &git,
         &repository,
@@ -86,6 +93,7 @@ pub fn checkout_remote_branch(
         ));
     }
     snapshot_for(&state, &repository)
+        .map_err(|error| branch_switch_snapshot_error_after_stash(error, stashed_local_changes))
 }
 
 #[tauri::command]

@@ -53,20 +53,18 @@ pub fn add_remote(
     // cleanup failed. Clear that now-stale selection before a newly added
     // remote reuses the same name, even when the new URL happens to share the
     // old Endpoint.
-    let persistence_warning = if previous_binding.is_some() {
+    if previous_binding.is_some() {
         match state.mutate_with_outcome(|store| {
             store.remote_bindings.retain(|binding| {
                 !(binding.repository_path == canonical && binding.remote_name == name)
             });
             Ok(())
         }) {
-            Ok(()) => None,
-            Err(error) if error.committed() => Some(error.into_error()),
+            Ok(()) => {}
+            Err(error) if error.committed() => {}
             Err(error) => return Err(error.into_error()),
         }
-    } else {
-        None
-    };
+    }
     if let Err(error) = git.add_remote(&repository, &name, &url) {
         // `git remote add` normally fails without a side effect. Restore the
         // old binding only after proving the remote name is still absent; if
@@ -94,7 +92,7 @@ pub fn add_remote(
         }
         return Err(error);
     }
-    persistence_warning.map_or(Ok(()), Err)
+    Ok(())
 }
 
 #[tauri::command]
@@ -110,29 +108,31 @@ pub fn set_remote_url(
     let _repository_operation_lease = state.acquire_repository_operation_lease(&canonical)?;
     let git = GitCore::new();
     let store = state.snapshot()?;
-    let current_fetch_url = git.remote_url_for_operation(&repository, &name, false)?;
-    let current_push_url = git.remote_url_for_operation(&repository, &name, true)?;
-    let (effective_fetch_url, effective_push_url) = match kind {
-        RemoteUrlKind::Fetch => (url.as_str(), current_push_url.as_str()),
-        RemoteUrlKind::Push => (current_fetch_url.as_str(), url.as_str()),
+    let mut effective_fetch_urls = git.remote_urls_for_operation(&repository, &name, false)?;
+    let mut effective_push_urls = git.remote_urls_for_operation(&repository, &name, true)?;
+    match kind {
+        RemoteUrlKind::Fetch => effective_fetch_urls[0] = url.clone(),
+        // The first explicit push URL changes Git from the implicit
+        // "push to every fetch URL" rule to an explicit push-url list.
+        RemoteUrlKind::Push => effective_push_urls = vec![url.clone()],
     };
-    let binding_is_compatible = remote_binding_matches_urls(
+    let binding_is_compatible = remote_binding_matches_all_urls(
         &store,
         &canonical,
         &name,
-        effective_fetch_url,
-        effective_push_url,
+        &effective_fetch_urls,
+        &effective_push_urls,
     );
     git.set_remote_url(&repository, &name, &url, kind)?;
-    let persistence_warning = if !binding_is_compatible {
+    if !binding_is_compatible {
         match state.mutate_with_outcome(|store| {
             store.remote_bindings.retain(|binding| {
                 !(binding.repository_path == canonical && binding.remote_name == name)
             });
             Ok(())
         }) {
-            Ok(()) => None,
-            Err(error) if error.committed() => Some(error.into_error()),
+            Ok(()) => {}
+            Err(error) if error.committed() => {}
             // The Git URL is now changed while the stale binding remains.
             // It fails closed on endpoint mismatch, so do not roll Git back
             // to an old URL that might have been externally edited.
@@ -143,10 +143,8 @@ pub fn set_remote_url(
                 ));
             }
         }
-    } else {
-        None
-    };
-    persistence_warning.map_or(Ok(()), Err)
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -160,6 +158,19 @@ pub fn rename_remote(
     let git = GitCore::new();
     let canonical = repository.to_string_lossy().into_owned();
     let _repository_operation_lease = state.acquire_repository_operation_lease(&canonical)?;
+    let remotes = git.remotes(&repository)?;
+    if !remotes.iter().any(|remote| remote.name == old_name) {
+        return Err(AppError::new(
+            "remote_not_found",
+            "找不到要重命名的 remote。",
+        ));
+    }
+    if remotes.iter().any(|remote| remote.name == new_name) {
+        return Err(AppError::new(
+            "remote_already_exists",
+            "仓库中已存在同名 remote。",
+        ));
+    }
     let previous_binding = state.snapshot()?.binding_for(&canonical, &old_name);
     let previous_new_binding = state.snapshot()?.binding_for(&canonical, &new_name);
     // Persist the new name alongside the old one before Git renames it. The
@@ -172,18 +183,16 @@ pub fn rename_remote(
         endpoint_id: binding.endpoint_id.clone(),
         account_selection: binding.account_selection.clone(),
     });
-    let persistence_warning = if let Some(new_binding) = &new_binding {
+    if let Some(new_binding) = &new_binding {
         match state.mutate_with_outcome(|store| {
             store.upsert_binding(new_binding.clone());
             Ok(())
         }) {
-            Ok(()) => None,
-            Err(error) if error.committed() => Some(error.into_error()),
+            Ok(()) => {}
+            Err(error) if error.committed() => {}
             Err(error) => return Err(error.into_error()),
         }
-    } else {
-        None
-    };
+    }
     if let Err(error) = git.rename_remote(&repository, &old_name, &new_name) {
         if new_binding.is_some()
             && state
@@ -207,15 +216,15 @@ pub fn rename_remote(
         }
         return Err(error);
     }
-    let cleanup_warning = if new_binding.is_some() {
+    if new_binding.is_some() {
         match state.mutate_with_outcome(|store| {
             store.remote_bindings.retain(|binding| {
                 !(binding.repository_path == canonical && binding.remote_name == old_name)
             });
             Ok(())
         }) {
-            Ok(()) => None,
-            Err(error) if error.committed() => Some(error.into_error()),
+            Ok(()) => {}
+            Err(error) if error.committed() => {}
             // Keeping both bindings is safe: the renamed remote has the
             // copied authorization and the old remote no longer exists.
             Err(_) => {
@@ -225,13 +234,8 @@ pub fn rename_remote(
                 ));
             }
         }
-    } else {
-        None
-    };
-    if let Some(error) = cleanup_warning {
-        return Err(error);
     }
-    persistence_warning.map_or(Ok(()), Err)
+    Ok(())
 }
 
 #[tauri::command]
@@ -246,15 +250,15 @@ pub fn remove_remote(
     let _repository_operation_lease = state.acquire_repository_operation_lease(&canonical)?;
     let previous_binding = state.snapshot()?.binding_for(&canonical, &name);
     git.remove_remote(&repository, &name)?;
-    let persistence_warning = if previous_binding.is_some() {
+    if previous_binding.is_some() {
         match state.mutate_with_outcome(|store| {
             store.remote_bindings.retain(|binding| {
                 !(binding.repository_path == canonical && binding.remote_name == name)
             });
             Ok(())
         }) {
-            Ok(()) => None,
-            Err(error) if error.committed() => Some(error.into_error()),
+            Ok(()) => {}
+            Err(error) if error.committed() => {}
             // The remote is already gone. A stale binding is harmless until
             // reconciliation because no network operation can address it.
             Err(_) => {
@@ -264,8 +268,6 @@ pub fn remove_remote(
                 ));
             }
         }
-    } else {
-        None
-    };
-    persistence_warning.map_or(Ok(()), Err)
+    }
+    Ok(())
 }

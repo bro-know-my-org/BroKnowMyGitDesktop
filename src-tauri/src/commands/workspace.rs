@@ -16,12 +16,24 @@ pub fn add_worktree(
     state: State<'_, AppState>,
 ) -> Result<Vec<WorktreeInfo>, AppError> {
     let repository = repository_root(&repository_path)?;
-    let _repository_operation_lease =
-        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
     let worktree_path = required_path(&worktree_path, "工作树路径")?;
     let create_branch = create_branch.and_then(non_empty_trimmed);
     let commitish = commitish.and_then(non_empty_trimmed);
     let git = GitCore::new();
+    // Linked worktrees share refs and administrative state. Acquiring only
+    // the worktree from which this command was launched would let a sibling
+    // mutate that shared state concurrently. Include the future destination
+    // as well, so a later operation addressed through that path is covered.
+    let mut lease_paths = git
+        .worktrees(&repository)?
+        .into_iter()
+        .map(|worktree| worktree.path)
+        .collect::<Vec<_>>();
+    lease_paths.push(repository.to_string_lossy().into_owned());
+    lease_paths.push(clone_destination_key(&worktree_path)?);
+    let lease_path_refs = lease_paths.iter().map(String::as_str).collect::<Vec<_>>();
+    let _repository_operation_lease =
+        state.acquire_repository_operation_leases(&lease_path_refs)?;
     git.add_worktree(
         &repository,
         &worktree_path,
@@ -84,11 +96,23 @@ pub async fn update_submodules(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let repository = repository_root(&repository_path)?;
-        let _repository_operation_lease =
-            state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
         let git = GitCore::new();
-        let environment = submodule_update_environment(&state, &repository)?;
-        git.update_submodules_with_environment(&repository, initialize, recursive, &environment)?;
+        let mut lease_paths = git.submodule_operation_repository_paths(&repository, recursive)?;
+        // Linked worktrees share the parent repository's config and module
+        // administration. Reserve every sibling root as well as the module
+        // destinations, so an update started from one worktree cannot race an
+        // update initiated from another.
+        lease_paths.extend(
+            git.worktrees(&repository)?
+                .into_iter()
+                .map(|worktree| worktree.path),
+        );
+        lease_paths.sort_unstable();
+        lease_paths.dedup();
+        let lease_path_refs = lease_paths.iter().map(String::as_str).collect::<Vec<_>>();
+        let _repository_operation_lease =
+            state.acquire_repository_operation_leases(&lease_path_refs)?;
+        git.update_submodules(&repository, initialize, recursive)?;
         git.submodules(&repository)
     })
     .await
@@ -203,12 +227,13 @@ pub fn stash_changes(
 pub fn pop_stash(
     repository_path: String,
     reference: String,
+    expected_commit_id: String,
     state: State<'_, AppState>,
 ) -> Result<RepositorySnapshot, AppError> {
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    GitCore::new().stash_pop(&repository, &reference)?;
+    GitCore::new().stash_pop(&repository, &reference, &expected_commit_id)?;
     snapshot_for(&state, &repository)
 }
 
@@ -216,12 +241,13 @@ pub fn pop_stash(
 pub fn drop_stash(
     repository_path: String,
     reference: String,
+    expected_commit_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    GitCore::new().stash_drop(&repository, &reference)
+    GitCore::new().stash_drop(&repository, &reference, &expected_commit_id)
 }
 
 #[tauri::command]

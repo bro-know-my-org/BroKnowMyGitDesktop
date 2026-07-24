@@ -42,7 +42,7 @@ pub(super) fn parse_status_porcelain_v2(raw: &[u8]) -> Result<GitStatus, AppErro
         match record.first().copied() {
             Some(b'1') => status.entries.push(parse_status_ordinary(record)?),
             Some(b'2') => {
-                if cursor > raw.len() {
+                if cursor >= raw.len() {
                     return Err(status_parse_error());
                 }
                 let original_end = raw[cursor..]
@@ -50,10 +50,10 @@ pub(super) fn parse_status_porcelain_v2(raw: &[u8]) -> Result<GitStatus, AppErro
                     .position(|byte| *byte == 0)
                     .map(|offset| cursor + offset)
                     .unwrap_or(raw.len());
-                if original_end == raw.len() && !raw.ends_with(&[0]) {
+                if original_end == cursor || (original_end == raw.len() && !raw.ends_with(&[0])) {
                     return Err(status_parse_error());
                 }
-                let original_path = lossy(&raw[cursor..original_end]);
+                let original_path = parse_status_path(&raw[cursor..original_end])?;
                 cursor = original_end.saturating_add(1);
                 status
                     .entries
@@ -73,7 +73,7 @@ pub(super) fn parse_status_porcelain_v2(raw: &[u8]) -> Result<GitStatus, AppErro
 }
 
 pub(super) fn parse_status_header(record: &[u8], status: &mut GitStatus) -> Result<(), AppError> {
-    let value = lossy(record);
+    let value = std::str::from_utf8(record).map_err(|_| status_parse_error())?;
     let value = value.strip_prefix("# ").ok_or_else(status_parse_error)?;
     if let Some(branch) = value.strip_prefix("branch.head ") {
         status.branch = match branch {
@@ -127,7 +127,7 @@ pub(super) fn parse_status_short(
         return Err(status_parse_error());
     }
     Ok(GitStatusEntry {
-        path: lossy(&record[2..]),
+        path: parse_status_path(&record[2..])?,
         original_path: None,
         index_status: index_status.to_owned(),
         worktree_status: worktree_status.to_owned(),
@@ -160,28 +160,41 @@ pub(super) fn status_entry_from_xy(
         return Err(status_parse_error());
     }
     Ok(GitStatusEntry {
-        path: lossy(path),
+        path: parse_status_path(path)?,
         original_path,
-        index_status: status_side_from_porcelain(xy[0]),
-        worktree_status: status_side_from_porcelain(xy[1]),
+        index_status: status_side_from_porcelain(xy[0])?,
+        worktree_status: status_side_from_porcelain(xy[1])?,
     })
+}
+
+/// Status paths flow back through IPC into mutating Git commands. The domain
+/// model is UTF-8 text, so reject non-UTF-8 filenames instead of replacing
+/// bytes with U+FFFD and potentially operating on a different file later.
+fn parse_status_path(raw: &[u8]) -> Result<String, AppError> {
+    let path = std::str::from_utf8(raw).map_err(|_| status_parse_error())?;
+    if path.is_empty() {
+        return Err(status_parse_error());
+    }
+    Ok(path.to_owned())
 }
 
 /// Git porcelain v2 uses `.` for a clean side of an ordinary status record.
 /// The application model represents an absent index/worktree change as an
 /// empty string, which lets all UI consumers use one consistent check rather
 /// than treating `.` as a real modification.
-pub(super) fn status_side_from_porcelain(status: u8) -> String {
-    if status == b'.' {
-        String::new()
-    } else {
-        (status as char).to_string()
+pub(super) fn status_side_from_porcelain(status: u8) -> Result<String, AppError> {
+    match status {
+        b'.' => Ok(String::new()),
+        b'M' | b'T' | b'A' | b'D' | b'R' | b'C' | b'U' => Ok((status as char).to_string()),
+        _ => Err(status_parse_error()),
     }
 }
 
 pub(super) fn parse_branches(raw: &[u8]) -> Result<Vec<BranchInfo>, AppError> {
     let mut branches = Vec::new();
-    for line in output_text(raw).lines().filter(|line| !line.is_empty()) {
+    let raw = std::str::from_utf8(raw)
+        .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 分支信息"))?;
+    for line in raw.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split('\0').collect();
         if fields.len() != 3 || fields[1].is_empty() {
             return Err(AppError::new("git_parse_error", "无法解析 Git 分支信息"));
@@ -207,8 +220,10 @@ pub(super) fn parse_remote_branches(
     // first so `team/origin` is not accidentally parsed as `team`.
     remote_names.sort_by_key(|name| std::cmp::Reverse(name.len()));
 
+    let raw = std::str::from_utf8(raw)
+        .map_err(|_| AppError::new("git_parse_error", "无法解析远程分支信息"))?;
     let mut branches = Vec::new();
-    for line in output_text(raw).lines().filter(|line| !line.is_empty()) {
+    for line in raw.lines().filter(|line| !line.is_empty()) {
         let fields = line.split('\0').collect::<Vec<_>>();
         if fields.len() != 2 || fields[0].is_empty() {
             return Err(AppError::new("git_parse_error", "无法解析远程分支信息"));
@@ -273,7 +288,8 @@ pub(super) fn parse_worktree_fields(
     let mut is_prunable = false;
 
     for field in fields {
-        let field = lossy(field);
+        let field = std::str::from_utf8(field)
+            .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 工作树信息"))?;
         if let Some(value) = field.strip_prefix("worktree ") {
             if value.is_empty() || path.replace(value.to_owned()).is_some() {
                 return Err(AppError::new("git_parse_error", "无法解析 Git 工作树信息"));
@@ -309,18 +325,21 @@ pub(super) fn parse_worktree_fields(
 
 pub(super) fn parse_submodules(raw: &[u8]) -> Result<Vec<SubmoduleInfo>, AppError> {
     let mut submodules = Vec::new();
-    for line in output_text(raw)
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-    {
-        let (marker, remainder) = line.split_at(1);
+    let raw = std::str::from_utf8(raw)
+        .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 子模块状态"))?;
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let Some((&marker, remainder)) = line.as_bytes().split_first() else {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"));
+        };
         let status = match marker {
-            " " => SubmoduleStatus::Initialized,
-            "-" => SubmoduleStatus::Uninitialized,
-            "+" => SubmoduleStatus::NeedsUpdate,
-            "U" => SubmoduleStatus::Conflicted,
+            b' ' => SubmoduleStatus::Initialized,
+            b'-' => SubmoduleStatus::Uninitialized,
+            b'+' => SubmoduleStatus::NeedsUpdate,
+            b'U' => SubmoduleStatus::Conflicted,
             _ => return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态")),
         };
+        let remainder = std::str::from_utf8(remainder)
+            .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 子模块状态"))?;
         let mut fields = remainder.trim_start().splitn(2, char::is_whitespace);
         let commit = fields
             .next()
@@ -331,19 +350,9 @@ pub(super) fn parse_submodules(raw: &[u8]) -> Result<Vec<SubmoduleInfo>, AppErro
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .ok_or_else(|| AppError::new("git_parse_error", "无法解析 Git 子模块状态"))?;
-        // Git appends an optional parenthesized description after the path.
-        // Paths containing a literal " (" are uncommon but remain usable for
-        // update-all, which never round-trips the displayed path to Git.
-        let path = path_with_description
-            .rsplit_once(" (")
-            .map(|(path, _)| path)
-            .unwrap_or(path_with_description)
-            .trim();
-        if path.is_empty() {
-            return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"));
-        }
+        let path = parse_submodule_status_path(path_with_description)?;
         submodules.push(SubmoduleInfo {
-            path: path.to_owned(),
+            path,
             commit: commit.to_owned(),
             status,
         });
@@ -351,12 +360,133 @@ pub(super) fn parse_submodules(raw: &[u8]) -> Result<Vec<SubmoduleInfo>, AppErro
     Ok(submodules)
 }
 
+/// `git submodule status` quotes paths that contain whitespace or special
+/// bytes. Parse that C-style field before skipping its optional parenthesized
+/// status description, so a path such as `modules/foo (old)` is not shortened
+/// to a different filesystem location.
+fn parse_submodule_status_path(value: &str) -> Result<String, AppError> {
+    let value = value.trim_start();
+    let path = if value.starts_with('"') {
+        let (path, remainder) = parse_git_c_quoted_path(value)?;
+        let remainder = remainder.trim();
+        if !(remainder.is_empty() || (remainder.starts_with('(') && remainder.ends_with(')'))) {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"));
+        }
+        path
+    } else {
+        // Plain paths do not contain spaces in Git's unquoted output. Treat a
+        // final parenthesized field as Git's status description only when it
+        // is syntactically complete; quoted paths above retain literal ` (`.
+        value
+            .rsplit_once(" (")
+            .filter(|(_, description)| description.ends_with(')'))
+            .map(|(path, _)| path)
+            .unwrap_or(value)
+            .trim_end()
+            .to_owned()
+    };
+    if path.is_empty() {
+        return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"));
+    }
+    Ok(path)
+}
+
+fn parse_git_c_quoted_path(value: &str) -> Result<(String, &str), AppError> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 1;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => {
+                let path = String::from_utf8(decoded)
+                    .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 子模块状态"))?;
+                return Ok((path, &value[index + 1..]));
+            }
+            b'\\' => {
+                index += 1;
+                let Some(escape) = bytes.get(index).copied() else {
+                    break;
+                };
+                match escape {
+                    b'\\' | b'"' => decoded.push(escape),
+                    b'a' => decoded.push(0x07),
+                    b'b' => decoded.push(0x08),
+                    b't' => decoded.push(b'\t'),
+                    b'n' => decoded.push(b'\n'),
+                    b'v' => decoded.push(0x0b),
+                    b'f' => decoded.push(0x0c),
+                    b'r' => decoded.push(b'\r'),
+                    b'0'..=b'7' => {
+                        let mut octal = 0_u16;
+                        for _ in 0..3 {
+                            let Some(digit) = bytes.get(index).copied() else {
+                                return Err(AppError::new(
+                                    "git_parse_error",
+                                    "无法解析 Git 子模块状态",
+                                ));
+                            };
+                            if !(b'0'..=b'7').contains(&digit) {
+                                return Err(AppError::new(
+                                    "git_parse_error",
+                                    "无法解析 Git 子模块状态",
+                                ));
+                            }
+                            octal = octal * 8 + u16::from(digit - b'0');
+                            index += 1;
+                        }
+                        if octal > u16::from(u8::MAX) {
+                            return Err(AppError::new(
+                                "git_parse_error",
+                                "无法解析 Git 子模块状态",
+                            ));
+                        }
+                        decoded.push(octal as u8);
+                        continue;
+                    }
+                    _ => {
+                        return Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"));
+                    }
+                }
+            }
+            byte => decoded.push(byte),
+        }
+        index += 1;
+    }
+    Err(AppError::new("git_parse_error", "无法解析 Git 子模块状态"))
+}
+
+/// `git config --null --file .gitmodules --get-regexp` writes one
+/// `key\nvalue\0` record per configured submodule path. This is used for
+/// safety preflight because the value is machine-readable and never needs to
+/// be inferred from `git submodule status`'s presentation text.
+pub(super) fn parse_submodule_config_paths(raw: &[u8]) -> Result<Vec<String>, AppError> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for record in raw
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let Some(separator) = record.iter().position(|byte| *byte == b'\n') else {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 子模块配置"));
+        };
+        let path = &record[separator + 1..];
+        let path = std::str::from_utf8(path)
+            .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 子模块配置"))?;
+        if path.is_empty() {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 子模块配置"));
+        }
+        if seen.insert(path.to_owned()) {
+            paths.push(path.to_owned());
+        }
+    }
+    Ok(paths)
+}
+
 pub(super) fn parse_lfs_files(raw: &[u8]) -> Vec<String> {
-    output_text(raw)
-        .lines()
-        .map(str::trim)
+    raw.split(|byte| *byte == b'\n')
+        .map(|path| path.strip_suffix(b"\r").unwrap_or(path))
         .filter(|path| !path.is_empty())
-        .map(ToOwned::to_owned)
+        .map(lossy)
         .collect()
 }
 
@@ -405,12 +535,12 @@ pub(super) fn parse_stashes(raw: &[u8]) -> Result<Vec<StashEntry>, AppError> {
     if matches!(fields.last(), Some(field) if *field == b"\n") {
         fields.pop();
     }
-    if fields.len() % 2 != 0 {
+    if fields.len() % 3 != 0 {
         return Err(AppError::new("git_parse_error", "无法解析 Git 暂存栈"));
     }
 
-    let mut stashes = Vec::with_capacity(fields.len() / 2);
-    for (index, fields) in fields.chunks_exact(2).enumerate() {
+    let mut stashes = Vec::with_capacity(fields.len() / 3);
+    for (index, fields) in fields.chunks_exact(3).enumerate() {
         let reference = if index == 0 {
             fields[0]
         } else {
@@ -419,9 +549,19 @@ pub(super) fn parse_stashes(raw: &[u8]) -> Result<Vec<StashEntry>, AppError> {
         if reference.is_empty() {
             return Err(AppError::new("git_parse_error", "无法解析 Git 暂存栈"));
         }
+        let reference = std::str::from_utf8(reference)
+            .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 暂存栈"))?;
+        let commit_id = std::str::from_utf8(fields[1])
+            .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 暂存栈"))?;
+        if !(40..=64).contains(&commit_id.len())
+            || !commit_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 暂存栈"));
+        }
         stashes.push(StashEntry {
-            reference: lossy(reference),
-            message: lossy(fields[1]),
+            reference: reference.to_owned(),
+            commit_id: commit_id.to_owned(),
+            message: lossy(fields[2]),
         });
     }
     Ok(stashes)
@@ -429,7 +569,9 @@ pub(super) fn parse_stashes(raw: &[u8]) -> Result<Vec<StashEntry>, AppError> {
 
 pub(super) fn parse_tags(raw: &[u8]) -> Result<Vec<TagInfo>, AppError> {
     let mut tags = Vec::new();
-    for line in output_text(raw).lines().filter(|line| !line.is_empty()) {
+    let raw = std::str::from_utf8(raw)
+        .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 标签信息"))?;
+    for line in raw.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split('\0').collect();
         if fields.len() != 2 || fields[0].is_empty() || fields[1].is_empty() {
             return Err(AppError::new("git_parse_error", "无法解析 Git 标签信息"));

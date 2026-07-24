@@ -1,9 +1,10 @@
 use crate::app_error::AppError;
 use crate::credential_broker::delete_personal_access_token;
 use crate::domain::{
-    AccountProfile, CodeHostEndpoint, ExternalEditorConfig, KeychainReference, RemoteBinding,
-    RepositoryRecord,
+    AccountProfile, AuthenticationMethod, CodeHostEndpoint, ExternalEditorConfig,
+    KeychainReference, RemoteBinding, RepositoryRecord,
 };
+use crate::git_core::{CleanUntrackedPathFingerprint, GitCore};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -17,6 +18,7 @@ use uuid::Uuid;
 const STORE_FILE_NAME: &str = "profiles.json";
 const MAX_REPOSITORIES: usize = 200;
 const CLEAN_UNTRACKED_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
+const MAX_CLEAN_UNTRACKED_CONFIRMATIONS: usize = 256;
 
 /// Durable intent recorded before `gh repo create --push`. It contains only
 /// local metadata needed to reconcile an origin that was created successfully
@@ -515,6 +517,9 @@ pub struct AppState {
     active_publishes: Arc<Mutex<HashSet<String>>>,
     active_clones: Arc<Mutex<HashSet<String>>>,
     active_repository_operations: Arc<Mutex<HashSet<String>>>,
+    active_account_operations: Arc<Mutex<HashSet<String>>>,
+    active_cli_account_imports: Arc<Mutex<HashSet<String>>>,
+    account_status_refresh_generation: Arc<Mutex<u64>>,
     clean_untracked_confirmations: Arc<Mutex<HashMap<String, CleanUntrackedConfirmation>>>,
     // An advisory lock held for this AppState's lifetime. It serializes
     // independent desktop processes using the same profile directory.
@@ -523,7 +528,7 @@ pub struct AppState {
 
 struct CleanUntrackedConfirmation {
     token: String,
-    paths: Vec<String>,
+    fingerprints: Vec<CleanUntrackedPathFingerprint>,
     issued_at: Instant,
 }
 
@@ -552,6 +557,23 @@ pub struct RepositoryOperationLease {
     repository_paths: Vec<String>,
 }
 
+/// In-process lease for one or more accounts supplying a long-running
+/// external operation. It prevents account removal from deleting recovery
+/// metadata or revoking an identity while that operation is still executing.
+pub struct AccountOperationLease {
+    active_account_operations: Arc<Mutex<HashSet<String>>>,
+    account_profile_ids: Vec<String>,
+}
+
+/// Serializes a CLI import with creation or deletion of every CLI account for
+/// the same Endpoint. Account IDs are not known until an external CLI returns,
+/// so an endpoint-and-authentication-method key is required in addition to
+/// the ordinary per-account lease.
+pub struct CliAccountImportLease {
+    active_cli_account_imports: Arc<Mutex<HashSet<String>>>,
+    key: String,
+}
+
 impl Drop for PublishLease {
     fn drop(&mut self) {
         if let Ok(mut active) = self.active_publishes.lock() {
@@ -578,6 +600,24 @@ impl Drop for RepositoryOperationLease {
     }
 }
 
+impl Drop for AccountOperationLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_account_operations.lock() {
+            for account_profile_id in &self.account_profile_ids {
+                active.remove(account_profile_id);
+            }
+        }
+    }
+}
+
+impl Drop for CliAccountImportLease {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active_cli_account_imports.lock() {
+            active.remove(&self.key);
+        }
+    }
+}
+
 impl AppState {
     pub fn load(app_data_dir: &Path) -> Result<Self, AppError> {
         let profile_store_lock = acquire_profile_store_lock(app_data_dir)?;
@@ -593,6 +633,9 @@ impl AppState {
             active_publishes: Arc::new(Mutex::new(HashSet::new())),
             active_clones: Arc::new(Mutex::new(HashSet::new())),
             active_repository_operations: Arc::new(Mutex::new(HashSet::new())),
+            active_account_operations: Arc::new(Mutex::new(HashSet::new())),
+            active_cli_account_imports: Arc::new(Mutex::new(HashSet::new())),
+            account_status_refresh_generation: Arc::new(Mutex::new(0)),
             clean_untracked_confirmations: Arc::new(Mutex::new(HashMap::new())),
             _profile_store_lock: Arc::new(profile_store_lock),
         };
@@ -607,24 +650,94 @@ impl AppState {
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
     }
 
+    /// Starts a status refresh generation. Results from an older generation
+    /// must not overwrite a newer refresh or a concurrent account import.
+    pub(crate) fn begin_account_status_refresh(&self) -> Result<u64, AppError> {
+        let mut generation = self
+            .account_status_refresh_generation
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        *generation = generation.wrapping_add(1);
+        Ok(*generation)
+    }
+
+    /// Changes account or Endpoint metadata while advancing the refresh
+    /// generation under the same lock. A refresh cannot snapshot the old
+    /// metadata after the generation check but before this mutation commits.
+    pub(crate) fn mutate_and_invalidate_account_status_refreshes<T>(
+        &self,
+        operation: impl FnOnce(&mut ProfileStore) -> Result<T, AppError>,
+    ) -> Result<T, AppError> {
+        let mut generation = self
+            .account_status_refresh_generation
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        match self.mutate_with_outcome(operation) {
+            Ok(value) => {
+                *generation = generation.wrapping_add(1);
+                Ok(value)
+            }
+            Err(error) if error.committed() => {
+                // The durable store already changed despite a later sync
+                // warning, so an older refresh must still be invalidated.
+                *generation = generation.wrapping_add(1);
+                Err(error.into_error())
+            }
+            Err(error) => Err(error.into_error()),
+        }
+    }
+
+    /// Persists a refresh result only while it is still the newest requested
+    /// generation. Holding the generation lock through the profile mutation
+    /// makes the check and write one ordered operation relative to a later
+    /// refresh or account import.
+    pub(crate) fn commit_account_status_refresh<T>(
+        &self,
+        generation: u64,
+        operation: impl FnOnce(&mut ProfileStore) -> Result<T, AppError>,
+    ) -> Result<Option<T>, AppError> {
+        let current = self
+            .account_status_refresh_generation
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        if *current != generation {
+            return Ok(None);
+        }
+        self.mutate(operation).map(Some)
+    }
+
     /// Records the exact untracked file set shown to the user. This state is
     /// deliberately in-memory and short lived: a restart invalidates a
     /// destructive confirmation rather than recreating it.
-    pub fn issue_clean_untracked_confirmation(
+    pub(crate) fn issue_clean_untracked_confirmation(
         &self,
         repository_path: &str,
-        paths: Vec<String>,
+        fingerprints: Vec<CleanUntrackedPathFingerprint>,
     ) -> Result<String, AppError> {
         let token = Uuid::new_v4().to_string();
         let mut confirmations = self
             .clean_untracked_confirmations
             .lock()
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        confirmations.retain(|_, confirmation| {
+            confirmation.issued_at.elapsed() <= CLEAN_UNTRACKED_CONFIRMATION_TTL
+        });
+        if !confirmations.contains_key(repository_path)
+            && confirmations.len() >= MAX_CLEAN_UNTRACKED_CONFIRMATIONS
+        {
+            if let Some(oldest_path) = confirmations
+                .iter()
+                .min_by_key(|(_, confirmation)| confirmation.issued_at)
+                .map(|(path, _)| path.clone())
+            {
+                confirmations.remove(&oldest_path);
+            }
+        }
         confirmations.insert(
             repository_path.to_owned(),
             CleanUntrackedConfirmation {
                 token: token.clone(),
-                paths,
+                fingerprints,
                 issued_at: Instant::now(),
             },
         );
@@ -633,33 +746,44 @@ impl AppState {
 
     /// Consumes a preview confirmation. A confirmation cannot be replayed or
     /// used for a different repository path.
-    pub fn take_clean_untracked_confirmation(
+    pub(crate) fn take_clean_untracked_confirmation(
         &self,
         repository_path: &str,
         token: &str,
-    ) -> Result<Vec<String>, AppError> {
+    ) -> Result<Vec<CleanUntrackedPathFingerprint>, AppError> {
         let mut confirmations = self
             .clean_untracked_confirmations
             .lock()
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        // Preserve the requested entry long enough to return the more useful
+        // expiration error below, while pruning stale confirmations belonging
+        // to every other repository.
+        confirmations.retain(|path, confirmation| {
+            path == repository_path
+                || confirmation.issued_at.elapsed() <= CLEAN_UNTRACKED_CONFIRMATION_TTL
+        });
         let confirmation = confirmations.get(repository_path).ok_or_else(|| {
             AppError::new(
                 "clean_untracked_confirmation_required",
                 "请先重新预览未跟踪文件，再执行清理。",
             )
         })?;
-        if confirmation.token != token
-            || confirmation.issued_at.elapsed() > CLEAN_UNTRACKED_CONFIRMATION_TTL
-        {
+        if confirmation.token != token {
+            return Err(AppError::new(
+                "clean_untracked_confirmation_required",
+                "请先重新预览未跟踪文件，再执行清理。",
+            ));
+        }
+        if confirmation.issued_at.elapsed() > CLEAN_UNTRACKED_CONFIRMATION_TTL {
             confirmations.remove(repository_path);
             return Err(AppError::new(
                 "clean_untracked_confirmation_expired",
                 "未跟踪文件预览已过期，请重新确认后再清理。",
             ));
         }
-        let paths = confirmation.paths.clone();
+        let fingerprints = confirmation.fingerprints.clone();
         confirmations.remove(repository_path);
-        Ok(paths)
+        Ok(fingerprints)
     }
 
     pub fn mutate<T>(
@@ -740,6 +864,87 @@ impl AppState {
         })
     }
 
+    /// Acquires exclusive use of one persisted account identity. This is
+    /// separate from the store mutex so an external CLI process never holds
+    /// metadata locked, while profile removal can still fail promptly instead
+    /// of interleaving with that process.
+    pub fn acquire_account_operation_lease(
+        &self,
+        account_profile_id: &str,
+    ) -> Result<AccountOperationLease, AppError> {
+        self.acquire_account_operation_leases(&[account_profile_id])
+    }
+
+    /// Atomically acquires exclusive use of several account identities. CLI
+    /// imports protect every existing profile that could be reconciled so a
+    /// concurrent removal cannot make the import recreate a deleted account.
+    pub fn acquire_account_operation_leases(
+        &self,
+        account_profile_ids: &[&str],
+    ) -> Result<AccountOperationLease, AppError> {
+        let mut account_profile_ids: Vec<String> = account_profile_ids
+            .iter()
+            .map(|account_profile_id| (*account_profile_id).to_owned())
+            .collect();
+        account_profile_ids.sort_unstable();
+        account_profile_ids.dedup();
+        if account_profile_ids.is_empty()
+            || account_profile_ids
+                .iter()
+                .any(|account_profile_id| account_profile_id.is_empty())
+        {
+            return Err(AppError::new(
+                "account_operation_account_required",
+                "账号标识不能为空。",
+            ));
+        }
+        let mut active = self
+            .active_account_operations
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        if account_profile_ids
+            .iter()
+            .any(|account_profile_id| active.contains(account_profile_id))
+        {
+            return Err(AppError::new(
+                "account_operation_in_progress",
+                "该账号正在执行操作，请等待当前操作完成。",
+            ));
+        }
+        active.extend(account_profile_ids.iter().cloned());
+        Ok(AccountOperationLease {
+            active_account_operations: Arc::clone(&self.active_account_operations),
+            account_profile_ids,
+        })
+    }
+
+    /// Acquires the short-lived mutation lease for a CLI account type. A
+    /// caller receives `None` for account types that cannot be imported by a
+    /// CLI, so PAT and SSH profile changes retain their existing behavior.
+    pub fn acquire_cli_account_import_lease(
+        &self,
+        endpoint_id: &str,
+        auth_method: &AuthenticationMethod,
+    ) -> Result<Option<CliAccountImportLease>, AppError> {
+        let Some(key) = cli_account_import_key(endpoint_id, auth_method) else {
+            return Ok(None);
+        };
+        let mut active = self
+            .active_cli_account_imports
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        if !active.insert(key.clone()) {
+            return Err(AppError::new(
+                "account_import_in_progress",
+                "该 Endpoint 正在导入 CLI 账号，请等待当前操作完成。",
+            ));
+        }
+        Ok(Some(CliAccountImportLease {
+            active_cli_account_imports: Arc::clone(&self.active_cli_account_imports),
+            key,
+        }))
+    }
+
     /// Acquire exclusive access to one repository's Git mutations, remote
     /// configuration, credentialed network operations, and platform context
     /// resolution. The persistent-store mutex is never held while this lease
@@ -748,7 +953,30 @@ impl AppState {
         &self,
         repository_path: &str,
     ) -> Result<RepositoryOperationLease, AppError> {
-        self.acquire_repository_operation_leases(&[repository_path])
+        let git = GitCore::new();
+        let repository = std::path::Path::new(repository_path);
+        let root = match git.repository_root(repository) {
+            Ok(root) => root,
+            // Clone and init acquire this lease before a Git worktree exists.
+            // Their destination key remains a single-path lease until Git has
+            // published the repository and normal operations can resolve all
+            // linked worktrees.
+            Err(error) if error.code() == "not_a_git_repository" => {
+                return self.acquire_repository_operation_leases(&[repository_path]);
+            }
+            Err(error) => return Err(error),
+        };
+        let mut repository_paths = git
+            .worktrees(&root)?
+            .into_iter()
+            .map(|worktree| worktree.path)
+            .collect::<Vec<_>>();
+        repository_paths.push(root.to_string_lossy().into_owned());
+        let repository_path_refs = repository_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        self.acquire_repository_operation_leases(&repository_path_refs)
     }
 
     /// Atomically acquire exclusive access to multiple canonical worktree
@@ -788,7 +1016,7 @@ impl AppState {
         })
     }
 
-    fn retry_pending_secret_deletions_in_background(&self) {
+    pub(crate) fn retry_pending_secret_deletions_in_background(&self) {
         let state = self.clone();
         tauri::async_runtime::spawn_blocking(move || state.retry_pending_secret_deletions());
     }
@@ -810,6 +1038,7 @@ impl AppState {
 
 fn acquire_profile_store_lock(app_data_dir: &Path) -> Result<fs::File, AppError> {
     fs::create_dir_all(app_data_dir).map_err(|error| AppError::io("创建应用数据目录", error))?;
+    restrict_profile_store_directory_permissions(app_data_dir)?;
     let lock_path = app_data_dir.join("profiles.lock");
     let lock = fs::OpenOptions::new()
         .read(true)
@@ -825,6 +1054,30 @@ fn acquire_profile_store_lock(app_data_dir: &Path) -> Result<fs::File, AppError>
         )
     })?;
     Ok(lock)
+}
+
+#[cfg(unix)]
+fn restrict_profile_store_directory_permissions(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .map_err(|error| AppError::io("保护应用数据目录", error))
+}
+
+#[cfg(not(unix))]
+fn restrict_profile_store_directory_permissions(_path: &Path) -> Result<(), AppError> {
+    Ok(())
+}
+
+fn cli_account_import_key(endpoint_id: &str, auth_method: &AuthenticationMethod) -> Option<String> {
+    let method = match auth_method {
+        AuthenticationMethod::GhCli => "gh",
+        AuthenticationMethod::GlabCli => "glab",
+        AuthenticationMethod::PersonalAccessToken
+        | AuthenticationMethod::SshAgent
+        | AuthenticationMethod::SystemGitCredentialHelper => return None,
+    };
+    Some(format!("{endpoint_id}\0{method}"))
 }
 
 fn empty_profile_store() -> ProfileStore {
@@ -958,31 +1211,214 @@ mod tests {
     }
 
     #[test]
+    fn account_operation_lease_blocks_concurrent_account_removal() {
+        let directory = std::env::temp_dir().join(format!("bkm-account-lease-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let lease = state
+            .acquire_account_operation_lease("account-1")
+            .expect("a publish operation owns its selected account");
+
+        let error = match state.acquire_account_operation_lease("account-1") {
+            Ok(_) => panic!("account removal must not overlap a publish operation"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "account_operation_in_progress");
+
+        drop(lease);
+        assert!(state.acquire_account_operation_lease("account-1").is_ok());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn account_operation_leases_acquire_all_profiles_or_none() {
+        let directory = std::env::temp_dir().join(format!("bkm-account-leases-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let existing = state
+            .acquire_account_operation_lease("account-2")
+            .expect("another operation owns the second profile");
+
+        let error = match state.acquire_account_operation_leases(&["account-1", "account-2"]) {
+            Ok(_) => panic!("a partially conflicting account group must not be acquired"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "account_operation_in_progress");
+        // The failed group acquisition must not leave the first profile
+        // reserved, otherwise a later import could spuriously block removal.
+        assert!(state.acquire_account_operation_lease("account-1").is_ok());
+
+        drop(existing);
+        let group = state
+            .acquire_account_operation_leases(&["account-1", "account-2"])
+            .expect("both profiles become available together");
+        let error = match state.acquire_account_operation_lease("account-2") {
+            Ok(_) => panic!("a group lease protects every account"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "account_operation_in_progress");
+
+        drop(group);
+        assert!(state
+            .acquire_account_operation_leases(&["account-1", "account-2"])
+            .is_ok());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cli_account_import_lease_serializes_matching_endpoint_profiles() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-cli-import-lease-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let lease = state
+            .acquire_cli_account_import_lease("github.com", &AuthenticationMethod::GhCli)
+            .expect("CLI import lease is acquired")
+            .expect("GitHub CLI has an import lease");
+
+        let error = match state
+            .acquire_cli_account_import_lease("github.com", &AuthenticationMethod::GhCli)
+        {
+            Ok(_) => panic!("matching CLI import cannot overlap"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "account_import_in_progress");
+        assert!(state
+            .acquire_cli_account_import_lease("github.com", &AuthenticationMethod::GlabCli)
+            .is_ok());
+        assert!(state
+            .acquire_cli_account_import_lease("github.com", &AuthenticationMethod::SshAgent)
+            .expect("SSH does not use a CLI import lease")
+            .is_none());
+
+        drop(lease);
+        assert!(state
+            .acquire_cli_account_import_lease("github.com", &AuthenticationMethod::GhCli)
+            .is_ok());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn stale_account_status_refresh_is_not_committed() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-account-refresh-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let stale_generation = state
+            .begin_account_status_refresh()
+            .expect("first refresh generation is issued");
+        state
+            .mutate_and_invalidate_account_status_refreshes(|_| Ok(()))
+            .expect("an account or Endpoint update invalidates the old refresh atomically");
+
+        let committed = state
+            .commit_account_status_refresh(stale_generation, |_| -> Result<(), AppError> {
+                panic!("a stale refresh must not mutate the profile store")
+            })
+            .expect("stale generation is ignored safely");
+        assert!(committed.is_none());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
     fn clean_untracked_confirmation_is_repository_scoped_and_one_shot() {
         let directory =
             std::env::temp_dir().join(format!("bkm-clean-confirmation-{}", Uuid::new_v4()));
         let state = AppState::load(&directory).expect("profile store loads");
-        let token = state
-            .issue_clean_untracked_confirmation(
-                "/work/project",
-                vec!["generated/output.txt".into()],
+        let repository = directory.join("repository");
+        GitCore::new()
+            .init_repository(&repository, None)
+            .expect("test repository initializes");
+        std::fs::create_dir_all(repository.join("generated"))
+            .expect("untracked directory is created");
+        std::fs::write(repository.join("generated/output.txt"), "previewed\n")
+            .expect("untracked file is created");
+        let repository_path = repository.to_string_lossy().into_owned();
+        let fingerprints = GitCore::new()
+            .capture_clean_untracked_path_fingerprints(
+                &repository,
+                &["generated/output.txt".into()],
             )
+            .expect("preview paths are captured");
+        let token = state
+            .issue_clean_untracked_confirmation(&repository_path, fingerprints)
             .expect("preview issues a token");
 
         assert_eq!(
             state
-                .take_clean_untracked_confirmation("/work/project", &token)
-                .expect("matching token consumes its preview"),
+                .take_clean_untracked_confirmation(&repository_path, &token)
+                .expect("matching token consumes its preview")
+                .into_iter()
+                .map(|fingerprint| fingerprint.path)
+                .collect::<Vec<_>>(),
             vec!["generated/output.txt"]
         );
         assert_eq!(
             state
-                .take_clean_untracked_confirmation("/work/project", &token)
+                .take_clean_untracked_confirmation(&repository_path, &token)
                 .expect_err("a consumed preview cannot be replayed")
                 .code(),
             "clean_untracked_confirmation_required"
         );
 
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn issuing_clean_confirmation_prunes_expired_previews_for_other_repositories() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-clean-confirmation-prune-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let stale_repository = directory.join("stale");
+        let current_repository = directory.join("current");
+        let git = GitCore::new();
+        git.init_repository(&stale_repository, None)
+            .expect("stale test repository initializes");
+        git.init_repository(&current_repository, None)
+            .expect("current test repository initializes");
+        std::fs::write(stale_repository.join("old.txt"), "old\n")
+            .expect("stale untracked file is created");
+        std::fs::write(current_repository.join("current.txt"), "current\n")
+            .expect("current untracked file is created");
+        let stale_path = stale_repository.to_string_lossy().into_owned();
+        let current_path = current_repository.to_string_lossy().into_owned();
+        let stale_fingerprints = git
+            .capture_clean_untracked_path_fingerprints(&stale_repository, &["old.txt".into()])
+            .expect("stale preview paths are captured");
+        state
+            .issue_clean_untracked_confirmation(&stale_path, stale_fingerprints)
+            .expect("stale preview is issued");
+        {
+            let mut confirmations = state
+                .clean_untracked_confirmations
+                .lock()
+                .expect("confirmation state is available");
+            confirmations
+                .get_mut(&stale_path)
+                .expect("stale preview exists")
+                .issued_at =
+                Instant::now() - CLEAN_UNTRACKED_CONFIRMATION_TTL - Duration::from_secs(1);
+        }
+
+        let current_fingerprints = git
+            .capture_clean_untracked_path_fingerprints(&current_repository, &["current.txt".into()])
+            .expect("current preview paths are captured");
+        state
+            .issue_clean_untracked_confirmation(&current_path, current_fingerprints)
+            .expect("current preview is issued");
+        let confirmations = state
+            .clean_untracked_confirmations
+            .lock()
+            .expect("confirmation state is available");
+        assert!(!confirmations.contains_key(&stale_path));
+        assert!(confirmations.contains_key(&current_path));
+
+        drop(confirmations);
         drop(state);
         let _ = std::fs::remove_dir_all(directory);
     }
