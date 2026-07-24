@@ -212,6 +212,11 @@ export interface NetworkOperationResult {
   summary: string;
 }
 
+export interface CleanUntrackedPreview {
+  preview: string;
+  confirmation: string;
+}
+
 export interface CodeHostRepositoryInfo {
   fullName: string;
   description: string | null;

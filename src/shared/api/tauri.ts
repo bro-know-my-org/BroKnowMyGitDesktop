@@ -3,6 +3,7 @@ import type {
   AccountProfile,
   AppError,
   CloneRepositoryInput,
+  CleanUntrackedPreview,
   CommitSummary,
   CodeHostCapabilities,
   CodeHostEndpoint,
@@ -255,6 +256,7 @@ let browserLfsStatus: LfsStatus = {
   files: [],
 };
 let browserExternalEditor: ExternalEditorConfig | null = null;
+let browserCleanUntrackedConfirmation: string | null = null;
 type BrowserStash = StashEntry & { entries: GitStatusEntry[] };
 
 let browserStashes: BrowserStash[] = [];
@@ -653,19 +655,31 @@ export const api = {
     });
   },
 
-  previewCleanUntracked(repositoryPath: string): Promise<string> {
+  previewCleanUntracked(repositoryPath: string): Promise<CleanUntrackedPreview> {
     return request("preview_clean_untracked", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
-      return browserSnapshot.status.entries
+      const confirmation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      browserCleanUntrackedConfirmation = confirmation;
+      return {
+        preview: browserSnapshot.status.entries
         .filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?")
         .map((entry) => "Would remove " + entry.path)
-        .join("\n");
+        .join("\n"),
+        confirmation,
+      };
     });
   },
 
-  cleanUntracked(repositoryPath: string): Promise<RepositorySnapshot> {
-    return request("clean_untracked", { repositoryPath }, () => {
+  cleanUntracked(repositoryPath: string, confirmation: string): Promise<RepositorySnapshot> {
+    return request("clean_untracked", { repositoryPath, confirmation }, () => {
       requireBrowserSnapshot(repositoryPath);
+      if (!confirmation || confirmation !== browserCleanUntrackedConfirmation) {
+        throw {
+          code: "clean_untracked_confirmation_expired",
+          message: "未跟踪文件预览已过期，请重新确认后再清理。",
+        } satisfies AppError;
+      }
+      browserCleanUntrackedConfirmation = null;
       return updateMockSnapshot((snapshot) => {
         snapshot.status.entries = snapshot.status.entries.filter((entry) => entry.indexStatus || entry.worktreeStatus !== "?");
       });

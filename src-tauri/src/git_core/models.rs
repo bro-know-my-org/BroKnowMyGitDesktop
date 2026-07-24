@@ -1,0 +1,109 @@
+use super::validation::*;
+use super::*;
+
+/// Options for cloning a worktree repository.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneOptions {
+    pub branch: Option<String>,
+    pub depth: Option<u32>,
+    pub recursive: bool,
+}
+
+/// Selection for an unstaged or staged diff.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffOptions {
+    pub staged: bool,
+    pub paths: Vec<String>,
+    pub context_lines: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitResult {
+    pub commit_id: String,
+}
+
+/// Fetch only one named remote, after CredentialBroker has selected an
+/// account/credential strategy for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchOptions {
+    pub remote: String,
+    pub refspecs: Vec<String>,
+    pub prune: bool,
+}
+
+/// Pull only one named remote, after CredentialBroker has selected an
+/// account/credential strategy for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PullOptions {
+    pub remote: String,
+    pub refspec: Option<String>,
+}
+
+/// Push only one named remote, after CredentialBroker has selected an
+/// account/credential strategy for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PushOptions {
+    pub remote: String,
+    pub refspecs: Vec<String>,
+    pub set_upstream: bool,
+    pub force_with_lease: bool,
+    pub follow_tags: bool,
+}
+
+/// Selects which local remote URL setting is updated.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteUrlKind {
+    Fetch,
+    Push,
+}
+
+/// The data needed by the repository overview page.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositorySnapshot {
+    pub repository: RepositoryRecord,
+    pub status: GitStatus,
+    pub branches: Vec<BranchInfo>,
+    pub remote_branches: Vec<RemoteBranchInfo>,
+    pub remotes: Vec<RemoteProfile>,
+    pub tags: Vec<TagInfo>,
+}
+
+pub(super) fn fetch_arguments(options: &FetchOptions) -> Result<Vec<OsString>, AppError> {
+    validate_remote_name(&options.remote)?;
+    for refspec in &options.refspecs {
+        validate_refspec(refspec)?;
+    }
+    let mut arguments = vec![OsString::from("fetch")];
+    if options.prune {
+        arguments.push(OsString::from("--prune"));
+    }
+    arguments.push(OsString::from(&options.remote));
+    arguments.extend(options.refspecs.iter().map(OsString::from));
+    Ok(arguments)
+}
+
+pub(super) fn command_arguments(
+    repository: Option<&Path>,
+    arguments: &[OsString],
+) -> Vec<OsString> {
+    let mut all_arguments =
+        Vec::with_capacity(arguments.len() + usize::from(repository.is_some()) * 2);
+    if let Some(repository) = repository {
+        all_arguments.push(OsString::from("-C"));
+        all_arguments.push(repository.as_os_str().to_os_string());
+    }
+    all_arguments.extend(arguments.iter().cloned());
+    all_arguments
+}
+
+pub(super) fn os_arguments(arguments: &[&str]) -> Vec<OsString> {
+    arguments.iter().map(OsString::from).collect()
+}

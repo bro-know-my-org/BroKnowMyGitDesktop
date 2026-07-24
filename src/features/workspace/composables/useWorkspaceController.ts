@@ -1061,16 +1061,16 @@ function discardSelectedChange(): void {
 async function confirmCleanUntracked(): Promise<void> {
   if (!activeRepositoryPath.value) return;
   mutationBusy.value = true;
-  let preview = "";
+  let cleanPreview: Awaited<ReturnType<typeof api.previewCleanUntracked>>;
   try {
-    preview = await api.previewCleanUntracked(activeRepositoryPath.value);
+    cleanPreview = await api.previewCleanUntracked(activeRepositoryPath.value);
   } catch (error) {
     reportError(error, tr("预览未跟踪文件清理失败", "Could not preview untracked file cleanup"));
     return;
   } finally {
     mutationBusy.value = false;
   }
-  const entries = preview.split(/\r?\n/u).filter(Boolean);
+  const entries = cleanPreview.preview.split(/\r?\n/u).filter(Boolean);
   if (!entries.length) {
     message.info(tr("没有可清理的未跟踪文件。", "There are no untracked files to clean."));
     return;
@@ -1089,7 +1089,10 @@ async function confirmCleanUntracked(): Promise<void> {
       mutationBusy.value = true;
       try {
         const selectedPath = selectedChange.value?.path;
-        const nextSnapshot = await api.cleanUntracked(activeRepositoryPath.value!);
+        const nextSnapshot = await api.cleanUntracked(
+          activeRepositoryPath.value!,
+          cleanPreview.confirmation,
+        );
         applySnapshot(nextSnapshot);
         if (selectedPath && !nextSnapshot.status.entries.some((entry) => entry.path === selectedPath)) {
           clearDiffSelection();

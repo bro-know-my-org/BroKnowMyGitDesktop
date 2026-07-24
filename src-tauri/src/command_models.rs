@@ -36,6 +36,16 @@ pub struct NetworkOperationResult {
     pub summary: String,
 }
 
+/// A short-lived server-side confirmation for one exact set of untracked
+/// files. The token prevents a later broad clean from deleting files that did
+/// not appear in the preview the user reviewed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanUntrackedPreview {
+    pub preview: String,
+    pub confirmation: String,
+}
+
 impl NetworkOperationResult {
     pub fn completed(message: impl Into<String>) -> Self {
         Self {

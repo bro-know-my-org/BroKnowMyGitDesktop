@@ -6,15 +6,17 @@ use crate::domain::{
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const STORE_FILE_NAME: &str = "profiles.json";
 const MAX_REPOSITORIES: usize = 200;
+const CLEAN_UNTRACKED_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 
 /// Durable intent recorded before `gh repo create --push`. It contains only
 /// local metadata needed to reconcile an origin that was created successfully
@@ -513,9 +515,16 @@ pub struct AppState {
     active_publishes: Arc<Mutex<HashSet<String>>>,
     active_clones: Arc<Mutex<HashSet<String>>>,
     active_repository_operations: Arc<Mutex<HashSet<String>>>,
+    clean_untracked_confirmations: Arc<Mutex<HashMap<String, CleanUntrackedConfirmation>>>,
     // An advisory lock held for this AppState's lifetime. It serializes
     // independent desktop processes using the same profile directory.
     _profile_store_lock: Arc<fs::File>,
+}
+
+struct CleanUntrackedConfirmation {
+    token: String,
+    paths: Vec<String>,
+    issued_at: Instant,
 }
 
 /// In-process lease for a repository publish workflow. GitHub publishing has
@@ -584,6 +593,7 @@ impl AppState {
             active_publishes: Arc::new(Mutex::new(HashSet::new())),
             active_clones: Arc::new(Mutex::new(HashSet::new())),
             active_repository_operations: Arc::new(Mutex::new(HashSet::new())),
+            clean_untracked_confirmations: Arc::new(Mutex::new(HashMap::new())),
             _profile_store_lock: Arc::new(profile_store_lock),
         };
         state.retry_pending_secret_deletions_in_background();
@@ -595,6 +605,61 @@ impl AppState {
             .lock()
             .map(|store| store.data().clone())
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
+    }
+
+    /// Records the exact untracked file set shown to the user. This state is
+    /// deliberately in-memory and short lived: a restart invalidates a
+    /// destructive confirmation rather than recreating it.
+    pub fn issue_clean_untracked_confirmation(
+        &self,
+        repository_path: &str,
+        paths: Vec<String>,
+    ) -> Result<String, AppError> {
+        let token = Uuid::new_v4().to_string();
+        let mut confirmations = self
+            .clean_untracked_confirmations
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        confirmations.insert(
+            repository_path.to_owned(),
+            CleanUntrackedConfirmation {
+                token: token.clone(),
+                paths,
+                issued_at: Instant::now(),
+            },
+        );
+        Ok(token)
+    }
+
+    /// Consumes a preview confirmation. A confirmation cannot be replayed or
+    /// used for a different repository path.
+    pub fn take_clean_untracked_confirmation(
+        &self,
+        repository_path: &str,
+        token: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let mut confirmations = self
+            .clean_untracked_confirmations
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        let confirmation = confirmations.get(repository_path).ok_or_else(|| {
+            AppError::new(
+                "clean_untracked_confirmation_required",
+                "请先重新预览未跟踪文件，再执行清理。",
+            )
+        })?;
+        if confirmation.token != token
+            || confirmation.issued_at.elapsed() > CLEAN_UNTRACKED_CONFIRMATION_TTL
+        {
+            confirmations.remove(repository_path);
+            return Err(AppError::new(
+                "clean_untracked_confirmation_expired",
+                "未跟踪文件预览已过期，请重新确认后再清理。",
+            ));
+        }
+        let paths = confirmation.paths.clone();
+        confirmations.remove(repository_path);
+        Ok(paths)
     }
 
     pub fn mutate<T>(
@@ -887,6 +952,36 @@ mod tests {
         assert!(state
             .acquire_repository_operation_leases(&["/work/project", "/work/project-linked"])
             .is_ok());
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn clean_untracked_confirmation_is_repository_scoped_and_one_shot() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-clean-confirmation-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let token = state
+            .issue_clean_untracked_confirmation(
+                "/work/project",
+                vec!["generated/output.txt".into()],
+            )
+            .expect("preview issues a token");
+
+        assert_eq!(
+            state
+                .take_clean_untracked_confirmation("/work/project", &token)
+                .expect("matching token consumes its preview"),
+            vec!["generated/output.txt"]
+        );
+        assert_eq!(
+            state
+                .take_clean_untracked_confirmation("/work/project", &token)
+                .expect_err("a consumed preview cannot be replayed")
+                .code(),
+            "clean_untracked_confirmation_required"
+        );
 
         drop(state);
         let _ = std::fs::remove_dir_all(directory);
