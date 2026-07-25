@@ -438,6 +438,17 @@ pub struct CommitSummary {
     pub sha: String,
     pub short_sha: String,
     pub parents: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// True when tag enumeration exceeded its safety limit. In that case
+    /// `tags` may be incomplete and the UI must not present it as exhaustive.
+    #[serde(default)]
+    pub tags_truncated: bool,
+    /// `Some(true)` when the configured upstream contains this commit,
+    /// `Some(false)` when it exists only on the local branch, and `None`
+    /// when the current branch has no configured upstream.
+    #[serde(default)]
+    pub pushed: Option<bool>,
     pub author_name: String,
     pub author_email: String,
     pub authored_at: String,

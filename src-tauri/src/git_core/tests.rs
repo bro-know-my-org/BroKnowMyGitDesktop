@@ -923,8 +923,9 @@ fn parses_branch_and_tag_output() {
     assert!(branches[0].is_current);
     assert_eq!(branches[1].upstream, None);
 
-    let tags = parse_tags(b"v1.0.0\0abc123\nv0.9.0\0def456\n").unwrap();
+    let tags = parse_tags(b"v1.0.0\0peeled123\0tag123\nv0.9.0\0\0def456\n").unwrap();
     assert_eq!(tags[0].name, "v1.0.0");
+    assert_eq!(tags[0].target, "peeled123");
     assert_eq!(tags[1].target, "def456");
 }
 
@@ -1727,8 +1728,11 @@ fn parses_commit_history_and_stash_output() {
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[0].parents, vec!["parent-one", "parent-two"]);
     assert_eq!(commits[0].summary, "Implement \u{1e}history");
+    assert!(commits[0].tags.is_empty());
+    assert!(!commits[0].tags_truncated);
     assert!(commits[1].parents.is_empty());
     assert_eq!(commits[1].summary, "Initial commit");
+    assert!(commits[1].tags.is_empty());
 
     let stashes = parse_stashes(
         b"stash@{0}\0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0On main: first line\nsecond line\0\nstash@{1}\0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0On topic: draft\0",
@@ -1796,6 +1800,54 @@ fn lists_real_git_history_without_extra_format_records() {
     GitCore::new()
         .create_tag(&repository, "first-commit", Some("HEAD~1"), None)
         .expect("a revision expression can be a tag target");
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn commit_history_omits_push_state_for_an_unresolvable_configured_upstream() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-broken-history-upstream-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "history@example.invalid"]);
+    run_git(&["config", "user.name", "History Test"]);
+    fs::write(repository.join("history.txt"), "first\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "first commit"]);
+    run_git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/missing.git",
+    ]);
+
+    let git = GitCore::new();
+    let branch = git.current_branch_name(&repository).unwrap();
+    run_git(&["config", &format!("branch.{branch}.remote"), "origin"]);
+    run_git(&[
+        "config",
+        &format!("branch.{branch}.merge"),
+        "refs/heads/missing",
+    ]);
+
+    let commits = git.commits(&repository, 100).unwrap();
+    assert_eq!(commits.len(), 1);
+    assert!(commits.iter().all(|commit| commit.pushed.is_none()));
 
     let _ = fs::remove_dir_all(repository);
 }
@@ -1958,6 +2010,7 @@ fn push_with_url_sets_the_named_upstream_after_the_network_push() {
         assert!(status.success());
     };
     run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "quoted\"branch"]);
     run_git(
         &repository,
         &["config", "user.email", "push@example.invalid"],

@@ -49,12 +49,19 @@ pub async fn pull_remote(
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
         let git = GitCore::new();
+        let branch = git.current_branch_name(&repository)?;
         let refspec = git.pull_refspec_for_remote(&repository, &remote_name)?;
         let target = network_environment(&state, &repository, &remote_name, false)?;
         let remote_url = target
             .urls
             .first()
             .ok_or_else(|| AppError::new("remote_not_found", "找不到该 remote。"))?;
+        if git.current_branch_name(&repository)? != branch {
+            return Err(AppError::new(
+                "repository_changed",
+                "当前分支已变化，请重新执行拉取。",
+            ));
+        }
         git.pull_with_environment_at_url(
             &repository,
             &PullOptions {
@@ -85,12 +92,14 @@ pub async fn push_remote(
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
         let target = network_environment(&state, &repository, &remote_name, true)?;
-        GitCore::new().push_with_environment_at_urls(
+        let git = GitCore::new();
+        let (refspecs, set_upstream) = git.push_plan_for_remote(&repository, &remote_name)?;
+        git.push_with_environment_at_urls(
             &repository,
             &PushOptions {
                 remote: remote_name.clone(),
-                refspecs: Vec::new(),
-                set_upstream: false,
+                refspecs,
+                set_upstream,
                 force_with_lease: force_with_lease.unwrap_or(false),
                 follow_tags: false,
             },

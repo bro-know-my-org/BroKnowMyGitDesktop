@@ -518,6 +518,9 @@ pub(super) fn parse_commits(raw: &[u8]) -> Result<Vec<CommitSummary>, AppError> 
                 .split_whitespace()
                 .map(ToOwned::to_owned)
                 .collect(),
+            tags: Vec::new(),
+            tags_truncated: false,
+            pushed: None,
             author_name: lossy(fields[3]),
             author_email: lossy(fields[4]),
             authored_at: lossy(fields[5]),
@@ -573,12 +576,20 @@ pub(super) fn parse_tags(raw: &[u8]) -> Result<Vec<TagInfo>, AppError> {
         .map_err(|_| AppError::new("git_parse_error", "无法解析 Git 标签信息"))?;
     for line in raw.lines().filter(|line| !line.is_empty()) {
         let fields: Vec<_> = line.split('\0').collect();
-        if fields.len() != 2 || fields[0].is_empty() || fields[1].is_empty() {
+        if fields.len() != 3 || fields[0].is_empty() {
+            return Err(AppError::new("git_parse_error", "无法解析 Git 标签信息"));
+        }
+        let target = if fields[1].is_empty() {
+            fields[2]
+        } else {
+            fields[1]
+        };
+        if target.is_empty() {
             return Err(AppError::new("git_parse_error", "无法解析 Git 标签信息"));
         }
         tags.push(TagInfo {
             name: fields[0].to_owned(),
-            target: fields[1].to_owned(),
+            target: target.to_owned(),
         });
     }
     Ok(tags)

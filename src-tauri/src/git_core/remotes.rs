@@ -5,6 +5,8 @@ use super::parser::*;
 use super::validation::*;
 use super::*;
 
+const MAX_TAG_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+
 impl GitCore {
     /// Builds a protected environment for operations intentionally delegated
     /// to the user's normal Git credential manager. Repository-local helpers
@@ -51,13 +53,14 @@ impl GitCore {
         let arguments = os_arguments(&[
             "for-each-ref",
             "--sort=-creatordate",
-            "--format=%(refname:short)%00%(objectname)",
+            "--format=%(refname:short)%00%(*objectname)%00%(objectname)",
             "refs/tags",
         ]);
-        let output = self.run(
+        let output = self.run_with_output_limit(
             Some(repository),
             &arguments,
             &GitEnvironment::default(),
+            MAX_TAG_OUTPUT_BYTES,
             "读取标签",
         )?;
         parse_tags(&output.stdout)

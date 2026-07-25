@@ -156,11 +156,18 @@ impl GitCore {
         environment: &GitEnvironment,
     ) -> Result<(), AppError> {
         self.ensure_configured_remote(repository, &options.remote)?;
+        let branch = self.current_branch_name(repository)?;
         let refspec = match options.refspec.clone() {
             Some(refspec) => refspec,
             None => self.pull_refspec_for_remote(repository, &options.remote)?,
         };
         let remote_url = self.remote_url_for_operation(repository, &options.remote, false)?;
+        if self.current_branch_name(repository)? != branch {
+            return Err(AppError::new(
+                "repository_changed",
+                "当前分支已变化，请重新执行拉取。",
+            ));
+        }
         self.pull_with_environment_at_url(
             repository,
             &PullOptions {
@@ -184,30 +191,103 @@ impl GitCore {
         self.ensure_configured_remote(repository, remote_name)?;
         self.ensure_network_configuration_is_safe(repository)?;
         let branch = self.current_branch_name(repository)?;
+        let Some((configured_remote, refspec)) = self.branch_upstream(repository, &branch)? else {
+            return Err(pull_upstream_not_configured_error());
+        };
+        if configured_remote != remote_name {
+            return Err(AppError::new(
+                "pull_upstream_remote_mismatch",
+                "当前分支没有跟踪所选 remote。",
+            ));
+        }
+        validate_refspec(&refspec)?;
+        Ok(refspec)
+    }
+
+    /// Builds a deterministic current-branch push plan for the selected
+    /// remote. Every path uses an explicit refspec, so user `push.default`
+    /// configuration and a concurrent checkout cannot redirect the push.
+    pub(crate) fn push_plan_for_remote(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+    ) -> Result<(Vec<String>, bool), AppError> {
+        self.ensure_configured_remote(repository, remote_name)?;
+        self.ensure_network_configuration_is_safe(repository)?;
+        let branch = self.current_branch_name(repository)?;
+        let local_reference = format!("refs/heads/{branch}");
+        let (destination, set_upstream) = match self.branch_upstream(repository, &branch)? {
+            Some((configured_remote, upstream_reference))
+                if configured_remote == remote_name
+                    && upstream_reference.starts_with("refs/heads/") =>
+            {
+                (upstream_reference, false)
+            }
+            Some((configured_remote, _)) if configured_remote == remote_name => {
+                return Err(AppError::new(
+                    "push_upstream_not_a_branch",
+                    "当前分支上游不是远程分支。",
+                ));
+            }
+            Some(_) => (local_reference.clone(), false),
+            None => (local_reference.clone(), true),
+        };
+        let refspec = format!("{local_reference}:{destination}");
+        validate_refspec(&refspec)?;
+        Ok((vec![refspec], set_upstream))
+    }
+
+    fn branch_upstream(
+        &self,
+        repository: &Path,
+        branch: &str,
+    ) -> Result<Option<(String, String)>, AppError> {
         let branch_reference = format!("refs/heads/{branch}");
         let output = self.execute(
             Some(repository),
-            &os_arguments(&[
-                "for-each-ref",
-                "--format=%(upstream:remotename)%00%(upstream:remoteref)",
-                &branch_reference,
-            ]),
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from(
+                    "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)",
+                ),
+                OsString::from(&branch_reference),
+            ],
             &GitEnvironment::default(),
         )?;
         if !output.status.success() {
             return Err(git_command_error("读取当前分支上游", &output));
         }
 
-        let mut records = output
+        let mut matching_record = None;
+        for record in output
             .stdout
             .split(|byte| *byte == b'\n')
-            .filter(|record| !record.is_empty());
-        let record = records
-            .next()
-            .ok_or_else(pull_upstream_not_configured_error)?;
-        if records.next().is_some() {
-            return Err(AppError::new("git_parse_error", "无法读取当前分支上游。"));
+            .filter(|record| !record.is_empty())
+        {
+            let Some(separator) = record.iter().position(|byte| *byte == b'\0') else {
+                return Err(AppError::new("git_parse_error", "无法读取当前分支上游。"));
+            };
+            if record[..separator] != *branch_reference.as_bytes() {
+                continue;
+            }
+            if matching_record.replace(&record[separator + 1..]).is_some() {
+                return Err(AppError::new("git_parse_error", "无法读取当前分支上游。"));
+            }
         }
+        let record = match matching_record {
+            Some(record) => record,
+            None if self.current_branch_name(repository).ok().as_deref() == Some(branch)
+                && self.has_unborn_head(repository)? =>
+            {
+                return Ok(None);
+            }
+            None => {
+                return Err(AppError::new(
+                    "repository_changed",
+                    "仓库引用正在变化，请稍后重试。",
+                ));
+            }
+        };
         let separator = record
             .iter()
             .position(|byte| *byte == b'\0')
@@ -217,16 +297,11 @@ impl GitCore {
         let refspec = std::str::from_utf8(&record[separator + 1..])
             .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
         if configured_remote.is_empty() || refspec.is_empty() {
-            return Err(pull_upstream_not_configured_error());
+            return Ok(None);
         }
-        if configured_remote != remote_name {
-            return Err(AppError::new(
-                "pull_upstream_remote_mismatch",
-                "当前分支没有跟踪所选 remote。",
-            ));
-        }
+        validate_remote_name(configured_remote)?;
         validate_refspec(refspec)?;
-        Ok(refspec.to_owned())
+        Ok(Some((configured_remote.to_owned(), refspec.to_owned())))
     }
 
     /// Pulls from an immutable, previously validated operation URL.
@@ -343,21 +418,40 @@ impl GitCore {
         repository: &Path,
         options: &PushOptions,
     ) -> Result<PushUpstream, AppError> {
-        let local_branch = self.current_branch_name(repository)?;
-        let remote_branch = match options.refspecs.as_slice() {
-            [] => local_branch.clone(),
-            [refspec] => remote_branch_for_push_upstream_refspec(refspec, &local_branch)?,
-            _ => {
-                return Err(AppError::new(
-                    "set_upstream_requires_single_branch",
-                    "设置上游只能推送当前分支到一个远程分支。",
-                ));
+        match options.refspecs.as_slice() {
+            [] => {
+                let local_branch = self.current_branch_name(repository)?;
+                Ok(PushUpstream {
+                    remote_branch: local_branch.clone(),
+                    local_branch,
+                })
             }
-        };
-        Ok(PushUpstream {
-            local_branch,
-            remote_branch,
-        })
+            [refspec] => {
+                let upstream = push_upstream_for_refspec(refspec)?;
+                let local_reference = format!("refs/heads/{}^{{commit}}", upstream.local_branch);
+                let local_branch = self.execute(
+                    Some(repository),
+                    &[
+                        OsString::from("rev-parse"),
+                        OsString::from("--verify"),
+                        OsString::from("--quiet"),
+                        OsString::from(local_reference),
+                    ],
+                    &GitEnvironment::default(),
+                )?;
+                if !local_branch.status.success() {
+                    return Err(AppError::new(
+                        "set_upstream_requires_local_branch",
+                        "设置上游必须指定一个存在的本地分支。",
+                    ));
+                }
+                Ok(upstream)
+            }
+            _ => Err(AppError::new(
+                "set_upstream_requires_single_branch",
+                "设置上游只能推送当前分支到一个远程分支。",
+            )),
+        }
     }
 
     fn configure_push_upstream(
@@ -420,23 +514,24 @@ impl GitCore {
     }
 }
 
-fn remote_branch_for_push_upstream_refspec(
-    refspec: &str,
-    local_branch: &str,
-) -> Result<String, AppError> {
+fn push_upstream_for_refspec(refspec: &str) -> Result<PushUpstream, AppError> {
     let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
     let (source, destination) = refspec
         .split_once(':')
         .map_or((refspec, None), |(source, destination)| {
             (source, Some(destination))
         });
-    let local_reference = format!("refs/heads/{local_branch}");
-    if source != "HEAD" && source != local_branch && source != local_reference {
+    let local_branch = source.strip_prefix("refs/heads/").unwrap_or(source);
+    if source == "HEAD"
+        || source.is_empty()
+        || source.starts_with("refs/") && !source.starts_with("refs/heads/")
+    {
         return Err(AppError::new(
             "set_upstream_requires_current_branch",
-            "设置上游只能推送当前分支。",
+            "设置上游必须明确指定一个本地分支。",
         ));
     }
+    validate_ref_name(local_branch, "本地分支名")?;
     let destination = destination.unwrap_or(local_branch);
     if destination.starts_with("refs/") && !destination.starts_with("refs/heads/") {
         return Err(AppError::new(
@@ -448,7 +543,10 @@ fn remote_branch_for_push_upstream_refspec(
         .strip_prefix("refs/heads/")
         .unwrap_or(destination);
     validate_ref_name(remote_branch, "远程分支名")?;
-    Ok(remote_branch.to_owned())
+    Ok(PushUpstream {
+        local_branch: local_branch.to_owned(),
+        remote_branch: remote_branch.to_owned(),
+    })
 }
 
 /// Command-scope overrides complement the preflight: a repository config may
