@@ -10,7 +10,7 @@ const lightThemeOverrides: GlobalThemeOverrides = {
     primaryColor: "#16845f",
     primaryColorHover: "#1d9a70",
     primaryColorPressed: "#0f6d4d",
-    borderRadius: "7px",
+    borderRadius: "0px",
     fontSize: "14px",
   },
   Card: {
@@ -24,7 +24,7 @@ const darkThemeOverrides: GlobalThemeOverrides = {
     primaryColor: "#2da875",
     primaryColorHover: "#4cc58e",
     primaryColorPressed: "#20815a",
-    borderRadius: "7px",
+    borderRadius: "0px",
     fontSize: "14px",
   },
   Card: {
