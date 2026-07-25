@@ -19,7 +19,6 @@
   --app-focus: #2b8d68;
   --app-focus-ring: rgba(43, 141, 104, 0.16);
   --app-divider: #edf0f4;
-  --app-dot: #7c8ba1;
   --app-diff-bg: #17202f;
   --app-diff-text: #d9e2ec;
   color: var(--app-text);
@@ -52,9 +51,16 @@
   --app-focus: #65d39d;
   --app-focus-ring: rgba(101, 211, 157, 0.24);
   --app-divider: #30363d;
-  --app-dot: #8b949e;
   --app-diff-bg: #0d1117;
   --app-diff-text: #c9d1d9;
+}
+
+*,
+*::before,
+*::after {
+  transition-duration: 1ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
 }
 
 html,
@@ -85,6 +91,8 @@ button {
 }
 
 .application-main {
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
 }
@@ -97,99 +105,78 @@ button {
   overflow: hidden;
 }
 
-.application-sidebar {
-  height: 100%;
-  background: var(--app-surface);
-}
-
-.app-rail {
+.application-menu,
+.topbar-leading {
   display: flex;
-  height: 100%;
-  width: 64px;
-  min-width: 64px;
   min-height: 0;
-  flex-direction: column;
   align-items: center;
-  border-right: 1px solid var(--app-divider);
-  background: var(--app-bg);
 }
 
-.rail-brand {
+.topbar-leading {
+  min-width: 0;
+  gap: 12px;
+}
+
+.application-menu {
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.header-brand-button,
+.application-menu-button {
   display: grid;
-  width: 100%;
-  height: 58px;
+  width: 30px;
+  height: 30px;
   place-items: center;
   border: 0;
   background: transparent;
+  color: var(--app-text-control);
   cursor: pointer;
 }
 
 .brand-mark {
   display: grid;
-  width: 31px;
-  height: 31px;
+  width: 22px;
+  height: 22px;
   place-items: center;
   border-radius: 0;
   background: linear-gradient(135deg, #24a878, #2976d2);
   color: white;
-  font-size: 11px;
+  font-size: 9px;
   font-weight: 760;
   letter-spacing: -0.04em;
-  box-shadow: 0 4px 12px rgba(24, 124, 91, 0.2);
+  box-shadow: 0 2px 6px rgba(24, 124, 91, 0.18);
 }
 
-.rail-navigation {
+.application-menu-button {
   display: grid;
-  width: 100%;
-  gap: 6px;
-  padding: 10px 8px;
+  align-content: center;
+  gap: 3px;
+  padding: 6px;
 }
 
-.rail-navigation-button {
-  display: grid;
-  min-height: 52px;
-  place-items: center;
-  gap: 2px;
-  padding: 6px 3px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--app-text-tertiary);
-  cursor: pointer;
+.application-menu-line {
+  display: block;
+  width: 16px;
+  height: 1px;
+  background: currentColor;
 }
 
-.rail-navigation-button:hover {
+.header-brand-button:hover,
+.application-menu-button:hover {
   background: var(--app-row-hover);
   color: var(--app-text-control);
 }
 
-.rail-navigation-button.active {
-  background: var(--app-row-selected);
-  color: var(--app-accent-strong);
-}
-
-.rail-navigation-button:focus-visible,
-.rail-brand:focus-visible {
+.header-brand-button:focus-visible,
+.application-menu-button:focus-visible {
   outline: 2px solid var(--app-focus);
   outline-offset: 2px;
 }
 
-.rail-icon {
-  height: 20px;
-  font-size: 21px;
-  font-weight: 600;
-  line-height: 18px;
-}
-
-.rail-label {
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 1;
-}
-
 .repository-picker {
   display: flex;
-  width: 286px;
+  width: 270px;
   max-width: calc(100vw - 24px);
   max-height: calc(100vh - 84px);
   min-width: 0;
@@ -199,12 +186,13 @@ button {
 
 .repository-picker-popover {
   overflow: hidden;
+  padding: 0 !important;
 }
 
 .repository-picker-header {
   display: grid;
-  gap: 11px;
-  padding: 17px 12px 12px;
+  gap: 7px;
+  padding: 10px 8px 8px;
   border-bottom: 1px solid var(--app-divider);
 }
 
@@ -217,7 +205,7 @@ button {
 
 .repository-picker-repositories {
   min-height: 0;
-  padding: 12px 10px;
+  padding: 6px;
   overflow: hidden;
 }
 
@@ -247,15 +235,15 @@ button {
 .sidebar-repository-list {
   display: grid;
   max-height: min(460px, calc(100vh - 228px));
-  gap: 14px;
+  gap: 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 2px 2px 4px;
+  padding: 0;
 }
 
 .sidebar-repository-group {
   display: grid;
-  gap: 3px;
+  gap: 1px;
 }
 
 .sidebar-group-heading {
@@ -263,12 +251,12 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 0 7px;
+  padding: 0 5px;
   color: var(--app-text-muted);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.045em;
-  line-height: 1.5;
+  line-height: 1.35;
   text-transform: uppercase;
 }
 
@@ -285,7 +273,7 @@ button {
 
 .sidebar-repository-group-list {
   display: grid;
-  gap: 2px;
+  gap: 0;
 }
 
 .sidebar-repository-item {
@@ -303,8 +291,8 @@ button {
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  padding: 8px 7px;
-  border: 1px solid transparent;
+  padding: 6px 5px;
+  border: 0;
   border-radius: 0;
   background: transparent;
   color: var(--app-text-control);
@@ -312,14 +300,15 @@ button {
   text-align: left;
 }
 
-.sidebar-repository:hover,
-.sidebar-repository.active {
-  background: var(--app-row-selected);
-  color: var(--app-accent);
+.sidebar-repository:hover {
+  background: var(--app-row-hover);
+  color: var(--app-text-heading);
 }
 
 .sidebar-repository.active {
-  border-color: var(--app-selected-border);
+  background: var(--app-row-selected);
+  color: var(--app-accent-strong);
+  font-weight: 650;
 }
 
 .repository-name {
@@ -329,18 +318,6 @@ button {
   white-space: nowrap;
 }
 
-.repository-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--app-dot);
-}
-
-.sidebar-repository.active .repository-dot {
-  background: var(--app-accent-bright);
-}
-
 .sidebar-empty {
   display: block;
   padding: 8px;
@@ -348,8 +325,8 @@ button {
 }
 
 .topbar {
-  height: 60px;
-  flex: 0 0 60px;
+  height: 44px;
+  flex: 0 0 44px;
   background: var(--app-topbar);
 }
 
@@ -358,14 +335,14 @@ button {
   height: 100%;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  padding: 0 22px;
+  gap: 16px;
+  padding: 0 12px 0 8px;
 }
 
 .repository-topbar-context {
-  display: grid;
+  display: flex;
   min-width: 0;
-  gap: 2px;
+  align-items: center;
 }
 
 .repository-title-row,
@@ -437,7 +414,6 @@ button {
   color: var(--app-text-muted);
   font-size: 12px;
   line-height: 1;
-  transition: transform 0.16s ease;
 }
 
 .repository-switcher[aria-expanded="true"] .repository-switcher-caret {
@@ -462,7 +438,7 @@ button {
 
 .content-inner {
   max-width: none;
-  padding: 18px 22px 28px;
+  padding: 0;
 }
 
 .accounts-page {
@@ -473,6 +449,9 @@ button {
 .demo-alert,
 .error-alert,
 .operation-alert {
+  max-height: 30%;
+  flex: 0 0 auto;
+  overflow-y: auto;
   margin-bottom: 18px;
 }
 
@@ -540,27 +519,8 @@ h1 {
   font-size: 12px;
 }
 
-.repository-path {
-  overflow: hidden;
-  color: var(--app-text-tertiary);
-  font-size: 11px;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .remote-select {
   width: 116px;
-}
-
-.language-select {
-  width: 112px;
-}
-
-.theme-toggle {
-  min-width: 32px;
-  font-size: 17px;
-  line-height: 1;
 }
 
 .remote-summary-card {
@@ -578,8 +538,23 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.repository-tabs .n-tabs-nav {
-  margin-bottom: 10px;
+.repository-tabs > .n-tab-pane {
+  padding-top: 0 !important;
+}
+
+.repository-tabs > .n-tabs-nav {
+  min-height: 32px;
+  border: 1px solid var(--app-divider);
+  background: var(--app-surface);
+}
+
+.repository-tabs .n-tabs-nav-scroll-content {
+  min-height: 30px;
+  border-bottom: 0 !important;
+}
+
+.repository-tabs .n-tabs-tab {
+  padding: 4px 10px !important;
 }
 
 .metric {
@@ -613,7 +588,7 @@ h1 {
 
 .changes-grid {
   display: grid;
-  grid-template-columns: minmax(380px, 1.1fr) minmax(380px, 0.9fr);
+  grid-template-columns: minmax(286px, 27.2%) minmax(480px, 1fr);
   gap: 16px;
 }
 
@@ -666,8 +641,17 @@ h1 {
 
 .history-commit-sha {
   flex: 0 0 auto;
-  color: var(--app-accent-strong);
-  font: 12px/1.3 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  color: var(--app-text-muted);
+  font: 10px/1.3 "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+.history-commit-tags {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow: hidden;
 }
 
 .history-commit-summary,
@@ -704,16 +688,52 @@ h1 {
 }
 
 .changes-workspace {
+  box-sizing: border-box;
   display: grid;
-  grid-template-columns: minmax(286px, 0.68fr) minmax(480px, 1.82fr);
+  grid-template-columns: minmax(286px, 27.2%) minmax(480px, 1fr);
   align-items: stretch;
-  height: calc(100vh - 110px);
+  height: 100%;
   min-height: 420px;
   overflow: hidden;
   border: 1px solid var(--app-divider);
   border-radius: 0;
   background: var(--app-surface);
   box-shadow: 0 1px 2px rgba(23, 35, 55, 0.025);
+}
+
+@media (min-width: 1121px) {
+  .content-area.is-fixed-repository-content > .n-layout-scroll-container {
+    overflow-y: hidden;
+  }
+
+  .is-fixed-repository-content .content-inner {
+    box-sizing: border-box;
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .is-fixed-repository-content .repository-page,
+  .is-fixed-repository-content .repository-tabs {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 0;
+    flex-direction: column;
+  }
+
+  .is-fixed-repository-content .repository-tabs > .n-tabs-pane-wrapper,
+  .is-fixed-repository-content .repository-tabs .n-tab-pane {
+    display: flex;
+    min-height: 0;
+    flex: 1 1 0;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .is-fixed-repository-content .changes-workspace {
+    min-height: 0;
+  }
 }
 
 .changes-list-pane {
@@ -759,12 +779,13 @@ h1 {
   flex: 1;
   flex-direction: column;
   overflow: hidden;
+  padding: 0 !important;
 }
 
 .changes-bulk-control {
   flex: 0 0 auto;
-  margin: 0 0 7px;
-  padding: 0 4px 8px;
+  margin: 0;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--app-divider);
 }
 
@@ -773,8 +794,12 @@ h1 {
   flex: 1 1 0;
   overflow: auto;
   overscroll-behavior: contain;
-  margin: -3px -4px;
-  padding: 3px 4px;
+  margin: 0;
+  padding: 4px 6px 6px;
+}
+
+.changes-file-card .n-empty {
+  margin: auto;
 }
 
 .change-file-row {
@@ -1005,6 +1030,10 @@ h1 {
   width: min(600px, calc(100vw - 44px));
 }
 
+.settings-dialog-card {
+  width: min(460px, calc(100vw - 44px));
+}
+
 .token-alert {
   margin-bottom: 16px;
 }
@@ -1029,16 +1058,8 @@ h1 {
     padding: 0 16px;
   }
 
-  .repository-path {
-    display: none;
-  }
-
   .remote-select {
     width: 98px;
-  }
-
-  .language-select {
-    width: 96px;
   }
 
   .changes-grid {
@@ -1095,7 +1116,4 @@ h1 {
     max-height: 600px;
   }
 
-  .content-inner {
-    padding: 18px;
-  }
 }

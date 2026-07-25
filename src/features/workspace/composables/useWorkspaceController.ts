@@ -2,7 +2,7 @@ import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "v
 import { NButton, useDialog, useMessage } from "naive-ui";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
-import { colorMode, isDarkTheme, setColorMode, type ColorMode } from "../../../shared/theme";
+import { colorMode, setColorMode, type ColorMode } from "../../../shared/theme";
 import {
   authenticationMethodLabel,
   authenticationStatusLabel,
@@ -38,6 +38,12 @@ type RepositoryTab = "overview" | "changes" | "history" | "branches";
 type NetworkAction = "fetch" | "pull" | "push";
 type RepositoryGrouping = "manual" | "owner" | "recent";
 
+interface NetworkActionTarget {
+  repositoryPath: string;
+  remoteName: string;
+  selectionGeneration: number;
+}
+
 interface RepositorySidebarGroup {
   key: string;
   label: string;
@@ -64,6 +70,7 @@ const {
   submoduleStatusTagType,
 } = createRepositoryPresentation(tr);
 const repositoryGroupingStorageKey = "broknowmygitdesktop.repository-grouping";
+const lastRepositoryStorageKey = "broknowmygitdesktop.last-repository";
 
 function initialRepositoryGrouping(): RepositoryGrouping {
   if (typeof window === "undefined") return "manual";
@@ -74,6 +81,24 @@ function initialRepositoryGrouping(): RepositoryGrouping {
     // Disabled browser storage should not prevent the repository list from loading.
   }
   return "manual";
+}
+
+function storedLastRepositoryPath(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(lastRepositoryStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+function rememberLastRepositoryPath(repositoryPath: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(lastRepositoryStorageKey, repositoryPath);
+  } catch {
+    // The repository remains selected for this session if storage is unavailable.
+  }
 }
 
 const emptyCapabilities: CodeHostCapabilities = {
@@ -90,12 +115,6 @@ const localeOptions = [
   { label: "简体中文", value: "zh-CN" },
   { label: "English", value: "en-US" },
 ];
-const colorModeLabel = computed(() => {
-  if (colorMode.value === "system") return tr("跟随系统", "Follow system");
-  return colorMode.value === "dark" ? tr("深色", "Dark") : tr("浅色", "Light");
-});
-const themeButtonLabel = computed(() => tr("外观：{mode}", "Appearance: {mode}", { mode: colorModeLabel.value }));
-const colorModeIcon = computed(() => (colorMode.value === "system" ? "◐" : isDarkTheme.value ? "☾" : "☀"));
 const colorModeOptions = computed(() => [
   { label: tr("跟随系统", "Follow system"), key: "system" },
   { label: tr("浅色", "Light"), key: "light" },
@@ -123,6 +142,10 @@ const selectedChange = ref<GitStatusEntry | null>(null);
 const diffText = ref("");
 const selectedDiffStaged = ref(false);
 let diffRequestGeneration = 0;
+let worktreesRequestGeneration = 0;
+let submodulesRequestGeneration = 0;
+let lfsRequestGeneration = 0;
+let commitDiffRequestGeneration = 0;
 const blameText = ref("");
 const commits = ref<CommitSummary[]>([]);
 const stashes = ref<StashEntry[]>([]);
@@ -145,6 +168,7 @@ const blameLoading = ref(false);
 const platformLoading = ref(false);
 const pullRequestsLoading = ref(false);
 const historyLoading = ref(false);
+let historyRequestGeneration = 0;
 const reflogLoading = ref(false);
 const commitDiffLoading = ref(false);
 const stashesLoading = ref(false);
@@ -152,6 +176,8 @@ const worktreesLoading = ref(false);
 const submodulesLoading = ref(false);
 const lfsLoading = ref(false);
 const networkBusy = ref<NetworkAction | null>(null);
+let networkOperationGeneration = 0;
+const networkOperationsInFlight = new Set<string>();
 const mutationBusy = ref(false);
 
 const cloneModalShown = ref(false);
@@ -177,6 +203,7 @@ const remoteModalShown = ref(false);
 const bindingDrawerShown = ref(false);
 const bindingRemote = ref<RemoteProfile | null>(null);
 const repositoryGroupModalShown = ref(false);
+const settingsModalShown = ref(false);
 const repositoryGroupTarget = ref<RepositoryRecord | null>(null);
 
 const cloneForm = reactive({ url: "", destinationPath: "", endpointId: "", accountId: "none" });
@@ -196,6 +223,7 @@ const pullRequestForm = reactive({ title: "", body: "", base: "", draft: false }
 const squashForm = reactive({ count: "2", message: "" });
 const publishForm = reactive({ endpointId: "github.com", accountId: "", name: "", isPrivate: true });
 const tagForm = reactive({ name: "", target: "", message: "" });
+const tagRepositoryPath = ref<string | null>(null);
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
 const bindingForm = reactive({ endpointId: "", accountId: "auto" });
@@ -205,6 +233,16 @@ let lastAccountStatusRefreshAt = 0;
 const accountStatusRefreshCacheMs = 60_000;
 
 const activeRemote = computed(() => snapshot.value?.remotes.find((remote) => remote.name === selectedRemoteName.value) ?? null);
+const canPullFromActiveRemote = computed(() => {
+  const upstream = snapshot.value?.status.upstream;
+  return Boolean(
+    snapshot.value?.hasHead &&
+    snapshot.value.status.branch &&
+    upstream &&
+    activeRemote.value &&
+    upstream.startsWith(`${activeRemote.value.name}/`),
+  );
+});
 const currentBranch = computed(() => snapshot.value?.status.branch ?? "—");
 const stagedChanges = computed(() => snapshot.value?.status.entries.filter((entry) => Boolean(entry.indexStatus)) ?? []);
 const stagedCount = computed(() => stagedChanges.value.length);
@@ -229,24 +267,6 @@ const hasDiffText = computed(() => diffText.value.trim().length > 0);
 const commitDiffLines = computed(() => splitDiffLines(commitDiffText.value));
 const canAmendLatestCommit = computed(() => snapshot.value?.hasHead ?? false);
 const isUnbornRepository = computed(() => Boolean(snapshot.value && !snapshot.value.hasHead));
-const primaryNetworkAction = computed<NetworkAction | null>(() => {
-  if (!activeRemote.value) return null;
-  if ((snapshot.value?.status.behind ?? 0) > 0) return "pull";
-  if ((snapshot.value?.status.ahead ?? 0) > 0) return "push";
-  return "fetch";
-});
-const primaryNetworkActionLabel = computed(() => {
-  switch (primaryNetworkAction.value) {
-    case "pull":
-      return tr("拉取更新", "Pull changes");
-    case "push":
-      return tr("推送提交", "Push commits");
-    case "fetch":
-      return tr("获取更新", "Fetch");
-    default:
-      return tr("同步", "Sync");
-  }
-});
 const commitActionLabel = computed(() => {
   if (amendLastCommit.value) return tr("修改最近一次提交", "Amend last commit");
   if (!stagedCount.value) return tr("选择要提交的文件", "Select files to commit");
@@ -356,10 +376,20 @@ const cloneAccountOptions = computed(() => [
       ]
     : []),
 ]);
-const tagTargetOptions = computed(() => [
-  { label: tr("当前 HEAD", "Current HEAD"), value: "" },
-  ...(snapshot.value?.branches.map((branch) => ({ label: branch.name, value: branch.name })) ?? []),
-]);
+const tagTargetOptions = computed(() => {
+  const options = [
+    { label: tr("当前 HEAD", "Current HEAD"), value: "" },
+    ...(snapshot.value?.branches.map((branch) => ({ label: branch.name, value: branch.name })) ?? []),
+  ];
+  const target = tagForm.target.trim();
+  if (target && !options.some((option) => option.value === target)) {
+    options.push({
+      label: tr("提交 {sha}", "Commit {sha}", { sha: target.slice(0, 12) }),
+      value: target,
+    });
+  }
+  return options;
+});
 const repositoryGroupingOptions = computed(() => [
   { label: tr("手动分组", "Manual groups"), value: "manual" },
   { label: tr("远端组织 / 用户", "Remote owner"), value: "owner" },
@@ -717,6 +747,31 @@ async function loadEndpoints(): Promise<void> {
 }
 
 async function selectRepository(repositoryPath: string): Promise<void> {
+  historyRequestGeneration += 1;
+  worktreesRequestGeneration += 1;
+  submodulesRequestGeneration += 1;
+  lfsRequestGeneration += 1;
+  commitDiffRequestGeneration += 1;
+  historyLoading.value = false;
+  stashesLoading.value = false;
+  commitDiffLoading.value = false;
+  worktreesLoading.value = false;
+  submodulesLoading.value = false;
+  lfsLoading.value = false;
+  networkOperationGeneration += 1;
+  networkBusy.value = null;
+  commits.value = [];
+  stashes.value = [];
+  selectedCommit.value = null;
+  commitDiffText.value = "";
+  tagModalShown.value = false;
+  tagRepositoryPath.value = null;
+  snapshot.value = null;
+  repositoryInfo.value = null;
+  pullRequests.value = [];
+  worktrees.value = [];
+  submodules.value = [];
+  lfsStatus.value = null;
   activeRepositoryPath.value = repositoryPath;
   const selectionGeneration = ++repositorySelectionGeneration;
   section.value = "repositories";
@@ -727,6 +782,7 @@ async function selectRepository(repositoryPath: string): Promise<void> {
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
     if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     applySnapshot(nextSnapshot);
+    rememberLastRepositoryPath(nextSnapshot.repository.path);
     activeTab.value = "changes";
     repositoryInfo.value = null;
     pullRequests.value = [];
@@ -945,14 +1001,17 @@ async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  if (!activeRepositoryPath.value) return;
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) return;
+  const requestGeneration = ++historyRequestGeneration;
   historyLoading.value = true;
   stashesLoading.value = true;
   try {
     const [nextCommits, nextStashes] = await Promise.all([
-      api.listCommits(activeRepositoryPath.value),
-      api.listStashes(activeRepositoryPath.value),
+      api.listCommits(repositoryPath),
+      api.listStashes(repositoryPath),
     ]);
+    if (activeRepositoryPath.value !== repositoryPath || requestGeneration !== historyRequestGeneration) return;
     commits.value = nextCommits;
     stashes.value = nextStashes;
     if (selectedCommit.value && !nextCommits.some((commit) => commit.sha === selectedCommit.value?.sha)) {
@@ -960,10 +1019,14 @@ async function loadHistory(): Promise<void> {
       commitDiffText.value = "";
     }
   } catch (error) {
-    reportError(error, tr("读取历史记录失败", "Could not load repository history"));
+    if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
+      reportError(error, tr("读取历史记录失败", "Could not load repository history"));
+    }
   } finally {
-    historyLoading.value = false;
-    stashesLoading.value = false;
+    if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
+      historyLoading.value = false;
+      stashesLoading.value = false;
+    }
   }
 }
 
@@ -983,47 +1046,74 @@ async function openReflog(): Promise<void> {
 }
 
 async function loadWorktrees(): Promise<void> {
-  if (!activeRepositoryPath.value) {
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) {
     worktrees.value = [];
     return;
   }
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++worktreesRequestGeneration;
   worktreesLoading.value = true;
   try {
-    worktrees.value = await api.listWorktrees(activeRepositoryPath.value);
+    const nextWorktrees = await api.listWorktrees(repositoryPath);
+    if (
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === worktreesRequestGeneration
+    ) worktrees.value = nextWorktrees;
   } catch (error) {
-    reportError(error, tr("读取工作树失败", "Could not load worktrees"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) {
+      reportError(error, tr("读取工作树失败", "Could not load worktrees"));
+    }
   } finally {
-    worktreesLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) worktreesLoading.value = false;
   }
 }
 
 async function loadSubmodules(): Promise<void> {
-  if (!activeRepositoryPath.value) {
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) {
     submodules.value = [];
     return;
   }
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++submodulesRequestGeneration;
   submodulesLoading.value = true;
   try {
-    submodules.value = await api.listSubmodules(activeRepositoryPath.value);
+    const nextSubmodules = await api.listSubmodules(repositoryPath);
+    if (
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === submodulesRequestGeneration
+    ) submodules.value = nextSubmodules;
   } catch (error) {
-    reportError(error, tr("读取子模块失败", "Could not load submodules"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) {
+      reportError(error, tr("读取子模块失败", "Could not load submodules"));
+    }
   } finally {
-    submodulesLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) submodulesLoading.value = false;
   }
 }
 
 async function loadLfsStatus(): Promise<void> {
-  if (!activeRepositoryPath.value) {
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) {
     lfsStatus.value = null;
     return;
   }
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++lfsRequestGeneration;
   lfsLoading.value = true;
   try {
-    lfsStatus.value = await api.getLfsStatus(activeRepositoryPath.value);
+    const nextLfsStatus = await api.getLfsStatus(repositoryPath);
+    if (
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === lfsRequestGeneration
+    ) lfsStatus.value = nextLfsStatus;
   } catch (error) {
-    reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) {
+      reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
+    }
   } finally {
-    lfsLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) lfsLoading.value = false;
   }
 }
 
@@ -1036,15 +1126,26 @@ async function loadExternalEditor(): Promise<void> {
 }
 
 async function loadCommitDiff(commit: CommitSummary): Promise<void> {
-  if (!activeRepositoryPath.value) return;
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) return;
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++commitDiffRequestGeneration;
   selectedCommit.value = commit;
   commitDiffLoading.value = true;
   try {
-    commitDiffText.value = await api.getCommitDiff(activeRepositoryPath.value, commit.sha);
+    const nextDiff = await api.getCommitDiff(repositoryPath, commit.sha);
+    if (
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === commitDiffRequestGeneration
+    ) commitDiffText.value = nextDiff;
   } catch (error) {
-    reportError(error, tr("读取提交改动失败", "Could not load commit diff"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
+      reportError(error, tr("读取提交改动失败", "Could not load commit diff"));
+    }
   } finally {
-    commitDiffLoading.value = false;
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
+      commitDiffLoading.value = false;
+    }
   }
 }
 
@@ -1923,31 +2024,45 @@ function confirmRevertCommit(commit: CommitSummary): void {
   });
 }
 
-function openTagModal(): void {
+function openTagModal(target = ""): void {
+  if (!activeRepositoryPath.value) return;
+  tagRepositoryPath.value = activeRepositoryPath.value;
   tagForm.name = "";
-  tagForm.target = "";
+  tagForm.target = target;
   tagForm.message = "";
   tagModalShown.value = true;
 }
 
 async function createTag(): Promise<void> {
-  if (!activeRepositoryPath.value || !tagForm.name.trim()) {
+  if (!tagForm.name.trim()) {
     message.warning(tr("请输入标签名称。", "Enter a tag name."));
+    return;
+  }
+  const repositoryPath = tagRepositoryPath.value;
+  if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) {
+    tagModalShown.value = false;
+    tagRepositoryPath.value = null;
+    message.warning(tr("仓库已切换，请重新选择要创建标签的提交。", "The repository changed. Select the tag target again."));
     return;
   }
   mutationBusy.value = true;
   try {
     await api.createTag(
-      activeRepositoryPath.value,
+      repositoryPath,
       tagForm.name.trim(),
       tagForm.target.trim() || undefined,
       tagForm.message.trim() || undefined,
     );
     tagModalShown.value = false;
-    await refreshSnapshot();
-    message.success(tr("标签已创建。", "Tag created."));
+    tagRepositoryPath.value = null;
+    if (activeRepositoryPath.value === repositoryPath) {
+      await Promise.all([refreshSnapshot(), loadHistory()]);
+      message.success(tr("标签已创建。", "Tag created."));
+    }
   } catch (error) {
-    reportError(error, tr("创建标签失败", "Could not create tag"));
+    if (activeRepositoryPath.value === repositoryPath) {
+      reportError(error, tr("创建标签失败", "Could not create tag"));
+    }
   } finally {
     mutationBusy.value = false;
   }
@@ -2038,19 +2153,39 @@ function confirmRemoveRemote(): void {
   });
 }
 
-async function runNetworkAction(action: NetworkAction, forceWithLease = false): Promise<void> {
-  if (!activeRepositoryPath.value || !activeRemote.value) {
+async function runNetworkAction(
+  action: NetworkAction,
+  forceWithLease = false,
+  capturedTarget?: NetworkActionTarget,
+): Promise<void> {
+  const repositoryPath = capturedTarget?.repositoryPath ?? activeRepositoryPath.value;
+  const remoteName = capturedTarget?.remoteName ?? activeRemote.value?.name;
+  const selectionGeneration = capturedTarget?.selectionGeneration ?? repositorySelectionGeneration;
+  if (!repositoryPath || !remoteName) {
     message.warning(tr("请先选择一个 remote。", "Select a remote first."));
     return;
   }
+  if (
+    !repositorySelectionIsCurrent(repositoryPath, selectionGeneration) ||
+    (capturedTarget && activeRemote.value?.name !== remoteName)
+  ) {
+    message.warning(tr("仓库或 remote 已切换，请重新执行操作。", "The repository or remote changed. Start the operation again."));
+    return;
+  }
+  if (networkOperationsInFlight.has(repositoryPath)) {
+    message.warning(tr("已有网络操作正在进行，请等待完成。", "A network operation is already in progress. Wait for it to finish."));
+    return;
+  }
+  networkOperationsInFlight.add(repositoryPath);
   networkBusy.value = action;
+  const operationGeneration = ++networkOperationGeneration;
   clearLastError();
   try {
     await (action === "fetch"
-      ? api.fetchRemote(activeRepositoryPath.value, activeRemote.value.name)
+      ? api.fetchRemote(repositoryPath, remoteName)
       : action === "pull"
-        ? api.pullRemote(activeRepositoryPath.value, activeRemote.value.name)
-        : api.pushRemote(activeRepositoryPath.value, activeRemote.value.name, forceWithLease));
+        ? api.pullRemote(repositoryPath, remoteName)
+        : api.pushRemote(repositoryPath, remoteName, forceWithLease));
     const actionLabel =
       action === "fetch"
         ? tr("获取", "Fetch")
@@ -2059,38 +2194,50 @@ async function runNetworkAction(action: NetworkAction, forceWithLease = false): 
           : forceWithLease
             ? tr("强制推送（带 lease）", "Force push with lease")
             : tr("推送", "Push");
-    message.success(tr("{action} 已完成。", "{action} completed.", { action: actionLabel }));
-    await refreshSnapshot();
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      message.success(tr("{action} 已完成。", "{action} completed.", { action: actionLabel }));
+      if (activeTab.value === "history") {
+        await Promise.all([refreshSnapshot(), loadHistory()]);
+      } else {
+        await refreshSnapshot();
+      }
+    }
   } catch (error) {
-    reportError(
-      error,
-      action === "fetch"
-        ? tr("获取失败", "Fetch failed")
-        : action === "pull"
-          ? tr("拉取失败", "Pull failed")
-          : tr("推送失败", "Push failed"),
-    );
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      reportError(
+        error,
+        action === "fetch"
+          ? tr("获取失败", "Fetch failed")
+          : action === "pull"
+            ? tr("拉取失败", "Pull failed")
+            : tr("推送失败", "Push failed"),
+      );
+    }
   } finally {
-    networkBusy.value = null;
+    networkOperationsInFlight.delete(repositoryPath);
+    if (operationGeneration === networkOperationGeneration) {
+      networkBusy.value = null;
+    }
   }
 }
 
-async function runPrimaryNetworkAction(): Promise<void> {
-  if (primaryNetworkAction.value) await runNetworkAction(primaryNetworkAction.value);
-}
-
 function confirmForcePush(): void {
-  if (!activeRemote.value) return;
+  if (!activeRepositoryPath.value || !activeRemote.value) return;
+  const target: NetworkActionTarget = {
+    repositoryPath: activeRepositoryPath.value,
+    remoteName: activeRemote.value.name,
+    selectionGeneration: repositorySelectionGeneration,
+  };
   dialog.error({
     title: tr("强制推送（带 lease）", "Force push with lease"),
     content: tr(
       "向 {remote} 使用 force-with-lease 推送？它会改写远程分支历史，但在远程分支已被他人更新时会拒绝覆盖。请先确认团队协作约定。",
       "Force-push to {remote} with lease? It rewrites remote branch history but refuses to overwrite a branch changed by someone else. Confirm your team workflow first.",
-      { remote: activeRemote.value.name },
+      { remote: target.remoteName },
     ),
     positiveText: tr("强制推送", "Force push"),
     negativeText: tr("取消", "Cancel"),
-    onPositiveClick: () => void runNetworkAction("push", true),
+    onPositiveClick: () => void runNetworkAction("push", true, target),
   });
 }
 
@@ -2446,7 +2593,15 @@ watch(repositoryGrouping, (grouping) => {
 onMounted(async () => {
   if (!browserDemo) window.addEventListener("keydown", handleDevtoolsShortcut);
   await Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
-  if (repositories.value[0]) await selectRepository(repositories.value[0].path);
+  const storedPath = storedLastRepositoryPath();
+  const storedRepository = storedPath
+    ? repositories.value.find((repository) => repository.path === storedPath)
+    : undefined;
+  const mostRecentRepository = [...repositories.value].sort(
+    (left, right) => (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0),
+  )[0];
+  const startupRepository = storedRepository ?? mostRecentRepository;
+  if (startupRepository) await selectRepository(startupRepository.path);
 });
 
 onBeforeUnmount(() => {
@@ -2461,9 +2616,6 @@ onBeforeUnmount(() => {
     initialRepositoryGrouping,
     emptyCapabilities,
     localeOptions,
-    colorModeLabel,
-    themeButtonLabel,
-    colorModeIcon,
     colorModeOptions,
     repositoryActionOptions,
     section,
@@ -2532,6 +2684,7 @@ onBeforeUnmount(() => {
     bindingDrawerShown,
     bindingRemote,
     repositoryGroupModalShown,
+    settingsModalShown,
     repositoryGroupTarget,
     cloneForm,
     initForm,
@@ -2558,6 +2711,7 @@ onBeforeUnmount(() => {
     lastAccountStatusRefreshAt,
     accountStatusRefreshCacheMs,
     activeRemote,
+    canPullFromActiveRemote,
     currentBranch,
     stagedChanges,
     stagedCount,
@@ -2574,8 +2728,6 @@ onBeforeUnmount(() => {
     commitDiffLines,
     canAmendLatestCommit,
     isUnbornRepository,
-    primaryNetworkAction,
-    primaryNetworkActionLabel,
     commitActionLabel,
     commitSelectionSummary,
     rebaseBaseOptions,
@@ -2710,7 +2862,6 @@ onBeforeUnmount(() => {
     saveRemote,
     confirmRemoveRemote,
     runNetworkAction,
-    runPrimaryNetworkAction,
     confirmForcePush,
     openBindingDrawer,
     saveBinding,
@@ -2737,7 +2888,6 @@ onBeforeUnmount(() => {
     setAppLocale,
     tr,
     colorMode,
-    isDarkTheme,
     setColorMode,
     authenticationMethodLabel,
     authenticationStatusLabel,

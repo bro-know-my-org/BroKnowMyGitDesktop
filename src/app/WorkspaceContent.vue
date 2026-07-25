@@ -15,7 +15,10 @@ export default defineComponent({
 </script>
 
 <template>
-<n-layout-content class="content-area">
+<n-layout-content
+  class="content-area"
+  :class="{ 'is-fixed-repository-content': section === 'repositories' && activeTab === 'changes' && !browserDemo && !lastError }"
+>
   <main class="content-inner">
 <n-alert v-if="browserDemo" type="info" class="demo-alert" :bordered="false">
             {{ tr("浏览器演示模式：当前展示可交互的本地 mock 数据；启动 Tauri 后会调用 Rust commands。示例 PAT 不会保存或展示。", "Browser demo mode: this uses interactive local mock data. Tauri calls Rust commands. Demo PATs are never saved or shown.") }}

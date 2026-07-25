@@ -1,13 +1,77 @@
 <script lang="ts">
-import { defineComponent } from "vue";
-import { NButton, NCard, NDataTable, NEmpty, NSpace, NSpin } from "naive-ui";
+import { computed, defineComponent, nextTick, ref, watch } from "vue";
+import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag } from "naive-ui";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
+import type { CommitSummary } from "../../../shared/types/domain";
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { NButton, NCard, NDataTable, NEmpty, NSpace, NSpin },
+  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag },
   setup() {
-    return useWorkspaceControllerContext();
+    const workspace = useWorkspaceControllerContext();
+    const commitContextMenuOpen = ref(false);
+    const commitContextMenuX = ref(0);
+    const commitContextMenuY = ref(0);
+    const commitContextTarget = ref<{ repositoryPath: string; sha: string } | null>(null);
+    let commitContextMenuGeneration = 0;
+    const commitContextMenuOptions = computed(() => [
+      { label: workspace.tr("在此提交创建标签…", "Create tag at this commit…"), key: "create-tag" },
+    ]);
+
+    function openCommitContextMenu(event: MouseEvent, commit: CommitSummary): void {
+      event.preventDefault();
+      const repositoryPath = workspace.activeRepositoryPath.value;
+      if (!repositoryPath) return;
+      const requestGeneration = ++commitContextMenuGeneration;
+      commitContextMenuOpen.value = false;
+      commitContextTarget.value = { repositoryPath, sha: commit.sha };
+      commitContextMenuX.value = event.clientX;
+      commitContextMenuY.value = event.clientY;
+      void nextTick(() => {
+        if (
+          requestGeneration === commitContextMenuGeneration &&
+          commitContextTarget.value?.repositoryPath === workspace.activeRepositoryPath.value &&
+          commitContextTarget.value?.sha === commit.sha &&
+          workspace.commits.value.some((candidate) => candidate.sha === commit.sha)
+        ) {
+          commitContextMenuOpen.value = true;
+        }
+      });
+    }
+
+    function selectCommitContextMenuItem(value: string | number): void {
+      const target = commitContextTarget.value;
+      commitContextMenuGeneration += 1;
+      commitContextMenuOpen.value = false;
+      commitContextTarget.value = null;
+      if (
+        value === "create-tag" &&
+        target &&
+        target.repositoryPath === workspace.activeRepositoryPath.value &&
+        workspace.commits.value.some((commit) => commit.sha === target.sha)
+      ) {
+        workspace.openTagModal(target.sha);
+      }
+    }
+
+    watch(
+      [workspace.activeRepositoryPath, workspace.commits],
+      () => {
+        commitContextMenuGeneration += 1;
+        commitContextMenuOpen.value = false;
+        commitContextTarget.value = null;
+      },
+    );
+
+    return {
+      ...workspace,
+      commitContextMenuOpen,
+      commitContextMenuX,
+      commitContextMenuY,
+      commitContextMenuOptions,
+      openCommitContextMenu,
+      selectCommitContextMenuItem,
+    };
   },
 });
 </script>
@@ -33,18 +97,34 @@ export default defineComponent({
                           :class="{ selected: selectedCommit?.sha === commit.sha }"
                           :aria-label="tr('查看提交 {sha}：{summary}', 'View commit {sha}: {summary}', { sha: commit.shortSha, summary: commit.summary || '—' })"
                           @click="loadCommitDiff(commit)"
+                          @contextmenu="openCommitContextMenu($event, commit)"
                         >
                           <span class="history-commit-primary">
-                            <span class="history-commit-sha">{{ commit.shortSha }}</span>
                             <span class="history-commit-summary" :title="commit.summary || '—'">{{ commit.summary || '—' }}</span>
+                            <span v-if="commit.tags.length || commit.tagsTruncated || commit.pushed === false" class="history-commit-tags">
+                              <n-tag v-for="tag in commit.tags" :key="tag" size="tiny" type="success" :bordered="false">{{ tag }}</n-tag>
+                              <n-tag v-if="commit.tagsTruncated" size="tiny" type="warning" :bordered="false">{{ tr("标签未完整加载", "Tags incomplete") }}</n-tag>
+                              <n-tag v-if="commit.pushed === false" size="tiny" type="warning" :bordered="false">{{ tr("未推送", "Not pushed") }}</n-tag>
+                            </span>
                           </span>
                           <span class="history-commit-meta">
                             <span class="history-commit-author" :title="commit.authorName || '—'">{{ commit.authorName || '—' }}</span>
+                            <span class="history-commit-sha">{{ commit.shortSha }}</span>
                             <span class="history-commit-date" :title="commit.authoredAt">{{ commit.authoredAt }}</span>
                           </span>
                         </button>
                       </div>
-                      <n-empty v-else-if="!historyLoading" :description="tr('这个分支还没有提交。', 'This branch has no commits yet.')" />
+                      <n-dropdown
+                        v-model:show="commitContextMenuOpen"
+                        trigger="manual"
+                        placement="bottom-start"
+                        :x="commitContextMenuX"
+                        :y="commitContextMenuY"
+                        :options="commitContextMenuOptions"
+                        @clickoutside="commitContextMenuOpen = false"
+                        @select="selectCommitContextMenuItem"
+                      />
+                      <n-empty v-if="!commits.length && !historyLoading" :description="tr('这个分支还没有提交。', 'This branch has no commits yet.')" />
                     </n-spin>
                   </n-card>
                   <n-card size="small" :title="selectedCommit ? `${selectedCommit.shortSha} · ${selectedCommit.summary}` : tr('提交改动', 'Commit changes')" class="diff-card">

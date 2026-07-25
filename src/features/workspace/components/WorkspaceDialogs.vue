@@ -13,6 +13,26 @@ export default defineComponent({
 </script>
 
 <template>
+  <n-modal v-model:show="settingsModalShown" preset="card" :title="tr('设置', 'Settings')" class="settings-dialog-card">
+    <n-form label-placement="left" label-width="100">
+      <n-form-item :label="tr('界面语言', 'Language')">
+        <n-select :value="appLocale" :options="localeOptions" @update:value="updateAppLocale" />
+      </n-form-item>
+      <n-form-item :label="tr('外观主题', 'Appearance')">
+        <n-select
+          :value="colorMode"
+          :options="colorModeOptions.map((option) => ({ label: option.label, value: option.key }))"
+          @update:value="updateColorMode"
+        />
+      </n-form-item>
+    </n-form>
+    <template #action>
+      <n-space justify="end">
+        <n-button type="primary" @click="settingsModalShown = false">{{ tr("完成", "Done") }}</n-button>
+      </n-space>
+    </template>
+  </n-modal>
+
 <n-modal v-model:show="repositoryGroupModalShown" preset="card" :title="tr('编辑仓库分组', 'Edit repository group')" class="dialog-card" :mask-closable="!mutationBusy">
     <n-form label-placement="top">
       <n-form-item :label="tr('分组名称', 'Group name')">

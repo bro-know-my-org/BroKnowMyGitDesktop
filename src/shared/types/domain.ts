@@ -162,6 +162,9 @@ export interface CommitSummary {
   sha: string;
   shortSha: string;
   parents: string[];
+  tags: string[];
+  tagsTruncated: boolean;
+  pushed: boolean | null;
   authorName: string;
   authorEmail: string;
   authoredAt: string;

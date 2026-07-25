@@ -17,6 +17,26 @@ export default defineComponent({
     const repositoryContextMenuOptions = computed(() => [
       { label: workspace.tr("编辑仓库分组", "Edit repository group"), key: "edit-group" },
     ]);
+    const applicationMenuOptions = computed(() => [
+      {
+        label: `${workspace.section.value === "repositories" ? "✓ " : ""}${workspace.tr("仓库", "Repositories")}`,
+        key: "repositories",
+      },
+      {
+        label: `${workspace.section.value === "accounts" ? "✓ " : ""}${workspace.tr("账号与认证", "Accounts & authentication")}`,
+        key: "accounts",
+      },
+      { type: "divider", key: "settings-divider" },
+      { label: workspace.tr("设置…", "Settings…"), key: "settings" },
+    ]);
+
+    function selectApplicationMenuItem(value: string | number): void {
+      if (value === "repositories" || value === "accounts") {
+        workspace.updateSection(value);
+      } else if (value === "settings") {
+        workspace.settingsModalShown.value = true;
+      }
+    }
 
     function openRepositoryContextMenu(event: MouseEvent, repository: RepositoryRecord): void {
       event.preventDefault();
@@ -56,7 +76,9 @@ export default defineComponent({
       repositoryContextMenuX,
       repositoryContextMenuY,
       repositoryContextMenuOptions,
+      applicationMenuOptions,
       openRepositoryContextMenu,
+      selectApplicationMenuItem,
       selectRepositoryContextMenuAction,
     };
   },
@@ -66,8 +88,19 @@ export default defineComponent({
 <template>
       <n-layout-header bordered class="topbar">
         <div v-if="section === 'repositories'" class="topbar-content repository-topbar-content">
-          <div class="repository-topbar-context">
-            <div class="repository-title-row">
+          <div class="topbar-leading">
+            <div class="application-menu">
+              <button class="header-brand-button" type="button" :title="tr('BroKnowMyGit 首页', 'BroKnowMyGit home')" @click="updateSection('repositories')">
+                <span class="brand-mark">BK</span>
+              </button>
+              <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
+                <button class="application-menu-button" type="button" :aria-label="tr('打开应用菜单', 'Open application menu')" :title="tr('打开应用菜单', 'Open application menu')">
+                  <span v-for="line in 4" :key="line" class="application-menu-line" />
+                </button>
+              </n-dropdown>
+            </div>
+            <div class="repository-topbar-context">
+              <div class="repository-title-row">
               <n-popover
                 v-model:show="repositoryPickerOpen"
                 trigger="click"
@@ -96,7 +129,7 @@ export default defineComponent({
                       <n-select v-model:value="repositoryGrouping" size="tiny" :options="repositoryGroupingOptions" class="repository-grouping-select" />
                     </div>
                     <n-dropdown :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
-                      <n-button size="small" type="primary" block class="repository-add-button">
+                      <n-button size="small" secondary block class="repository-add-button">
                         <span aria-hidden="true">＋</span>{{ tr("添加仓库", "Add repository") }}
                       </n-button>
                     </n-dropdown>
@@ -120,7 +153,6 @@ export default defineComponent({
                                 @click="repositoryPickerOpen = false; selectRepository(repository.path)"
                                 @contextmenu="openRepositoryContextMenu($event, repository)"
                               >
-                                <span class="repository-dot" />
                                 <span class="repository-name">{{ repository.name }}</span>
                               </button>
                             </div>
@@ -148,8 +180,8 @@ export default defineComponent({
                 <n-tag v-else-if="snapshot.status.upstream" size="small" :bordered="false">{{ snapshot.status.upstream }}</n-tag>
                 <n-text v-if="snapshot.status.ahead || snapshot.status.behind" depth="3" class="sync-summary">↑ {{ snapshot.status.ahead }} · ↓ {{ snapshot.status.behind }}</n-text>
               </template>
+              </div>
             </div>
-            <n-text v-if="snapshot" depth="3" class="repository-path">{{ snapshot.repository.path }}</n-text>
           </div>
           <n-space align="center" :wrap="false" class="topbar-actions">
             <n-select
@@ -161,26 +193,26 @@ export default defineComponent({
               class="remote-select"
             />
             <n-button v-if="snapshot && !snapshot.remotes.length && publishEndpoints.length" size="small" type="primary" @click="openPublishModal">{{ tr("发布到 GitHub", "Publish to GitHub") }}</n-button>
-            <n-button v-if="primaryNetworkAction" size="small" type="primary" :loading="networkBusy === primaryNetworkAction" @click="runPrimaryNetworkAction">{{ primaryNetworkActionLabel }}</n-button>
+            <n-button v-if="activeRemote" size="small" :loading="networkBusy === 'pull'" :disabled="!canPullFromActiveRemote || Boolean(networkBusy && networkBusy !== 'pull')" @click="runNetworkAction('pull')">{{ tr("拉取", "Pull") }}</n-button>
+            <n-button v-if="activeRemote" size="small" type="primary" :loading="networkBusy === 'push'" :disabled="!snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy && networkBusy !== 'push')" @click="runNetworkAction('push')">{{ tr("推送", "Push") }}</n-button>
             <n-button v-if="activeRemote" size="small" tertiary @click="activeTab = 'branches'">{{ tr("仓库设置", "Repository settings") }}</n-button>
-            <n-select :value="appLocale" size="small" :options="localeOptions" class="language-select" @update:value="updateAppLocale" />
-            <n-dropdown :options="colorModeOptions" @select="updateColorMode">
-              <n-button size="small" tertiary class="theme-toggle" :aria-label="themeButtonLabel" :title="themeButtonLabel">{{ colorModeIcon }}</n-button>
-            </n-dropdown>
             <n-button size="small" :loading="snapshotLoading" @click="refreshSnapshot">{{ tr("刷新", "Refresh") }}</n-button>
           </n-space>
         </div>
         <div v-else class="topbar-content">
-          <div>
-            <div class="eyebrow">CredentialBroker</div>
+          <div class="topbar-leading">
+            <div class="application-menu">
+              <button class="header-brand-button" type="button" :title="tr('BroKnowMyGit 首页', 'BroKnowMyGit home')" @click="updateSection('repositories')">
+                <span class="brand-mark">BK</span>
+              </button>
+              <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
+                <button class="application-menu-button" type="button" :aria-label="tr('打开应用菜单', 'Open application menu')" :title="tr('打开应用菜单', 'Open application menu')">
+                  <span v-for="line in 4" :key="line" class="application-menu-line" />
+                </button>
+              </n-dropdown>
+            </div>
             <div class="topbar-title">{{ tr("账号与认证", "Accounts & authentication") }}</div>
           </div>
-          <n-space align="center" :wrap="false" class="topbar-actions">
-            <n-select :value="appLocale" size="small" :options="localeOptions" class="language-select" @update:value="updateAppLocale" />
-            <n-dropdown :options="colorModeOptions" @select="updateColorMode">
-              <n-button size="small" tertiary class="theme-toggle" :aria-label="themeButtonLabel" :title="themeButtonLabel">{{ colorModeIcon }}</n-button>
-            </n-dropdown>
-          </n-space>
         </div>
       </n-layout-header>
 </template>

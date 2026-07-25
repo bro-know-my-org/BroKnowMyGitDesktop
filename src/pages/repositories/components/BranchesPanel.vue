@@ -32,7 +32,7 @@ export default defineComponent({
                       <template #header-extra>
                         <n-space size="small">
                           <n-button size="tiny" tertiary @click="openRemoteEditor()">{{ tr("添加 remote", "Add remote") }}</n-button>
-                          <n-button size="tiny" type="primary" @click="openTagModal">{{ tr("新建标签", "New tag") }}</n-button>
+                          <n-button size="tiny" type="primary" @click="openTagModal()">{{ tr("新建标签", "New tag") }}</n-button>
                         </n-space>
                       </template>
                       <n-data-table :columns="remoteColumns" :data="snapshot.remotes" :bordered="false" />

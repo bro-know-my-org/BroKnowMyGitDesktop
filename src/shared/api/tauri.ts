@@ -222,6 +222,9 @@ let browserCommits: CommitSummary[] = [
     sha: "9d7a4f0c2ea846105d1200f9cf6a4eb68d748301",
     shortSha: "9d7a4f0",
     parents: ["55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10"],
+    tags: ["v0.1.0"],
+    tagsTruncated: false,
+    pushed: false,
     authorName: "BroKnowMy",
     authorEmail: "broknowmy@example.test",
     authoredAt: "2026-07-19T10:20:30+08:00",
@@ -231,12 +234,100 @@ let browserCommits: CommitSummary[] = [
     sha: "55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10",
     shortSha: "55b91f2",
     parents: [],
+    tags: [],
+    tagsTruncated: false,
+    pushed: true,
     authorName: "BroKnowMy",
     authorEmail: "broknowmy@example.test",
     authoredAt: "2026-07-18T09:00:00+08:00",
     summary: "初始化桌面客户端",
   },
 ];
+let browserBranchTips = new Map<string, string | null>([
+  ["main", browserCommits[0].sha],
+  ["feature/multi-account", browserCommits[0].sha],
+]);
+let browserRemoteBranchTips = new Map<string, string | null>([
+  ["origin/main", browserCommits[1].sha],
+  ["origin/feature/multi-account", browserCommits[0].sha],
+  ["upstream/main", browserCommits[0].sha],
+]);
+let browserRevisionCounter = 0;
+
+function createBrowserMockSha(): string {
+  const counter = (++browserRevisionCounter).toString(16).padStart(7, "0");
+  const timestamp = Date.now().toString(16).padStart(12, "0");
+  return `${counter}${timestamp}${"0".repeat(21)}`;
+}
+
+function browserBranchCommits(branch: string | null): CommitSummary[] {
+  if (!branch) return [];
+  const tip = browserBranchTips.get(branch);
+  if (!tip) return [];
+  const commitsBySha = new Map(browserCommits.map((commit) => [commit.sha, commit]));
+  const reachable = new Set<string>();
+  const pending = [tip];
+  while (pending.length) {
+    const sha = pending.pop()!;
+    if (reachable.has(sha)) continue;
+    const commit = commitsBySha.get(sha);
+    if (!commit) continue;
+    reachable.add(sha);
+    pending.push(...commit.parents);
+  }
+  return browserCommits.filter((commit) => reachable.has(commit.sha));
+}
+
+function browserHistoryCommits(snapshot: RepositorySnapshot): CommitSummary[] {
+  const commits = browserBranchCommits(snapshot.status.branch);
+  const upstreamTip = snapshot.status.upstream
+    ? browserRemoteBranchTips.get(snapshot.status.upstream) ?? null
+    : null;
+  const pushed = upstreamTip
+    ? new Set(browserBranchCommitsFromTip(upstreamTip).map((commit) => commit.sha))
+    : null;
+  return commits.map((commit) => ({
+    ...commit,
+    pushed: pushed ? pushed.has(commit.sha) : null,
+  }));
+}
+
+function browserBranchCommitsFromTip(tip: string | null): CommitSummary[] {
+  if (!tip) return [];
+  const commitsBySha = new Map(browserCommits.map((commit) => [commit.sha, commit]));
+  const reachable = new Set<string>();
+  const pending = [tip];
+  while (pending.length) {
+    const sha = pending.pop()!;
+    if (reachable.has(sha)) continue;
+    const commit = commitsBySha.get(sha);
+    if (!commit) continue;
+    reachable.add(sha);
+    pending.push(...commit.parents);
+  }
+  return browserCommits.filter((commit) => reachable.has(commit.sha));
+}
+
+function syncBrowserBranchStatus(snapshot: RepositorySnapshot): void {
+  const branch = snapshot.status.branch;
+  const localTip = branch ? browserBranchTips.get(branch) ?? null : null;
+  const upstreamTip = snapshot.status.upstream
+    ? browserRemoteBranchTips.get(snapshot.status.upstream) ?? null
+    : null;
+  const localCommits = new Set(browserBranchCommitsFromTip(localTip).map((commit) => commit.sha));
+  const upstreamCommits = new Set(browserBranchCommitsFromTip(upstreamTip).map((commit) => commit.sha));
+  snapshot.hasHead = localTip !== null;
+  snapshot.status.ahead = snapshot.status.upstream
+    ? [...localCommits].filter((sha) => !upstreamCommits.has(sha)).length
+    : 0;
+  snapshot.status.behind = snapshot.status.upstream
+    ? [...upstreamCommits].filter((sha) => !localCommits.has(sha)).length
+    : 0;
+}
+
+function setBrowserCurrentBranchTip(snapshot: RepositorySnapshot, sha: string | null): void {
+  if (snapshot.status.branch) browserBranchTips.set(snapshot.status.branch, sha);
+}
 let browserWorktrees: WorktreeInfo[] = [
   {
     path: sampleRepository.path,
@@ -595,6 +686,8 @@ export const api = {
         tags: [],
       });
       browserCommits = [];
+      browserBranchTips = new Map([[input.initialBranch?.trim() || "main", null]]);
+      browserRemoteBranchTips = new Map();
       browserWorktrees = [
         {
           path: destinationPath,
@@ -632,6 +725,8 @@ export const api = {
         operation: null,
       });
       browserCommits = [];
+      browserBranchTips = new Map([[branch, null]]);
+      browserRemoteBranchTips = new Map([[`origin/${branch}`, null]]);
       browserWorktrees = [
         {
           path: pathname,
@@ -808,8 +903,8 @@ export const api = {
 
   listCommits(repositoryPath: string, limit = 100): Promise<CommitSummary[]> {
     return request("list_commits", { repositoryPath, limit }, () => {
-      requireBrowserSnapshot(repositoryPath);
-      return copy(browserCommits.slice(0, limit));
+      const snapshot = requireBrowserSnapshot(repositoryPath);
+      return copy(browserHistoryCommits(snapshot).slice(0, limit));
     });
   },
 
@@ -911,26 +1006,32 @@ export const api = {
         if (!stagedEntries.length && !amend) {
           throw { code: "nothing_to_commit", message: "没有已暂存的改动可提交。" } satisfies AppError;
         }
-        if (amend && (!snapshot.hasHead || !browserCommits[0])) {
+        const sha = createBrowserMockSha();
+        const currentTip = snapshot.status.branch ? browserBranchTips.get(snapshot.status.branch) : null;
+        const currentCommit = currentTip ? browserCommits.find((commit) => commit.sha === currentTip) : undefined;
+        if (amend && (!snapshot.hasHead || !currentCommit)) {
           throw { code: "no_commit_to_amend", message: "当前分支还没有可修改的提交。" } satisfies AppError;
         }
-        const sha = `${Date.now().toString(16).padStart(12, "0")}c0ffee`;
         const nextCommit: CommitSummary = {
           sha,
           shortSha: sha.slice(0, 7),
-          parents: amend && browserCommits[0] ? browserCommits[0].parents : browserCommits[0] ? [browserCommits[0].sha] : [],
+          parents: amend && currentCommit ? currentCommit.parents : currentTip ? [currentTip] : [],
+          tags: [],
+          tagsTruncated: false,
+          pushed: false,
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
           summary: message.trim().split(/\r?\n/u, 1)[0],
         };
-        browserCommits = amend ? [nextCommit, ...browserCommits.slice(1)] : [nextCommit, ...browserCommits];
+        browserCommits = [nextCommit, ...browserCommits];
+        setBrowserCurrentBranchTip(snapshot, nextCommit.sha);
         snapshot.status.entries = snapshot.status.entries.flatMap((entry) => {
           if (!entry.indexStatus) return [entry];
           return entry.worktreeStatus ? [{ ...entry, indexStatus: "" }] : [];
         });
         snapshot.hasHead = true;
-        if (!amend) snapshot.status.ahead += 1;
+        syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -946,13 +1047,17 @@ export const api = {
         if (snapshot.branches.some((branch) => branch.name === name)) {
           throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
         }
+        const sourceTip = snapshot.status.branch ? browserBranchTips.get(snapshot.status.branch) ?? null : null;
         if (input.checkout) {
           snapshot.branches.forEach((branch) => {
             branch.isCurrent = false;
           });
           snapshot.status.branch = name;
+          snapshot.status.upstream = null;
         }
         snapshot.branches.push({ name, isCurrent: input.checkout, upstream: null });
+        browserBranchTips.set(name, sourceTip);
+        if (input.checkout) syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -970,6 +1075,7 @@ export const api = {
         });
         snapshot.status.branch = branch;
         snapshot.status.upstream = snapshot.branches.find((entry) => entry.name === branch)?.upstream ?? null;
+        syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -992,12 +1098,14 @@ export const api = {
         if (!localBranch) {
           localBranch = { name: branch, isCurrent: false, upstream: `${remoteName}/${branch}` };
           nextSnapshot.branches.push(localBranch);
+          browserBranchTips.set(branch, browserRemoteBranchTips.get(`${remoteName}/${branch}`) ?? null);
         }
         nextSnapshot.branches.forEach((entry) => {
           entry.isCurrent = entry === localBranch;
         });
         nextSnapshot.status.branch = localBranch.name;
         nextSnapshot.status.upstream = localBranch.upstream;
+        syncBrowserBranchStatus(nextSnapshot);
       });
     });
   },
@@ -1014,6 +1122,9 @@ export const api = {
           throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
         }
         branch.name = name;
+        const tip = browserBranchTips.get(oldName) ?? null;
+        browserBranchTips.delete(oldName);
+        browserBranchTips.set(name, tip);
         if (snapshot.status.branch === oldName) snapshot.status.branch = name;
       });
     });
@@ -1027,6 +1138,7 @@ export const api = {
         if (!branch) throw { code: "branch_not_found", message: "找不到该分支。" } satisfies AppError;
         if (branch.isCurrent) throw { code: "cannot_delete_current_branch", message: "不能删除当前分支。" } satisfies AppError;
         snapshot.branches = snapshot.branches.filter((entry) => entry.name !== name);
+        browserBranchTips.delete(name);
       });
     });
   },
@@ -1061,18 +1173,41 @@ export const api = {
         throw { code: "git_command_failed", message: "该工作树路径已存在。" } satisfies AppError;
       }
       const newBranch = createBranch?.trim();
-      const branch = newBranch || commitish?.trim() || null;
-      if (newBranch && !browserSnapshot.branches.some((entry) => entry.name === newBranch)) {
+      if (newBranch && browserSnapshot.branches.some((entry) => entry.name === newBranch)) {
+        throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
+      }
+      const currentTip = browserSnapshot.status.branch
+        ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
+        : null;
+      const normalizedCommitish = commitish?.trim();
+      const startTip = normalizedCommitish
+        ? browserBranchTips.get(normalizedCommitish)
+          ?? browserRemoteBranchTips.get(normalizedCommitish)
+          ?? browserSnapshot.tags.find((tag) => tag.name === normalizedCommitish)?.target
+          ?? browserCommits.find(
+            (commit) => commit.sha === normalizedCommitish || commit.shortSha === normalizedCommitish,
+          )?.sha
+          ?? null
+        : currentTip;
+      if (normalizedCommitish && !startTip) {
+        throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      }
+      const branch = newBranch
+        ?? (normalizedCommitish && browserBranchTips.has(normalizedCommitish)
+          ? normalizedCommitish
+          : null);
+      if (newBranch) {
         browserSnapshot.branches.push({ name: newBranch, isCurrent: false, upstream: null });
+        browserBranchTips.set(newBranch, startTip);
       }
       browserWorktrees = [
         ...browserWorktrees,
         {
           path: target,
-          head: browserCommits[0]?.sha || "",
+          head: startTip || "",
           branch,
           isMain: false,
-          isDetached: false,
+          isDetached: branch === null,
           isLocked: false,
           isPrunable: false,
         },
@@ -1158,12 +1293,18 @@ export const api = {
       if (!selected.length) throw { code: "invalid_cherry_pick", message: "请输入要拣选的提交。" } satisfies AppError;
       if (browserSnapshot.operation) throw { code: "git_operation_in_progress", message: "当前已有 Git 操作尚未完成。" } satisfies AppError;
       const source = browserCommits.find((commit) => commit.sha === selected[0] || commit.shortSha === selected[0]);
-      const sha = `${Date.now().toString(16).padStart(12, "0")}pick`;
+      const currentTip = browserSnapshot.status.branch
+        ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
+        : null;
+      const sha = createBrowserMockSha();
       browserCommits = [
         {
           sha,
           shortSha: sha.slice(0, 7),
-          parents: browserCommits[0] ? [browserCommits[0].sha] : [],
+          parents: currentTip ? [currentTip] : [],
+          tags: [],
+          tagsTruncated: false,
+          pushed: false,
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
@@ -1172,7 +1313,8 @@ export const api = {
         ...browserCommits,
       ];
       return updateMockSnapshot((snapshot) => {
-        snapshot.status.ahead += 1;
+        setBrowserCurrentBranchTip(snapshot, sha);
+        syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -1259,27 +1401,34 @@ export const api = {
   squashRecentCommits(repositoryPath: string, count: number, message: string): Promise<RepositorySnapshot> {
     return request("squash_recent_commits", { repositoryPath, count, message }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!Number.isInteger(count) || count < 2 || count > 1000 || browserCommits.length <= count) {
+      const branchCommits = browserBranchCommits(browserSnapshot.status.branch);
+      if (!Number.isInteger(count) || count < 2 || count > 1000 || branchCommits.length <= count) {
         throw { code: "invalid_squash_count", message: "没有足够的提交可压缩。" } satisfies AppError;
       }
       if (browserSnapshot.status.entries.length) {
         throw { code: "working_tree_not_clean", message: "请先处理当前改动。" } satisfies AppError;
       }
       if (!message.trim()) throw { code: "commit_message_required", message: "请输入提交说明。" } satisfies AppError;
-      const sha = Date.now().toString(16).padStart(12, "0") + "squash";
+      const sha = createBrowserMockSha();
       browserCommits = [
         {
           sha,
           shortSha: sha.slice(0, 7),
-          parents: [browserCommits[count].sha],
+          parents: [branchCommits[count].sha],
+          tags: [],
+          tagsTruncated: false,
+          pushed: false,
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
           summary: message.trim().split(/\r?\n/u, 1)[0],
         },
-        ...browserCommits.slice(count),
+        ...browserCommits,
       ];
-      return copy(browserSnapshot);
+      return updateMockSnapshot((snapshot) => {
+        setBrowserCurrentBranchTip(snapshot, sha);
+        syncBrowserBranchStatus(snapshot);
+      });
     });
   },
 
@@ -1288,11 +1437,18 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       const target = browserCommits.find((commit) => commit.sha === revision || commit.shortSha === revision);
       if (!target) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      const currentTip = browserSnapshot.status.branch
+        ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
+        : null;
+      const sha = createBrowserMockSha();
       browserCommits = [
         {
-          sha: `revert-${Date.now()}`,
-          shortSha: "revert",
-          parents: browserCommits[0] ? [browserCommits[0].sha] : [],
+          sha,
+          shortSha: sha.slice(0, 7),
+          parents: currentTip ? [currentTip] : [],
+          tags: [],
+          tagsTruncated: false,
+          pushed: false,
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
@@ -1300,7 +1456,10 @@ export const api = {
         },
         ...browserCommits,
       ];
-      return copy(browserSnapshot);
+      return updateMockSnapshot((snapshot) => {
+        setBrowserCurrentBranchTip(snapshot, sha);
+        syncBrowserBranchStatus(snapshot);
+      });
     });
   },
 
@@ -1310,7 +1469,22 @@ export const api = {
       if (!name.trim()) throw { code: "invalid_git_reference", message: "标签名称无效。" } satisfies AppError;
       updateMockSnapshot((snapshot) => {
         if (!snapshot.tags.some((tag) => tag.name === name.trim())) {
-          snapshot.tags.unshift({ name: name.trim(), target: target?.trim() || snapshot.status.branch || "HEAD" });
+          const normalizedTarget = target?.trim();
+          const currentTip = snapshot.status.branch
+            ? browserBranchTips.get(snapshot.status.branch) ?? null
+            : null;
+          const targetTip = !normalizedTarget || normalizedTarget === "HEAD" || normalizedTarget === snapshot.status.branch
+            ? currentTip
+            : browserBranchTips.get(normalizedTarget)
+              ?? browserRemoteBranchTips.get(normalizedTarget)
+              ?? snapshot.tags.find((tag) => tag.name === normalizedTarget)?.target
+              ?? normalizedTarget;
+          const commit = browserCommits.find((entry) => entry.sha === targetTip || entry.shortSha === targetTip);
+          if (!commit) {
+            throw { code: "invalid_git_revision", message: "找不到该标签目标。" } satisfies AppError;
+          }
+          snapshot.tags.unshift({ name: name.trim(), target: commit.sha });
+          if (!commit.tags.includes(name.trim())) commit.tags.push(name.trim());
         }
       });
     });
@@ -1321,6 +1495,7 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       updateMockSnapshot((snapshot) => {
         snapshot.tags = snapshot.tags.filter((tag) => tag.name !== name);
+        for (const commit of browserCommits) commit.tags = commit.tags.filter((tag) => tag !== name);
       });
     });
   },
@@ -1363,12 +1538,25 @@ export const api = {
         if (snapshot.remotes.some((item) => item.name === newName && item !== remote)) {
           throw { code: "remote_exists", message: "该 remote 已存在。" } satisfies AppError;
         }
+        const renamedReferences = snapshot.remoteBranches
+          .filter((branch) => branch.remoteName === oldName)
+          .map((branch) => [`${oldName}/${branch.name}`, `${newName}/${branch.name}`] as const);
+        for (const [oldReference, newReference] of renamedReferences) {
+          const tip = browserRemoteBranchTips.get(oldReference) ?? null;
+          browserRemoteBranchTips.delete(oldReference);
+          browserRemoteBranchTips.set(newReference, tip);
+          snapshot.branches.forEach((branch) => {
+            if (branch.upstream === oldReference) branch.upstream = newReference;
+          });
+          if (snapshot.status.upstream === oldReference) snapshot.status.upstream = newReference;
+        }
         remote.name = newName;
         snapshot.remoteBranches.forEach((branch) => {
           if (branch.remoteName === oldName) branch.remoteName = newName;
         });
         const binding = snapshot.bindings.find((item) => item.remoteName === oldName);
         if (binding) binding.remoteName = newName;
+        syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -1377,9 +1565,20 @@ export const api = {
     return request("remove_remote", { repositoryPath, name }, () => {
       requireBrowserSnapshot(repositoryPath);
       updateMockSnapshot((snapshot) => {
+        const removedReferences = snapshot.remoteBranches
+          .filter((branch) => branch.remoteName === name)
+          .map((branch) => `${name}/${branch.name}`);
+        for (const reference of removedReferences) {
+          browserRemoteBranchTips.delete(reference);
+          snapshot.branches.forEach((branch) => {
+            if (branch.upstream === reference) branch.upstream = null;
+          });
+          if (snapshot.status.upstream === reference) snapshot.status.upstream = null;
+        }
         snapshot.remotes = snapshot.remotes.filter((remote) => remote.name !== name);
         snapshot.remoteBranches = snapshot.remoteBranches.filter((branch) => branch.remoteName !== name);
         snapshot.bindings = snapshot.bindings.filter((binding) => binding.remoteName !== name);
+        syncBrowserBranchStatus(snapshot);
       });
     });
   },
@@ -1391,6 +1590,16 @@ export const api = {
       updateMockSnapshot((nextSnapshot) => {
         if (!nextSnapshot.remoteBranches.some((branch) => branch.remoteName === remoteName)) {
           nextSnapshot.remoteBranches.push({ remoteName, name: "main" });
+        }
+        const remoteReference = `${remoteName}/main`;
+        if (!browserRemoteBranchTips.has(remoteReference)) {
+          const currentTip = nextSnapshot.status.branch
+            ? browserBranchTips.get(nextSnapshot.status.branch) ?? null
+            : null;
+          browserRemoteBranchTips.set(
+            remoteReference,
+            currentTip ?? browserBranchTips.get("main") ?? browserCommits[0]?.sha ?? null,
+          );
         }
       });
       return { summary: `已从 ${remoteName} 获取最新引用（浏览器演示）。` };
@@ -1410,7 +1619,29 @@ export const api = {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       requireBrowserRemote(snapshot, remoteName);
       updateMockSnapshot((snapshot) => {
-        snapshot.status.ahead = 0;
+        if (!snapshot.hasHead) {
+          throw { code: "no_commit_to_push", message: "当前分支没有可推送的提交。" } satisfies AppError;
+        }
+        const branch = snapshot.status.branch;
+        if (!branch) {
+          throw { code: "detached_head", message: "游离 HEAD 无法建立分支上游。" } satisfies AppError;
+        }
+        const isUpstreamRemote = snapshot.status.upstream?.startsWith(`${remoteName}/`) ?? false;
+        const establishesUpstream = !snapshot.status.upstream;
+        if (!snapshot.status.upstream) {
+          snapshot.status.upstream = `${remoteName}/${branch}`;
+          const currentBranch = snapshot.branches.find((candidate) => candidate.isCurrent);
+          if (currentBranch) currentBranch.upstream = snapshot.status.upstream;
+        }
+        const destination = isUpstreamRemote ? snapshot.status.upstream! : `${remoteName}/${branch}`;
+        browserRemoteBranchTips.set(destination, browserBranchTips.get(branch) ?? null);
+        const remoteBranchName = isUpstreamRemote
+          ? destination.slice(remoteName.length + 1)
+          : branch;
+        if (!snapshot.remoteBranches.some((entry) => entry.remoteName === remoteName && entry.name === remoteBranchName)) {
+          snapshot.remoteBranches.push({ remoteName, name: remoteBranchName });
+        }
+        if (establishesUpstream || isUpstreamRemote) syncBrowserBranchStatus(snapshot);
       });
       return { summary: `已推送到 ${remoteName}（浏览器演示）。` };
     });
