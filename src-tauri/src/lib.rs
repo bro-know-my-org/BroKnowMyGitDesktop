@@ -37,6 +37,8 @@ pub fn run() {
             commands::open_conflicted_files_in_external_editor,
             commands::list_commits,
             commands::get_commit_diff,
+            commands::list_commit_changed_files,
+            commands::get_commit_file_diff,
             commands::stage_paths,
             commands::unstage_paths,
             commands::apply_patch,

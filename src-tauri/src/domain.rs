@@ -455,6 +455,33 @@ pub struct CommitSummary {
     pub summary: String,
 }
 
+/// The kind of change made to one path by a commit. Merge commits are
+/// compared with their first parent so this status matches the patch shown by
+/// the history UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitFileStatus {
+    Added,
+    Copied,
+    Deleted,
+    Modified,
+    Renamed,
+    TypeChanged,
+    Unmerged,
+    Unknown,
+}
+
+/// One file changed by a commit. `previous_path` is populated for copies and
+/// renames so a path-filtered diff can retain Git's similarity detection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChangedFile {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub status: CommitFileStatus,
+    pub similarity: Option<u8>,
+}
+
 /// A local stash entry. The display reference can be renumbered by another
 /// Git client, so the immutable stash commit ID accompanies destructive pop
 /// and drop requests as an identity check.

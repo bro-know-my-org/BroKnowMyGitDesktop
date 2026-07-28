@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::domain::CommitChangedFile;
 
 #[tauri::command]
 pub fn list_commits(
@@ -14,6 +15,26 @@ pub fn list_commits(
 pub fn get_commit_diff(repository_path: String, revision: String) -> Result<String, AppError> {
     let repository = repository_root(&repository_path)?;
     GitCore::new().commit_diff(&repository, &revision)
+}
+
+#[tauri::command]
+pub fn list_commit_changed_files(
+    repository_path: String,
+    revision: String,
+) -> Result<Vec<CommitChangedFile>, AppError> {
+    let repository = repository_root(&repository_path)?;
+    GitCore::new().commit_changed_files(&repository, &revision)
+}
+
+#[tauri::command]
+pub fn get_commit_file_diff(
+    repository_path: String,
+    revision: String,
+    path: String,
+    previous_path: Option<String>,
+) -> Result<String, AppError> {
+    let repository = repository_root(&repository_path)?;
+    GitCore::new().commit_file_diff(&repository, &revision, &path, previous_path.as_deref())
 }
 
 #[tauri::command]

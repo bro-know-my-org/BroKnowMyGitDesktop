@@ -6,6 +6,7 @@ use super::parser::*;
 use super::validation::*;
 
 use super::*;
+use crate::domain::CommitFileStatus;
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,6 +55,34 @@ fn test_git_command() -> Command {
         .arg("-c")
         .arg(format!("core.hooksPath={DISABLED_GIT_HOOKS_PATH}"));
     command
+}
+
+struct TemporaryTestDirectory(PathBuf);
+
+impl TemporaryTestDirectory {
+    fn create(path: PathBuf) -> Self {
+        let base_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("test");
+        let path = path.with_file_name(format!("{base_name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&path).expect("temporary test directory is exclusively available");
+        Self(path)
+    }
+}
+
+impl std::ops::Deref for TemporaryTestDirectory {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TemporaryTestDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
@@ -1802,6 +1831,213 @@ fn lists_real_git_history_without_extra_format_records() {
         .expect("a revision expression can be a tag target");
 
     let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn lists_commit_files_and_reads_one_file_patch() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-commit-files-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "history@example.invalid"]);
+    run_git(&["config", "user.name", "History Test"]);
+    fs::write(repository.join("old-name.txt"), "rename me\n").unwrap();
+    fs::write(repository.join("deleted.txt"), "delete me\n").unwrap();
+    fs::write(repository.join("modified.txt"), "before\n").unwrap();
+    fs::write(repository.join("copy-source.txt"), "copy me\n").unwrap();
+    fs::write(
+        repository.join("changed-copy-source.txt"),
+        "copy then modify me\n",
+    )
+    .unwrap();
+    run_git(&["add", "."]);
+    run_git(&["commit", "-qm", "initial files"]);
+
+    run_git(&["mv", "old-name.txt", "new-name.txt"]);
+    fs::remove_file(repository.join("deleted.txt")).unwrap();
+    fs::copy(
+        repository.join("copy-source.txt"),
+        repository.join("copied.txt"),
+    )
+    .unwrap();
+    fs::write(repository.join("modified.txt"), "after\n").unwrap();
+    fs::write(repository.join("added.txt"), "new\n").unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-qm", "change files"]);
+
+    let git = GitCore::new();
+    let root_files = git.commit_changed_files(&repository, "HEAD~1").unwrap();
+    assert_eq!(root_files.len(), 5);
+    assert!(root_files
+        .iter()
+        .all(|file| file.status == CommitFileStatus::Added));
+
+    let files = git.commit_changed_files(&repository, "HEAD").unwrap();
+    assert_eq!(files.len(), 5);
+    assert!(files
+        .iter()
+        .any(|file| { file.path == "added.txt" && file.status == CommitFileStatus::Added }));
+    assert!(files
+        .iter()
+        .any(|file| { file.path == "deleted.txt" && file.status == CommitFileStatus::Deleted }));
+    assert!(files
+        .iter()
+        .any(|file| { file.path == "modified.txt" && file.status == CommitFileStatus::Modified }));
+    let copied = files
+        .iter()
+        .find(|file| file.path == "copied.txt")
+        .expect("copied path is listed");
+    assert_eq!(copied.previous_path.as_deref(), Some("copy-source.txt"));
+    assert_eq!(copied.status, CommitFileStatus::Copied);
+    assert_eq!(copied.similarity, Some(100));
+    let renamed = files
+        .iter()
+        .find(|file| file.path == "new-name.txt")
+        .expect("renamed path is listed");
+    assert_eq!(renamed.previous_path.as_deref(), Some("old-name.txt"));
+    assert_eq!(renamed.status, CommitFileStatus::Renamed);
+    assert_eq!(renamed.similarity, Some(100));
+
+    let modified_diff = git
+        .commit_file_diff(&repository, "HEAD", "modified.txt", None)
+        .unwrap();
+    assert!(modified_diff.contains("-before"));
+    assert!(modified_diff.contains("+after"));
+    assert!(!modified_diff.contains("added.txt"));
+    let renamed_diff = git
+        .commit_file_diff(
+            &repository,
+            "HEAD",
+            &renamed.path,
+            renamed.previous_path.as_deref(),
+        )
+        .unwrap();
+    assert!(renamed_diff.contains("rename from old-name.txt"));
+    assert!(renamed_diff.contains("rename to new-name.txt"));
+    let copied_diff = git
+        .commit_file_diff(
+            &repository,
+            "HEAD",
+            &copied.path,
+            copied.previous_path.as_deref(),
+        )
+        .unwrap();
+    assert!(copied_diff.contains("copied.txt"));
+    assert!(copied_diff.contains("copy from copy-source.txt"));
+    assert!(copied_diff.contains("copy to copied.txt"));
+    assert_eq!(
+        git.commit_file_diff(&repository, "HEAD", &renamed.path, Some("modified.txt"),)
+            .unwrap_err()
+            .code(),
+        "commit_file_not_found"
+    );
+    assert_eq!(
+        git.commit_file_diff(&repository, "HEAD", "not-changed.txt", None)
+            .unwrap_err()
+            .code(),
+        "commit_file_not_found"
+    );
+    assert_eq!(
+        git.commit_file_diff(&repository, "HEAD", "modified.txt", Some("modified.txt"))
+            .unwrap_err()
+            .code(),
+        "commit_file_not_found"
+    );
+
+    fs::copy(
+        repository.join("changed-copy-source.txt"),
+        repository.join("copied-from-changed.txt"),
+    )
+    .unwrap();
+    fs::write(
+        repository.join("changed-copy-source.txt"),
+        "source changed after copy\n",
+    )
+    .unwrap();
+    run_git(&["add", "-A"]);
+    run_git(&["commit", "-qm", "copy and modify source"]);
+    let copied_from_changed = git
+        .commit_changed_files(&repository, "HEAD")
+        .unwrap()
+        .into_iter()
+        .find(|file| file.path == "copied-from-changed.txt")
+        .expect("copy from a separately modified source is listed");
+    assert_eq!(copied_from_changed.status, CommitFileStatus::Copied);
+    assert_eq!(
+        copied_from_changed.previous_path.as_deref(),
+        Some("changed-copy-source.txt")
+    );
+    let copied_from_changed_diff = git
+        .commit_file_diff(
+            &repository,
+            "HEAD",
+            &copied_from_changed.path,
+            copied_from_changed.previous_path.as_deref(),
+        )
+        .unwrap();
+    assert!(copied_from_changed_diff.contains("copied-from-changed.txt"));
+    assert!(!copied_from_changed_diff
+        .contains("diff --git a/changed-copy-source.txt b/changed-copy-source.txt"));
+}
+
+#[test]
+fn merge_commit_files_use_the_first_parent_comparison() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-merge-files-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?} succeeds");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["checkout", "-qb", "main"]);
+    run_git(&["config", "user.email", "history@example.invalid"]);
+    run_git(&["config", "user.name", "History Test"]);
+    fs::write(repository.join("base.txt"), "base\n").unwrap();
+    run_git(&["add", "base.txt"]);
+    run_git(&["commit", "-qm", "base"]);
+    run_git(&["checkout", "-qb", "feature"]);
+    fs::write(repository.join("feature.txt"), "feature\n").unwrap();
+    run_git(&["add", "feature.txt"]);
+    run_git(&["commit", "-qm", "feature"]);
+    run_git(&["checkout", "-q", "main"]);
+    fs::write(repository.join("main.txt"), "main\n").unwrap();
+    run_git(&["add", "main.txt"]);
+    run_git(&["commit", "-qm", "main"]);
+    run_git(&["merge", "-q", "--no-ff", "feature", "-m", "merge feature"]);
+
+    let git = GitCore::new();
+    let files = git.commit_changed_files(&repository, "HEAD").unwrap();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].path, "feature.txt");
+    assert_eq!(files[0].status, CommitFileStatus::Added);
+    let diff = git
+        .commit_file_diff(&repository, "HEAD", "feature.txt", None)
+        .unwrap();
+    assert!(diff.contains("feature.txt"));
+    assert!(!diff.contains("main.txt"));
 }
 
 #[test]

@@ -171,6 +171,23 @@ export interface CommitSummary {
   summary: string;
 }
 
+export type CommitFileStatus =
+  | "added"
+  | "copied"
+  | "deleted"
+  | "modified"
+  | "renamed"
+  | "typeChanged"
+  | "unmerged"
+  | "unknown";
+
+export interface CommitChangedFile {
+  path: string;
+  previousPath: string | null;
+  status: CommitFileStatus;
+  similarity: number | null;
+}
+
 export interface StashEntry {
   reference: string;
   commitId: string;

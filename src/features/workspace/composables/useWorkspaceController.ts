@@ -11,6 +11,7 @@ import {
   type AuthenticationMethod,
   type AppError,
   type BranchInfo,
+  type CommitChangedFile,
   type CommitSummary,
   type CodeHostCapabilities,
   type CodeHostEndpoint,
@@ -145,6 +146,7 @@ let diffRequestGeneration = 0;
 let worktreesRequestGeneration = 0;
 let submodulesRequestGeneration = 0;
 let lfsRequestGeneration = 0;
+let commitFilesRequestGeneration = 0;
 let commitDiffRequestGeneration = 0;
 const blameText = ref("");
 const commits = ref<CommitSummary[]>([]);
@@ -155,6 +157,8 @@ const submodules = ref<SubmoduleInfo[]>([]);
 const lfsStatus = ref<LfsStatus | null>(null);
 const externalEditor = ref<ExternalEditorConfig | null>(null);
 const selectedCommit = ref<CommitSummary | null>(null);
+const commitChangedFiles = ref<CommitChangedFile[]>([]);
+const selectedCommitFile = ref<CommitChangedFile | null>(null);
 const commitDiffText = ref("");
 const lastError = ref<AppError | null>(null);
 const lastErrorAction = ref("");
@@ -170,6 +174,7 @@ const pullRequestsLoading = ref(false);
 const historyLoading = ref(false);
 let historyRequestGeneration = 0;
 const reflogLoading = ref(false);
+const commitFilesLoading = ref(false);
 const commitDiffLoading = ref(false);
 const stashesLoading = ref(false);
 const worktreesLoading = ref(false);
@@ -636,6 +641,17 @@ function clearDiffSelection(): void {
   diffLoading.value = false;
 }
 
+function clearCommitSelection(): void {
+  commitFilesRequestGeneration += 1;
+  commitDiffRequestGeneration += 1;
+  selectedCommit.value = null;
+  commitChangedFiles.value = [];
+  selectedCommitFile.value = null;
+  commitDiffText.value = "";
+  commitFilesLoading.value = false;
+  commitDiffLoading.value = false;
+}
+
 async function syncSelectedDiff(
   nextSnapshot: RepositorySnapshot,
   selectedPath?: string,
@@ -755,9 +771,11 @@ async function selectRepository(repositoryPath: string): Promise<void> {
   worktreesRequestGeneration += 1;
   submodulesRequestGeneration += 1;
   lfsRequestGeneration += 1;
+  commitFilesRequestGeneration += 1;
   commitDiffRequestGeneration += 1;
   historyLoading.value = false;
   stashesLoading.value = false;
+  commitFilesLoading.value = false;
   commitDiffLoading.value = false;
   worktreesLoading.value = false;
   submodulesLoading.value = false;
@@ -767,6 +785,8 @@ async function selectRepository(repositoryPath: string): Promise<void> {
   commits.value = [];
   stashes.value = [];
   selectedCommit.value = null;
+  commitChangedFiles.value = [];
+  selectedCommitFile.value = null;
   commitDiffText.value = "";
   tagModalShown.value = false;
   tagRepositoryPath.value = null;
@@ -795,8 +815,7 @@ async function selectRepository(repositoryPath: string): Promise<void> {
     worktrees.value = [];
     submodules.value = [];
     lfsStatus.value = null;
-    selectedCommit.value = null;
-    commitDiffText.value = "";
+    clearCommitSelection();
     amendLastCommit.value = false;
     await syncSelectedDiff(nextSnapshot, undefined, true);
     await Promise.all([loadCapabilities(), loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
@@ -1019,8 +1038,7 @@ async function loadHistory(): Promise<void> {
     commits.value = nextCommits;
     stashes.value = nextStashes;
     if (selectedCommit.value && !nextCommits.some((commit) => commit.sha === selectedCommit.value?.sha)) {
-      selectedCommit.value = null;
-      commitDiffText.value = "";
+      clearCommitSelection();
     }
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
@@ -1129,22 +1147,62 @@ async function loadExternalEditor(): Promise<void> {
   }
 }
 
-async function loadCommitDiff(commit: CommitSummary): Promise<void> {
+async function loadCommitFiles(commit: CommitSummary): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) return;
   const selectionGeneration = repositorySelectionGeneration;
-  const requestGeneration = ++commitDiffRequestGeneration;
+  const requestGeneration = ++commitFilesRequestGeneration;
+  commitDiffRequestGeneration += 1;
   selectedCommit.value = commit;
-  commitDiffLoading.value = true;
+  commitChangedFiles.value = [];
+  selectedCommitFile.value = null;
+  commitDiffText.value = "";
+  commitFilesLoading.value = true;
+  commitDiffLoading.value = false;
   try {
-    const nextDiff = await api.getCommitDiff(repositoryPath, commit.sha);
+    const nextFiles = await api.listCommitChangedFiles(repositoryPath, commit.sha);
     if (
       repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      selectedCommit.value?.sha === commit.sha &&
+      requestGeneration === commitFilesRequestGeneration
+    ) {
+      commitChangedFiles.value = nextFiles;
+      const firstFile = nextFiles[0];
+      if (firstFile) void loadCommitFileDiff(firstFile, commit, repositoryPath);
+    }
+  } catch (error) {
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
+      reportError(error, tr("读取提交文件失败", "Could not load changed files"));
+    }
+  } finally {
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
+      commitFilesLoading.value = false;
+    }
+  }
+}
+
+async function loadCommitFileDiff(
+  file: CommitChangedFile,
+  commit = selectedCommit.value,
+  repositoryPath = activeRepositoryPath.value,
+): Promise<void> {
+  if (!repositoryPath || !commit || activeRepositoryPath.value !== repositoryPath) return;
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++commitDiffRequestGeneration;
+  selectedCommitFile.value = file;
+  commitDiffText.value = "";
+  commitDiffLoading.value = true;
+  try {
+    const nextDiff = await api.getCommitFileDiff(repositoryPath, commit.sha, file.path, file.previousPath);
+    if (
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      selectedCommit.value?.sha === commit.sha &&
+      selectedCommitFile.value?.path === file.path &&
       requestGeneration === commitDiffRequestGeneration
     ) commitDiffText.value = nextDiff;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
-      reportError(error, tr("读取提交改动失败", "Could not load commit diff"));
+      reportError(error, tr("读取提交文件改动失败", "Could not load the file diff"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
@@ -2645,6 +2703,8 @@ onBeforeUnmount(() => {
     lfsStatus,
     externalEditor,
     selectedCommit,
+    commitChangedFiles,
+    selectedCommitFile,
     commitDiffText,
     lastError,
     lastErrorAction,
@@ -2658,6 +2718,7 @@ onBeforeUnmount(() => {
     pullRequestsLoading,
     historyLoading,
     reflogLoading,
+    commitFilesLoading,
     commitDiffLoading,
     stashesLoading,
     worktreesLoading,
@@ -2792,6 +2853,7 @@ onBeforeUnmount(() => {
     handleDevtoolsShortcut,
     applySnapshot,
     clearDiffSelection,
+    clearCommitSelection,
     syncSelectedDiff,
     loadCapabilities,
     compareRepositoryRecords,
@@ -2817,7 +2879,8 @@ onBeforeUnmount(() => {
     loadSubmodules,
     loadLfsStatus,
     loadExternalEditor,
-    loadCommitDiff,
+    loadCommitFiles,
+    loadCommitFileDiff,
     setChangeIncluded,
     stageAll,
     unstageAll,

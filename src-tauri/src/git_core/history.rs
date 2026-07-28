@@ -4,11 +4,133 @@ use super::models::*;
 use super::parser::*;
 use super::validation::*;
 use super::*;
+use crate::domain::{CommitChangedFile, CommitFileStatus};
 
 const MAX_COMMIT_HISTORY_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_COMMIT_DIFF_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
+fn valid_object_id(value: &str) -> bool {
+    (40..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn parse_commit_changed_files(raw: &[u8]) -> Result<Vec<CommitChangedFile>, AppError> {
+    let fields = raw
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect::<Vec<_>>();
+    let mut files = Vec::new();
+    let mut cursor = 0;
+    while cursor < fields.len() {
+        let status_field = std::str::from_utf8(fields[cursor])
+            .map_err(|_| AppError::new("git_parse_error", "无法读取提交文件状态。"))?;
+        cursor += 1;
+        let status_code = status_field
+            .as_bytes()
+            .first()
+            .copied()
+            .ok_or_else(|| AppError::new("git_parse_error", "无法读取提交文件状态。"))?;
+        let similarity = match status_code {
+            b'C' | b'R' => Some(
+                status_field[1..]
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|similarity| *similarity <= 100)
+                    .ok_or_else(|| AppError::new("git_parse_error", "无法读取文件相似度。"))?,
+            ),
+            _ if status_field.len() == 1 => None,
+            _ => return Err(AppError::new("git_parse_error", "无法读取提交文件状态。")),
+        };
+        let parse_path = |bytes: &[u8]| {
+            std::str::from_utf8(bytes).map(str::to_owned).map_err(|_| {
+                AppError::new(
+                    "unsupported_repository_path_encoding",
+                    "文件路径不是有效的 UTF-8。",
+                )
+            })
+        };
+        let (previous_path, path) = match status_code {
+            b'C' | b'R' => {
+                let previous = fields
+                    .get(cursor)
+                    .ok_or_else(|| AppError::new("git_parse_error", "无法读取提交文件路径。"))?;
+                let current = fields
+                    .get(cursor + 1)
+                    .ok_or_else(|| AppError::new("git_parse_error", "无法读取提交文件路径。"))?;
+                cursor += 2;
+                (Some(parse_path(previous)?), parse_path(current)?)
+            }
+            _ => {
+                let current = fields
+                    .get(cursor)
+                    .ok_or_else(|| AppError::new("git_parse_error", "无法读取提交文件路径。"))?;
+                cursor += 1;
+                (None, parse_path(current)?)
+            }
+        };
+        let status = match status_code {
+            b'A' => CommitFileStatus::Added,
+            b'C' => CommitFileStatus::Copied,
+            b'D' => CommitFileStatus::Deleted,
+            b'M' => CommitFileStatus::Modified,
+            b'R' => CommitFileStatus::Renamed,
+            b'T' => CommitFileStatus::TypeChanged,
+            b'U' => CommitFileStatus::Unmerged,
+            _ => CommitFileStatus::Unknown,
+        };
+        files.push(CommitChangedFile {
+            path,
+            previous_path,
+            status,
+            similarity,
+        });
+    }
+    Ok(files)
+}
+
 impl GitCore {
+    fn resolve_commit(&self, repository: &Path, revision: &str) -> Result<String, AppError> {
+        validate_revision(revision, "提交引用")?;
+        let commit_expression = format!("{revision}^{{commit}}");
+        let resolved = self.run(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", &commit_expression]),
+            &GitEnvironment::default(),
+            "验证提交引用",
+        )?;
+        let commit = output_text(&resolved.stdout).trim().to_owned();
+        if !valid_object_id(&commit) {
+            return Err(AppError::new("git_parse_error", "无法读取提交标识。"));
+        }
+        Ok(commit)
+    }
+
+    fn commit_and_first_parent(
+        &self,
+        repository: &Path,
+        revision: &str,
+    ) -> Result<(String, Option<String>), AppError> {
+        let commit = self.resolve_commit(repository, revision)?;
+        let parents = self.run(
+            Some(repository),
+            &[
+                OsString::from("rev-list"),
+                OsString::from("--parents"),
+                OsString::from("--max-count=1"),
+                OsString::from(&commit),
+            ],
+            &GitEnvironment::default(),
+            "读取提交父级",
+        )?;
+        let values = output_text(&parents.stdout)
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if values.first() != Some(&commit) || values.iter().any(|value| !valid_object_id(value)) {
+            return Err(AppError::new("git_parse_error", "无法读取提交父级。"));
+        }
+        Ok((commit, values.get(1).cloned()))
+    }
+
     /// Creates a commit while preserving the user's normal Git hooks and
     /// credential/configuration behavior.
     pub fn commit(
@@ -381,20 +503,7 @@ impl GitCore {
     /// Reads a complete patch for one existing commit without exposing Git's
     /// raw diagnostic output on failure.
     pub fn commit_diff(&self, repository: &Path, revision: &str) -> Result<String, AppError> {
-        validate_revision(revision, "提交引用")?;
-        let commit_expression = format!("{revision}^{{commit}}");
-        let resolved = self.run(
-            Some(repository),
-            &os_arguments(&["rev-parse", "--verify", &commit_expression]),
-            &GitEnvironment::default(),
-            "验证提交引用",
-        )?;
-        let commit = output_text(&resolved.stdout).trim().to_owned();
-        if !(40..=64).contains(&commit.len())
-            || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
-        {
-            return Err(AppError::new("git_parse_error", "无法读取提交标识。"));
-        }
+        let commit = self.resolve_commit(repository, revision)?;
         let arguments = vec![
             OsString::from("show"),
             OsString::from("--no-ext-diff"),
@@ -402,6 +511,8 @@ impl GitCore {
             OsString::from("--format="),
             OsString::from("--binary"),
             OsString::from("--find-renames"),
+            OsString::from("--find-copies"),
+            OsString::from("--find-copies-harder"),
             OsString::from("--unified=3"),
             OsString::from(commit),
             OsString::from("--"),
@@ -412,6 +523,172 @@ impl GitCore {
             &GitEnvironment::default(),
             MAX_COMMIT_DIFF_OUTPUT_BYTES,
             "读取提交改动",
+        )?;
+        commit_diff_output_text(output.stdout)
+    }
+
+    /// Lists files changed by one commit. Merge commits use their first parent
+    /// so the list and the selected-file patch share one stable comparison.
+    pub fn commit_changed_files(
+        &self,
+        repository: &Path,
+        revision: &str,
+    ) -> Result<Vec<CommitChangedFile>, AppError> {
+        let (commit, first_parent) = self.commit_and_first_parent(repository, revision)?;
+        self.commit_changed_files_for_comparison(repository, &commit, first_parent.as_deref(), &[])
+    }
+
+    fn commit_changed_files_for_comparison(
+        &self,
+        repository: &Path,
+        commit: &str,
+        first_parent: Option<&str>,
+        paths: &[&str],
+    ) -> Result<Vec<CommitChangedFile>, AppError> {
+        let mut arguments = if let Some(parent) = first_parent {
+            vec![
+                OsString::from("diff"),
+                OsString::from("--no-ext-diff"),
+                OsString::from("--no-textconv"),
+                OsString::from("--find-renames"),
+                OsString::from("--find-copies"),
+                OsString::from("--find-copies-harder"),
+                OsString::from("--name-status"),
+                OsString::from("-z"),
+                OsString::from(parent),
+                OsString::from(commit),
+            ]
+        } else {
+            vec![
+                OsString::from("diff-tree"),
+                OsString::from("--root"),
+                OsString::from("--no-commit-id"),
+                OsString::from("-r"),
+                OsString::from("--no-ext-diff"),
+                OsString::from("--no-textconv"),
+                OsString::from("--find-renames"),
+                OsString::from("--find-copies"),
+                OsString::from("--find-copies-harder"),
+                OsString::from("--name-status"),
+                OsString::from("-z"),
+                OsString::from(commit),
+            ]
+        };
+        arguments.push(OsString::from("--"));
+        arguments.extend(paths.iter().map(|path| literal_pathspec(path)));
+        let output = self.run_with_output_limit(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            MAX_COMMIT_HISTORY_OUTPUT_BYTES,
+            "读取提交文件列表",
+        )?;
+        parse_commit_changed_files(&output.stdout)
+    }
+
+    /// Reads the display-only patch for one file in a commit. Renames include
+    /// the previous path to preserve similarity headers; copies keep the patch
+    /// scoped to the new path so a modified source file is not rendered too.
+    pub fn commit_file_diff(
+        &self,
+        repository: &Path,
+        revision: &str,
+        path: &str,
+        previous_path: Option<&str>,
+    ) -> Result<String, AppError> {
+        validate_worktree_relative_path(path)?;
+        if let Some(previous_path) = previous_path {
+            validate_worktree_relative_path(previous_path)?;
+        }
+        if previous_path == Some(path) {
+            return Err(AppError::new(
+                "commit_file_not_found",
+                "所选文件不属于这个提交的改动。",
+            ));
+        }
+        let (commit, first_parent) = self.commit_and_first_parent(repository, revision)?;
+        let requested_previous_path = previous_path;
+        let selected_paths = requested_previous_path
+            .into_iter()
+            .chain(std::iter::once(path))
+            .collect::<Vec<_>>();
+        let changed_files = self.commit_changed_files_for_comparison(
+            repository,
+            &commit,
+            first_parent.as_deref(),
+            &selected_paths,
+        )?;
+        let matching_files = changed_files
+            .iter()
+            .filter(|file| {
+                file.path == path && file.previous_path.as_deref() == requested_previous_path
+            })
+            .collect::<Vec<_>>();
+        if matching_files.len() != 1
+            || !changed_files.iter().all(|candidate| {
+                (candidate.path == path
+                    && candidate.previous_path.as_deref() == requested_previous_path)
+                    || (Some(candidate.path.as_str()) == requested_previous_path
+                        && candidate.previous_path.is_none())
+            })
+        {
+            return Err(AppError::new(
+                "commit_file_not_found",
+                "所选文件不属于这个提交的改动。",
+            ));
+        }
+        let changed_file = matching_files[0];
+        let mut arguments = if let Some(parent) = first_parent.as_deref() {
+            vec![
+                OsString::from("diff"),
+                OsString::from("--no-ext-diff"),
+                OsString::from("--no-textconv"),
+                OsString::from("--find-renames"),
+                OsString::from("--find-copies"),
+                OsString::from("--find-copies-harder"),
+                OsString::from("--unified=3"),
+                OsString::from(parent),
+                OsString::from(&commit),
+            ]
+        } else {
+            vec![
+                OsString::from("show"),
+                OsString::from("--no-ext-diff"),
+                OsString::from("--no-textconv"),
+                OsString::from("--format="),
+                OsString::from("--find-renames"),
+                OsString::from("--find-copies"),
+                OsString::from("--find-copies-harder"),
+                OsString::from("--unified=3"),
+                OsString::from(&commit),
+            ]
+        };
+        arguments.push(OsString::from("--"));
+        let source_changed_separately =
+            changed_file
+                .previous_path
+                .as_deref()
+                .is_some_and(|previous_path| {
+                    changed_files.iter().any(|candidate| {
+                        candidate.path == previous_path && candidate.previous_path.is_none()
+                    })
+                });
+        if changed_file.status == CommitFileStatus::Renamed
+            || (changed_file.status == CommitFileStatus::Copied && !source_changed_separately)
+        {
+            let previous_path = changed_file
+                .previous_path
+                .as_deref()
+                .ok_or_else(|| AppError::new("git_parse_error", "无法读取重命名文件的原路径。"))?;
+            arguments.push(literal_pathspec(previous_path));
+        }
+        arguments.push(literal_pathspec(path));
+        let output = self.run_with_output_limit(
+            Some(repository),
+            &arguments,
+            &GitEnvironment::default(),
+            MAX_COMMIT_DIFF_OUTPUT_BYTES,
+            "读取提交文件改动",
         )?;
         commit_diff_output_text(output.stdout)
     }

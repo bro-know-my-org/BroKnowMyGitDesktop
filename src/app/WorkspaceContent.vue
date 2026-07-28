@@ -17,7 +17,7 @@ export default defineComponent({
 <template>
 <n-layout-content
   class="content-area"
-  :class="{ 'is-fixed-repository-content': section === 'repositories' && activeTab === 'changes' && !browserDemo && !lastError }"
+  :class="{ 'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo && !lastError }"
 >
   <main class="content-inner">
 <n-alert v-if="browserDemo" type="info" class="demo-alert" :bordered="false">

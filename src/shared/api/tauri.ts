@@ -4,6 +4,7 @@ import type {
   AppError,
   CloneRepositoryInput,
   CleanUntrackedPreview,
+  CommitChangedFile,
   CommitSummary,
   CodeHostCapabilities,
   CodeHostEndpoint,
@@ -290,6 +291,20 @@ function browserHistoryCommits(snapshot: RepositorySnapshot): CommitSummary[] {
     ...commit,
     pushed: pushed ? pushed.has(commit.sha) : null,
   }));
+}
+
+function browserCommitChangedFiles(commit: CommitSummary): CommitChangedFile[] {
+  if (commit.parents.length === 0) {
+    return [
+      { path: "README.md", previousPath: null, status: "added", similarity: null },
+      { path: "src/main.ts", previousPath: null, status: "added", similarity: null },
+    ];
+  }
+  return [
+    { path: "README.md", previousPath: null, status: "modified", similarity: null },
+    { path: "src/shared/api/tauri.ts", previousPath: null, status: "modified", similarity: null },
+    { path: "src/accounts.ts", previousPath: "src/account.ts", status: "renamed", similarity: 92 },
+  ];
 }
 
 function browserBranchCommitsFromTip(tip: string | null): CommitSummary[] {
@@ -923,9 +938,61 @@ export const api = {
         "diff --git a/README.md b/README.md",
         "--- a/README.md",
         "+++ b/README.md",
-        "@@ -1,2 +1,3 @@",
+        "@@ -1 +1,2 @@",
         " # BroKnowMyGitDesktop",
         "+历史记录浏览器演示",
+      ].join("\n");
+    });
+  },
+
+  listCommitChangedFiles(repositoryPath: string, revision: string): Promise<CommitChangedFile[]> {
+    return request("list_commit_changed_files", { repositoryPath, revision }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
+      if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      return copy(browserCommitChangedFiles(commit));
+    });
+  },
+
+  getCommitFileDiff(
+    repositoryPath: string,
+    revision: string,
+    path: string,
+    previousPath: string | null = null,
+  ): Promise<string> {
+    return request("get_commit_file_diff", { repositoryPath, revision, path, previousPath }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
+      if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      const changedFile = browserCommitChangedFiles(commit).find((file) => file.path === path);
+      if (!changedFile || changedFile.previousPath !== previousPath) {
+        throw { code: "commit_file_not_found", message: "所选文件不属于这个提交的改动。" } satisfies AppError;
+      }
+      if (previousPath) {
+        return [
+          `diff --git a/${previousPath} b/${path}`,
+          `similarity index 92%`,
+          `rename from ${previousPath}`,
+          `rename to ${path}`,
+        ].join("\n");
+      }
+      if (changedFile.status === "added") {
+        return [
+          `diff --git a/${path} b/${path}`,
+          "new file mode 100644",
+          "--- /dev/null",
+          `+++ b/${path}`,
+          "@@ -0,0 +1 @@",
+          "+历史记录按文件浏览",
+        ].join("\n");
+      }
+      return [
+        `diff --git a/${path} b/${path}`,
+        `--- a/${path}`,
+        `+++ b/${path}`,
+        "@@ -1 +1,2 @@",
+        ` # ${path}`,
+        "+历史记录按文件浏览",
       ].join("\n");
     });
   },
