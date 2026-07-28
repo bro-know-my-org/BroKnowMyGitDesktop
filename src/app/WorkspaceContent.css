@@ -1,0 +1,50 @@
+.content-area {
+  min-height: 0;
+  background: var(--app-bg);
+}
+
+.application-main > .n-layout-scroll-container > .content-area {
+  flex: 1 1 0;
+}
+
+.content-area > .n-layout-scroll-container {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.content-inner {
+  max-width: none;
+  padding: 0;
+}
+
+.demo-alert,
+.error-alert {
+  max-height: 30vh;
+  flex: 0 0 auto;
+  overflow-y: auto;
+  margin-bottom: 18px;
+}
+
+.error-diagnostic-code {
+  margin-top: 8px;
+  color: var(--app-text-secondary);
+  font-size: 12px;
+}
+
+.error-diagnostic-code code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.error-diagnostic-guidance {
+  margin-top: 6px;
+  color: var(--app-text-body);
+}
+
+.repository-empty-state,
+.loading-state {
+  display: grid;
+  min-height: 55vh;
+  place-items: center;
+}

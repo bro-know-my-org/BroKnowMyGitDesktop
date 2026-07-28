@@ -93,3 +93,5 @@ export default defineComponent({
                 </n-grid>
   </template>
 </template>
+
+<style src="./BranchesPanel.css"></style>

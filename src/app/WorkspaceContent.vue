@@ -50,3 +50,5 @@ export default defineComponent({
   </main>
 </n-layout-content>
 </template>
+
+<style src="./WorkspaceContent.css"></style>

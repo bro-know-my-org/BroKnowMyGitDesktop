@@ -1,0 +1,158 @@
+.dialog-card {
+  width: min(600px, calc(100vw - 44px));
+}
+
+.settings-dialog-card {
+  width: min(720px, calc(100vw - 44px));
+}
+
+.settings-dialog-card .n-card__content {
+  padding: 0 !important;
+}
+
+.settings-tabs {
+  min-height: 390px;
+}
+
+.settings-tabs > .n-tabs-nav {
+  width: 150px;
+  padding: 14px 8px;
+  border-right: 1px solid var(--app-divider);
+}
+
+.settings-tabs .n-tabs-tab {
+  justify-content: flex-start;
+  padding: 9px 12px !important;
+}
+
+.settings-tabs > .n-tabs-pane-wrapper {
+  min-width: 0;
+}
+
+.settings-section,
+.settings-about {
+  box-sizing: border-box;
+  padding: 24px 28px;
+}
+
+.settings-section-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 22px;
+}
+
+.settings-section-heading strong,
+.settings-about-heading strong {
+  color: var(--app-text-strong);
+  font-size: 16px;
+}
+
+.settings-form {
+  max-width: 410px;
+}
+
+.settings-form .n-form-item:last-child {
+  margin-bottom: 0;
+}
+
+.theme-color-setting {
+  width: 100%;
+}
+
+.theme-color-description {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.theme-color-hint {
+  max-width: 330px;
+  line-height: 1.45;
+}
+
+.settings-about {
+  display: flex;
+  max-width: 500px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.about-brand-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 16px;
+  place-items: center;
+  background: linear-gradient(135deg, #24a878, #2976d2);
+  color: white;
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.04em;
+  box-shadow: 0 5px 16px rgb(24 124 91 / 20%);
+}
+
+.settings-about-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-about p {
+  margin: 22px 0;
+  color: var(--app-text-body);
+  line-height: 1.7;
+}
+
+.settings-about-details {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-divider);
+  color: var(--app-text-tertiary);
+  font-size: 12px;
+}
+
+.settings-about-details strong {
+  color: var(--app-text-body);
+  font-weight: 600;
+}
+
+@media (width <= 600px) {
+  .settings-tabs > .n-tabs-nav {
+    width: auto;
+    padding: 6px 10px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--app-divider);
+  }
+
+  .settings-tabs .n-tabs-tab {
+    justify-content: center;
+  }
+
+  .settings-section,
+  .settings-about {
+    padding: 18px;
+  }
+}
+
+.token-alert {
+  margin-bottom: 16px;
+}
+
+.binding-note {
+  margin-top: 16px;
+}
+
+.drawer-url {
+  overflow-wrap: anywhere;
+}
+
+.pull-request-base-field {
+  width: 100%;
+}
+
+.pull-request-base-suggestions {
+  margin-top: 8px;
+}

@@ -1,0 +1,27 @@
+.metric {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+
+.metric strong {
+  color: var(--app-text-strong);
+  font-size: 31px;
+  line-height: 1;
+}
+
+.metric span {
+  color: var(--app-text-secondary);
+  font-size: 13px;
+}
+
+.platform-card {
+  margin-top: 16px;
+}
+
+.repository-info,
+.pull-request-table {
+  margin-top: 16px;
+}
+

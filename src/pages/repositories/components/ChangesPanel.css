@@ -1,0 +1,301 @@
+.changes-workspace {
+  box-sizing: border-box;
+  align-items: stretch;
+  height: 100%;
+  min-height: 420px;
+  overflow: hidden;
+  border: 1px solid var(--app-divider);
+  border-radius: 0;
+  background: var(--app-surface);
+  box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%);
+}
+
+.changes-list-pane {
+  display: grid;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+  overflow: hidden;
+}
+
+.changes-file-card,
+.changes-diff-card,
+.changes-commit-card {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.changes-file-card {
+  height: 100%;
+  overflow: hidden;
+}
+
+.changes-file-card .n-card-header,
+.changes-diff-card .n-card-header {
+  min-height: 40px;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.changes-file-card .n-card-content {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 !important;
+}
+
+.changes-bulk-control {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 3px 7px;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.changes-bulk-control .n-checkbox__label {
+  font-size: 12px;
+}
+
+.changes-file-list {
+  min-height: 0;
+  flex: 1 1 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 1px 3px 3px;
+}
+
+.changes-file-card .n-empty {
+  margin: auto;
+}
+
+.change-file-row {
+  display: flex;
+  min-height: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 5px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+  outline: none;
+}
+
+.change-file-row:hover {
+  background: var(--app-row-hover);
+}
+
+.change-file-row.selected {
+  border-color: var(--app-selected-border);
+  background: var(--app-row-selected);
+}
+
+.change-file-row:focus-visible {
+  border-color: var(--app-focus);
+  box-shadow: 0 0 0 3px var(--app-focus-ring);
+}
+
+.change-file-checkbox {
+  display: grid;
+  flex: 0 0 18px;
+  place-items: center;
+}
+
+.change-file-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 0;
+}
+
+.change-file-path {
+  overflow: hidden;
+  color: var(--app-text-body);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-file-state {
+  overflow: hidden;
+  color: var(--app-text-tertiary);
+  font-size: 10px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.change-file-status {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #98a3b3;
+}
+
+.change-file-status.is-success {
+  background: #20a36e;
+}
+
+.change-file-status.is-warning {
+  background: #d58a23;
+}
+
+.change-file-status.is-error {
+  background: #d04e4e;
+}
+
+.changes-commit-card {
+  margin-top: 0;
+  border-top: 1px solid var(--app-divider) !important;
+}
+
+.changes-commit-card .n-card-header {
+  padding-top: 12px;
+  padding-bottom: 7px;
+}
+
+.changes-commit-card .n-card-content {
+  padding-top: 0;
+}
+
+.commit-form {
+  display: grid;
+  margin-bottom: 7px;
+}
+
+.commit-message-label {
+  margin-bottom: 4px;
+  color: var(--app-text-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.commit-amend-checkbox {
+  margin-top: 4px;
+}
+
+.commit-selection-summary {
+  display: block;
+  margin: 0 0 9px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.commit-primary-action {
+  margin-top: 2px;
+}
+
+.changes-diff-card {
+  height: 100%;
+}
+
+.changes-diff-card .n-card-content {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+}
+
+.changes-diff-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.changes-diff-loading {
+  margin: auto;
+}
+
+.changes-diff-panel .diff-output {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  flex: 1 0 auto;
+}
+
+.unborn-repository-alert {
+  margin-bottom: 16px;
+}
+
+.diff-hunk-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+@media (width <= 1120px) {
+  .changes-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .repository-column-resizer {
+    display: none;
+  }
+  
+  .changes-workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  
+  .changes-list-pane {
+    display: flex;
+    height: auto;
+    flex-direction: column;
+    gap: 16px;
+    border-right: 0;
+    overflow: visible;
+  }
+  
+  .changes-file-card,
+  .changes-diff-card,
+  .changes-commit-card {
+    border: 1px solid var(--app-divider) !important;
+    border-radius: 0 !important;
+    background: var(--app-surface) !important;
+    box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%) !important;
+  }
+  
+  .changes-file-card {
+    height: min(390px, 44vh);
+  }
+  
+  .changes-commit-card {
+    margin-top: 16px;
+  }
+  
+  .changes-diff-card {
+    min-height: 0;
+  }
+  
+  .changes-diff-card .diff-output {
+    min-height: 320px;
+    max-height: 480px;
+  }
+  
+  .changes-diff-panel {
+    max-height: 600px;
+  }
+}

@@ -129,3 +129,5 @@ export default defineComponent({
                 </div>
   </template>
 </template>
+
+<style src="./ChangesPanel.css"></style>

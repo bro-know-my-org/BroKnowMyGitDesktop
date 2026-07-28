@@ -1,0 +1,33 @@
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100vh;
+  min-width: 980px;
+  min-height: 0;
+  margin: 0;
+  background: var(--app-bg);
+  overflow: hidden;
+}
+
+button {
+  font: inherit;
+}
+
+@media (width <= 1120px) {
+  html,
+  body,
+  #app {
+    min-width: 0;
+  }
+}

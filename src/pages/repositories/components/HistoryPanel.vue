@@ -168,3 +168,5 @@ export default defineComponent({
                 </n-card>
   </template>
 </template>
+
+<style src="./HistoryPanel.css"></style>

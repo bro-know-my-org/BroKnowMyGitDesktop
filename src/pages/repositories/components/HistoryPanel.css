@@ -1,0 +1,94 @@
+.history-commit-list {
+  display: grid;
+  max-height: min(500px, max(160px, calc(100vh - 360px)));
+  gap: 3px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: -3px -4px;
+  padding: 3px 4px;
+}
+
+.history-commit-row {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 4px;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--app-text-body);
+  cursor: pointer;
+  outline: none;
+  text-align: left;
+}
+
+.history-commit-row:hover {
+  background: var(--app-row-hover);
+}
+
+.history-commit-row.selected {
+  border-color: var(--app-selected-border);
+  background: var(--app-row-selected);
+}
+
+.history-commit-row:focus-visible {
+  border-color: var(--app-focus);
+  box-shadow: 0 0 0 3px var(--app-focus-ring);
+}
+
+.history-commit-primary,
+.history-commit-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.history-commit-sha {
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+  font: 10px/1.3 SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.history-commit-tags {
+  display: inline-flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.history-commit-summary,
+.history-commit-author,
+.history-commit-date {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-commit-summary {
+  min-width: 0;
+  flex: 1;
+  color: var(--app-text-body);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.history-commit-meta {
+  color: var(--app-text-tertiary);
+  font-size: 11px;
+}
+
+.history-commit-author {
+  min-width: 0;
+  flex: 1;
+}
+
+.history-commit-date {
+  min-width: 0;
+  max-width: 48%;
+  flex: 0 1 auto;
+  text-align: right;
+}

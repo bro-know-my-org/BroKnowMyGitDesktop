@@ -14,3 +14,5 @@ import WorkspaceContent from "./WorkspaceContent.vue";
   </n-layout>
   <WorkspaceDialogs />
 </template>
+
+<style src="./AppShell.css"></style>

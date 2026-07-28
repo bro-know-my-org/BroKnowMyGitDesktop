@@ -1,0 +1,39 @@
+.accounts-page {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.accounts-page .eyebrow {
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin: 2px 0 18px;
+}
+
+.page-heading h1 {
+  margin: 3px 0 7px;
+  color: var(--app-text-strong);
+  font-size: 28px;
+  letter-spacing: -0.035em;
+  line-height: 1.18;
+}
+
+.page-heading p {
+  max-width: 640px;
+  margin: 0;
+  color: var(--app-text-secondary);
+}
+
+.security-card {
+  margin-top: 16px;
+}

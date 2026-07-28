@@ -75,3 +75,5 @@ export default defineComponent({
             </n-tabs>
           </section>
 </template>
+
+<style src="./index.css"></style>

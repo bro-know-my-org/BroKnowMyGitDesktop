@@ -210,3 +210,5 @@ export default defineComponent({
         </div>
       </n-layout-header>
 </template>
+
+<style src="./WorkspaceHeader.css"></style>

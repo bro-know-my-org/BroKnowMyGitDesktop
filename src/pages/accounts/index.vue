@@ -58,3 +58,4 @@ export default defineComponent({
           </section>
 </template>
 
+<style src="./index.css"></style>

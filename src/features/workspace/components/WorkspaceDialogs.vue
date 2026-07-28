@@ -352,3 +352,5 @@ export default defineComponent({
     </n-drawer-content>
   </n-drawer>
 </template>
+
+<style src="./WorkspaceDialogs.css"></style>

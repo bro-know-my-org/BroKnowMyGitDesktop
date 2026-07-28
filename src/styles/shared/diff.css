@@ -1,0 +1,64 @@
+.diff-card {
+  min-width: 0;
+}
+
+.diff-output {
+  max-height: 425px;
+  min-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  border-radius: 0;
+  background: var(--app-diff-bg);
+  color: var(--app-diff-text);
+  font: 12px/1.62 SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  white-space: pre;
+}
+
+.diff-line {
+  display: block;
+  width: max-content;
+  min-width: calc(100% + 28px);
+  box-sizing: border-box;
+  min-height: 1.62em;
+  margin: 0 -14px;
+  padding: 0 14px;
+}
+
+.diff-line.is-file-header {
+  background: rgb(56 139 253 / 14%);
+  color: #79c0ff;
+  font-weight: 650;
+}
+
+.diff-line.is-meta {
+  color: #8b949e;
+}
+
+.diff-line.is-hunk {
+  background: rgb(210 168 255 / 12%);
+  color: #d2a8ff;
+}
+
+.diff-line.is-add,
+.diff-line.is-add-file {
+  background: rgb(46 160 67 / 16%);
+  color: #7ee787;
+}
+
+.diff-line.is-remove,
+.diff-line.is-remove-file {
+  background: rgb(248 81 73 / 16%);
+  color: #ffa198;
+}
+
+.diff-line.is-add-file,
+.diff-line.is-remove-file {
+  font-weight: 620;
+}
+
+.diff-line.is-no-newline {
+  color: #e3b341;
+}
+
+

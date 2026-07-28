@@ -1,0 +1,317 @@
+.application-menu,
+.topbar-leading {
+  display: flex;
+  min-height: 0;
+  align-items: center;
+}
+
+.topbar-leading {
+  min-width: 0;
+  gap: 12px;
+}
+
+.application-menu {
+  flex: 0 0 auto;
+  gap: 3px;
+}
+
+.application-menu-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  align-content: center;
+  place-items: center;
+  gap: 3px;
+  padding: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--app-text-control);
+  cursor: pointer;
+}
+
+.application-menu-line {
+  display: block;
+  width: 16px;
+  height: 1px;
+  background: currentcolor;
+}
+
+.application-menu-button:hover {
+  background: var(--app-row-hover);
+  color: var(--app-text-control);
+}
+
+.application-menu-button:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: 2px;
+}
+
+.repository-picker {
+  display: flex;
+  width: 270px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 84px);
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.repository-picker-popover {
+  overflow: hidden;
+  padding: 0 !important;
+}
+
+.repository-picker-header {
+  display: grid;
+  gap: 7px;
+  padding: 10px 8px 8px;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.repository-picker-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.repository-picker-repositories {
+  min-height: 0;
+  padding: 6px;
+  overflow: hidden;
+}
+
+.repository-picker-repositories .n-spin-content {
+  min-width: 0;
+}
+
+.sidebar-heading {
+  color: var(--app-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.repository-grouping-select {
+  width: 102px;
+  flex: 0 0 auto;
+}
+
+.repository-add-button {
+  justify-content: flex-start;
+  gap: 5px;
+  font-weight: 650;
+}
+
+.sidebar-repository-list {
+  display: grid;
+  max-height: min(460px, calc(100vh - 228px));
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+}
+
+.sidebar-repository-group {
+  display: grid;
+  gap: 1px;
+}
+
+.sidebar-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 5px;
+  color: var(--app-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.sidebar-group-heading span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-group-heading span:last-child {
+  flex: 0 0 auto;
+  color: var(--app-text-tertiary);
+}
+
+.sidebar-repository-group-list {
+  display: grid;
+  gap: 0;
+}
+
+.sidebar-repository-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-repository {
+  display: flex;
+  width: auto;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  padding: 6px 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--app-text-control);
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-repository:hover {
+  background: var(--app-row-hover);
+  color: var(--app-text-heading);
+}
+
+.sidebar-repository.active {
+  background: var(--app-row-selected);
+  color: var(--app-accent-strong);
+  font-weight: 650;
+}
+
+.repository-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-empty {
+  display: block;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.topbar {
+  height: 44px;
+  flex: 0 0 44px;
+  background: var(--app-topbar);
+}
+
+.topbar-content {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 12px 0 8px;
+}
+
+.repository-topbar-context {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.repository-title-row,
+.topbar-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.repository-title-row {
+  gap: 7px;
+  overflow: hidden;
+}
+
+.topbar-actions {
+  flex: 0 0 auto;
+}
+
+.topbar .eyebrow {
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  letter-spacing: 0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text-heading);
+  font-size: 16px;
+  font-weight: 720;
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-switcher {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(360px, 42vw);
+  align-items: center;
+  gap: 5px;
+  margin: -3px -5px;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.repository-switcher .topbar-title {
+  flex: 0 1 auto;
+}
+
+.repository-switcher:hover {
+  background: var(--app-row-hover);
+}
+
+.repository-switcher:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: 2px;
+}
+
+.repository-switcher-caret {
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.repository-switcher[aria-expanded="true"] .repository-switcher-caret {
+  transform: rotate(180deg);
+}
+
+.sync-summary {
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+.remote-select {
+  width: 116px;
+}
+
+@media (width <= 1120px) {
+  .repository-grouping-select {
+    width: 90px;
+  }
+
+  .topbar-content {
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .remote-select {
+    width: 98px;
+  }
+}

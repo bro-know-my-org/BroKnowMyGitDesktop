@@ -1,0 +1,53 @@
+.repository-split-layout {
+  display: grid;
+  grid-template-columns:
+    minmax(240px, min(var(--repository-list-pane-width, 27.2%), calc(100% - 492px)))
+    12px
+    minmax(480px, 1fr);
+}
+
+.changes-grid {
+  gap: 0;
+}
+
+.repository-column-resizer {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.repository-column-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--app-divider);
+  content: "";
+  transition: width 120ms ease, background-color 120ms ease, transform 120ms ease;
+  transform: translateX(-50%);
+}
+
+.repository-column-resizer:hover::before,
+.repository-column-resizer:focus-visible::before,
+.is-resizing-repository-columns .repository-column-resizer::before {
+  width: 3px;
+  background: var(--app-focus);
+}
+
+.repository-column-resizer:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-focus-ring);
+}
+
+.is-resizing-repository-columns,
+.is-resizing-repository-columns * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.commit-card {
+  margin-top: 16px;
+}

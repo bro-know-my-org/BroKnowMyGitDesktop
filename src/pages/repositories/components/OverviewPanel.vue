@@ -54,3 +54,5 @@ export default defineComponent({
                 </n-card>
   </template>
 </template>
+
+<style src="./OverviewPanel.css"></style>
