@@ -1,11 +1,11 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { NAlert, NButton, NCard, NCheckbox, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText },
+  components: { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText },
   setup() {
     return useWorkspaceControllerContext();
   },
@@ -24,6 +24,23 @@ export default defineComponent({
           :options="colorModeOptions.map((option) => ({ label: option.label, value: option.key }))"
           @update:value="updateColorMode"
         />
+      </n-form-item>
+      <n-form-item :label="tr('主题色', 'Theme color')">
+        <n-space vertical class="theme-color-setting">
+          <n-color-picker
+            :value="themeColor"
+            :modes="['hex']"
+            show-alpha
+            :swatches="['#4B0082FF', '#6D28D9FF', '#2563EBFF', '#C026D3FF', '#DC2626FF', '#EA580CFF']"
+            @update:value="updateThemeColor"
+          />
+          <n-space justify="space-between" align="center">
+            <n-text depth="3" class="theme-color-hint">
+              {{ tr("Alpha 调整选中背景、边框和焦点光晕的强度；为保证可见，会保留最低强度。", "Alpha adjusts selected backgrounds, borders, and focus rings; a minimum intensity keeps them visible.") }}
+            </n-text>
+            <n-button size="small" quaternary @click="resetThemeColor">{{ tr("恢复默认", "Reset") }}</n-button>
+          </n-space>
+        </n-space>
       </n-form-item>
     </n-form>
     <template #action>

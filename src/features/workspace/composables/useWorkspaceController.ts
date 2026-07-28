@@ -2,7 +2,7 @@ import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "v
 import { NButton, useDialog, useMessage } from "naive-ui";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
-import { colorMode, setColorMode, type ColorMode } from "../../../shared/theme";
+import { colorMode, resetThemeColor, setColorMode, setThemeColor, themeColor, type ColorMode } from "../../../shared/theme";
 import {
   authenticationMethodLabel,
   authenticationStatusLabel,
@@ -585,6 +585,10 @@ function updateAppLocale(value: string | number): void {
 
 function updateColorMode(value: string | number): void {
   if (value === "system" || value === "light" || value === "dark") setColorMode(value as ColorMode);
+}
+
+function updateThemeColor(value: string | null): void {
+  if (value) setThemeColor(value);
 }
 
 function openRepositoryAction(value: string | number): void {
@@ -2782,6 +2786,8 @@ onBeforeUnmount(() => {
     clearLastError,
     updateAppLocale,
     updateColorMode,
+    updateThemeColor,
+    resetThemeColor,
     openRepositoryAction,
     handleDevtoolsShortcut,
     applySnapshot,
@@ -2889,6 +2895,7 @@ onBeforeUnmount(() => {
     tr,
     colorMode,
     setColorMode,
+    themeColor,
     authenticationMethodLabel,
     authenticationStatusLabel,
     endpointKindLabel,

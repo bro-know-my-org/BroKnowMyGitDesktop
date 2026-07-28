@@ -102,7 +102,7 @@ export default defineComponent({
                           <span class="history-commit-primary">
                             <span class="history-commit-summary" :title="commit.summary || '—'">{{ commit.summary || '—' }}</span>
                             <span v-if="commit.tags.length || commit.tagsTruncated || commit.pushed === false" class="history-commit-tags">
-                              <n-tag v-for="tag in commit.tags" :key="tag" size="tiny" type="success" :bordered="false">{{ tag }}</n-tag>
+                              <n-tag v-for="tag in commit.tags" :key="tag" size="tiny" type="primary" :bordered="false">{{ tag }}</n-tag>
                               <n-tag v-if="commit.tagsTruncated" size="tiny" type="warning" :bordered="false">{{ tr("标签未完整加载", "Tags incomplete") }}</n-tag>
                               <n-tag v-if="commit.pushed === false" size="tiny" type="warning" :bordered="false">{{ tr("未推送", "Not pushed") }}</n-tag>
                             </span>

@@ -88,7 +88,7 @@ const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
     title: tr("状态", "Status"),
     key: "isCurrent",
     width: 90,
-    render: (branch) => (branch.isCurrent ? h(NTag, { size: "small", type: "success" }, { default: () => tr("当前", "Current") }) : ""),
+    render: (branch) => (branch.isCurrent ? h(NTag, { size: "small", type: "primary" }, { default: () => tr("当前", "Current") }) : ""),
   },
   {
     title: tr("操作", "Actions"),
@@ -161,7 +161,7 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
         return h(NTag, { size: "small", type: "warning" }, { default: () => tr("切换时创建", "Create on switch") });
       }
       if (localBranch.isCurrent) {
-        return h(NTag, { size: "small", type: "success" }, { default: () => tr("当前分支", "Current branch") });
+        return h(NTag, { size: "small", type: "primary" }, { default: () => tr("当前分支", "Current branch") });
       }
       return h(
         NTag,
@@ -220,7 +220,7 @@ const worktreeColumns = computed<DataTableColumns<WorktreeInfo>>(() => [
     width: 190,
     render: (worktree) =>
       h("div", { class: "table-action-group" }, [
-        ...(worktree.isMain ? [h(NTag, { size: "small", type: "success" }, { default: () => tr("主工作树", "Main") })] : []),
+        ...(worktree.isMain ? [h(NTag, { size: "small", type: "primary" }, { default: () => tr("主工作树", "Main") })] : []),
         ...(worktree.isDetached ? [h(NTag, { size: "small", type: "warning" }, { default: () => tr("分离", "Detached") })] : []),
         ...(worktree.isLocked ? [h(NTag, { size: "small", type: "warning" }, { default: () => tr("已锁定", "Locked") })] : []),
         ...(worktree.isPrunable ? [h(NTag, { size: "small", type: "error" }, { default: () => tr("可清理", "Prunable") })] : []),
