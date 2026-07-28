@@ -4,11 +4,13 @@
   "version": "0.1.0",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "check": "pnpm lint:css && pnpm build",
+    "lint:css": "stylelint \"src/**/*.{css,vue}\"",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -20,6 +22,9 @@
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^5.2.1",
+    "stylelint": "^17.14.1",
+    "stylelint-config-recommended-vue": "^1.6.1",
+    "stylelint-config-standard": "^40.0.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vue-tsc": "^2.1.10"
