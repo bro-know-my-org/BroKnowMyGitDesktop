@@ -1,6 +1,7 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
 import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag } from "naive-ui";
+import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
 import type { CommitSummary } from "../../../shared/types/domain";
 
@@ -65,6 +66,7 @@ export default defineComponent({
 
     return {
       ...workspace,
+      ...useRepositoryPanelSplit(),
       commitContextMenuOpen,
       commitContextMenuX,
       commitContextMenuY,
@@ -78,7 +80,7 @@ export default defineComponent({
 
 <template>
   <template v-if="snapshot">
-<div class="changes-grid">
+<div class="changes-grid repository-split-layout" :style="repositoryPanelStyle">
                   <n-card size="small" :title="tr('提交历史', 'Commit history')">
                     <template #header-extra>
                       <n-space size="small">
@@ -127,6 +129,22 @@ export default defineComponent({
                       <n-empty v-if="!commits.length && !historyLoading" :description="tr('这个分支还没有提交。', 'This branch has no commits yet.')" />
                     </n-spin>
                   </n-card>
+                  <div
+                    ref="repositoryPanelResizer"
+                    class="repository-column-resizer"
+                    role="separator"
+                    tabindex="0"
+                    aria-orientation="vertical"
+                    :aria-label="tr('调整历史列表宽度', 'Resize history list')"
+                    :aria-valuemin="240"
+                    :aria-valuenow="repositoryPanelAriaValue"
+                    :aria-valuemax="repositoryPanelAriaMax"
+                    :aria-valuetext="tr('{width} 像素', '{width} pixels', { width: repositoryPanelAriaValue })"
+                    :title="tr('拖动调整宽度，双击恢复默认值', 'Drag to resize; double-click to restore the default')"
+                    @pointerdown="startRepositoryPanelResize"
+                    @keydown="resizeRepositoryPanelWithKeyboard"
+                    @dblclick="resetRememberedRepositoryPanelWidth"
+                  />
                   <n-card size="small" :title="selectedCommit ? `${selectedCommit.shortSha} · ${selectedCommit.summary}` : tr('提交改动', 'Commit changes')" class="diff-card">
                     <template #header-extra>
                       <n-space v-if="selectedCommit" size="small">

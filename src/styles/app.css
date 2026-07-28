@@ -122,37 +122,18 @@ button {
   gap: 3px;
 }
 
-.header-brand-button,
 .application-menu-button {
   display: grid;
   width: 30px;
   height: 30px;
+  align-content: center;
   place-items: center;
+  gap: 3px;
+  padding: 6px;
   border: 0;
   background: transparent;
   color: var(--app-text-control);
   cursor: pointer;
-}
-
-.brand-mark {
-  display: grid;
-  width: 22px;
-  height: 22px;
-  place-items: center;
-  border-radius: 0;
-  background: linear-gradient(135deg, #24a878, #2976d2);
-  color: white;
-  font-size: 9px;
-  font-weight: 760;
-  letter-spacing: -0.04em;
-  box-shadow: 0 2px 6px rgba(24, 124, 91, 0.18);
-}
-
-.application-menu-button {
-  display: grid;
-  align-content: center;
-  gap: 3px;
-  padding: 6px;
 }
 
 .application-menu-line {
@@ -162,13 +143,11 @@ button {
   background: currentColor;
 }
 
-.header-brand-button:hover,
 .application-menu-button:hover {
   background: var(--app-row-hover);
   color: var(--app-text-control);
 }
 
-.header-brand-button:focus-visible,
 .application-menu-button:focus-visible {
   outline: 2px solid var(--app-focus);
   outline-offset: 2px;
@@ -586,10 +565,54 @@ h1 {
   margin-top: 16px;
 }
 
-.changes-grid {
+.repository-split-layout {
   display: grid;
-  grid-template-columns: minmax(286px, 27.2%) minmax(480px, 1fr);
-  gap: 16px;
+  grid-template-columns:
+    minmax(240px, min(var(--repository-list-pane-width, 27.2%), calc(100% - 492px)))
+    12px
+    minmax(480px, 1fr);
+}
+
+.changes-grid {
+  gap: 0;
+}
+
+.repository-column-resizer {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.repository-column-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--app-divider);
+  content: "";
+  transition: width 120ms ease, background-color 120ms ease, transform 120ms ease;
+  transform: translateX(-50%);
+}
+
+.repository-column-resizer:hover::before,
+.repository-column-resizer:focus-visible::before,
+.is-resizing-repository-columns .repository-column-resizer::before {
+  width: 3px;
+  background: var(--app-focus);
+}
+
+.repository-column-resizer:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--app-focus-ring);
+}
+
+.is-resizing-repository-columns,
+.is-resizing-repository-columns * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .history-commit-list {
@@ -689,8 +712,6 @@ h1 {
 
 .changes-workspace {
   box-sizing: border-box;
-  display: grid;
-  grid-template-columns: minmax(286px, 27.2%) minmax(480px, 1fr);
   align-items: stretch;
   height: 100%;
   min-height: 420px;
@@ -743,7 +764,6 @@ h1 {
   min-height: 0;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0;
-  border-right: 1px solid var(--app-divider);
   overflow: hidden;
 }
 
@@ -767,9 +787,9 @@ h1 {
 
 .changes-file-card .n-card-header,
 .changes-diff-card .n-card-header {
-  min-height: 48px;
-  padding-top: 12px;
-  padding-bottom: 12px;
+  min-height: 40px;
+  padding-top: 7px;
+  padding-bottom: 7px;
   border-bottom: 1px solid var(--app-divider);
 }
 
@@ -785,8 +805,12 @@ h1 {
 .changes-bulk-control {
   flex: 0 0 auto;
   margin: 0;
-  padding: 8px 10px;
+  padding: 3px 7px;
   border-bottom: 1px solid var(--app-divider);
+}
+
+.changes-bulk-control .n-checkbox__label {
+  font-size: 12px;
 }
 
 .changes-file-list {
@@ -795,7 +819,7 @@ h1 {
   overflow: auto;
   overscroll-behavior: contain;
   margin: 0;
-  padding: 4px 6px 6px;
+  padding: 1px 3px 3px;
 }
 
 .changes-file-card .n-empty {
@@ -804,10 +828,10 @@ h1 {
 
 .change-file-row {
   display: flex;
-  min-height: 48px;
+  min-height: 0;
   align-items: center;
-  gap: 9px;
-  padding: 7px 8px;
+  gap: 6px;
+  padding: 2px 5px;
   border: 1px solid transparent;
   border-radius: 0;
   cursor: pointer;
@@ -830,7 +854,7 @@ h1 {
 
 .change-file-checkbox {
   display: grid;
-  flex: 0 0 20px;
+  flex: 0 0 18px;
   place-items: center;
 }
 
@@ -838,14 +862,15 @@ h1 {
   display: grid;
   min-width: 0;
   flex: 1;
-  gap: 2px;
+  gap: 0;
 }
 
 .change-file-path {
   overflow: hidden;
   color: var(--app-text-body);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 620;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -853,7 +878,8 @@ h1 {
 .change-file-state {
   overflow: hidden;
   color: var(--app-text-tertiary);
-  font-size: 11px;
+  font-size: 10px;
+  line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -892,17 +918,25 @@ h1 {
   padding-top: 0;
 }
 
-.changes-commit-card .n-form-item {
-  margin-bottom: 10px;
+.commit-form {
+  display: grid;
+  margin-bottom: 7px;
 }
 
-.changes-commit-card .n-form-item:last-child {
+.commit-message-label {
   margin-bottom: 4px;
+  color: var(--app-text-body);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.commit-amend-checkbox {
+  margin-top: 4px;
 }
 
 .commit-selection-summary {
   display: block;
-  margin: -1px 0 12px;
+  margin: 0 0 9px;
   font-size: 12px;
   line-height: 1.5;
 }
@@ -1031,15 +1065,138 @@ h1 {
 }
 
 .settings-dialog-card {
-  width: min(460px, calc(100vw - 44px));
+  width: min(720px, calc(100vw - 44px));
+}
+
+.settings-dialog-card .n-card__content {
+  padding: 0 !important;
+}
+
+.settings-tabs {
+  min-height: 390px;
+}
+
+.settings-tabs > .n-tabs-nav {
+  width: 150px;
+  padding: 14px 8px;
+  border-right: 1px solid var(--app-divider);
+}
+
+.settings-tabs .n-tabs-tab {
+  justify-content: flex-start;
+  padding: 9px 12px !important;
+}
+
+.settings-tabs > .n-tabs-pane-wrapper {
+  min-width: 0;
+}
+
+.settings-section,
+.settings-about {
+  box-sizing: border-box;
+  padding: 24px 28px;
+}
+
+.settings-section-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 22px;
+}
+
+.settings-section-heading strong,
+.settings-about-heading strong {
+  color: var(--app-text-strong);
+  font-size: 16px;
+}
+
+.settings-form {
+  max-width: 410px;
+}
+
+.settings-form .n-form-item:last-child {
+  margin-bottom: 0;
 }
 
 .theme-color-setting {
   width: 100%;
 }
 
+.theme-color-description {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .theme-color-hint {
+  max-width: 330px;
   line-height: 1.45;
+}
+
+.settings-about {
+  display: flex;
+  max-width: 500px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.about-brand-mark {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  margin-bottom: 16px;
+  place-items: center;
+  background: linear-gradient(135deg, #24a878, #2976d2);
+  color: white;
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.04em;
+  box-shadow: 0 5px 16px rgba(24, 124, 91, 0.2);
+}
+
+.settings-about-heading {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-about p {
+  margin: 22px 0;
+  color: var(--app-text-body);
+  line-height: 1.7;
+}
+
+.settings-about-details {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-divider);
+  color: var(--app-text-tertiary);
+  font-size: 12px;
+}
+
+.settings-about-details strong {
+  color: var(--app-text-body);
+  font-weight: 600;
+}
+
+@media (max-width: 600px) {
+  .settings-tabs > .n-tabs-nav {
+    width: auto;
+    padding: 6px 10px 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--app-divider);
+  }
+
+  .settings-tabs .n-tabs-tab {
+    justify-content: center;
+  }
+
+  .settings-section,
+  .settings-about {
+    padding: 18px;
+  }
 }
 
 .token-alert {
@@ -1072,6 +1229,10 @@ h1 {
 
   .changes-grid {
     grid-template-columns: 1fr;
+  }
+
+  .repository-column-resizer {
+    display: none;
   }
 
   .changes-workspace {

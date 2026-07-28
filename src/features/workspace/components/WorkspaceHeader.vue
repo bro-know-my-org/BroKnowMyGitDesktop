@@ -90,9 +90,6 @@ export default defineComponent({
         <div v-if="section === 'repositories'" class="topbar-content repository-topbar-content">
           <div class="topbar-leading">
             <div class="application-menu">
-              <button class="header-brand-button" type="button" :title="tr('BroKnowMyGit 首页', 'BroKnowMyGit home')" @click="updateSection('repositories')">
-                <span class="brand-mark">BK</span>
-              </button>
               <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
                 <button class="application-menu-button" type="button" :aria-label="tr('打开应用菜单', 'Open application menu')" :title="tr('打开应用菜单', 'Open application menu')">
                   <span v-for="line in 4" :key="line" class="application-menu-line" />
@@ -202,9 +199,6 @@ export default defineComponent({
         <div v-else class="topbar-content">
           <div class="topbar-leading">
             <div class="application-menu">
-              <button class="header-brand-button" type="button" :title="tr('BroKnowMyGit 首页', 'BroKnowMyGit home')" @click="updateSection('repositories')">
-                <span class="brand-mark">BK</span>
-              </button>
               <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
                 <button class="application-menu-button" type="button" :aria-label="tr('打开应用菜单', 'Open application menu')" :title="tr('打开应用菜单', 'Open application menu')">
                   <span v-for="line in 4" :key="line" class="application-menu-line" />

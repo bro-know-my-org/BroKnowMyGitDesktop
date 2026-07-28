@@ -21,6 +21,7 @@ export function createRepositoryPresentation(tr: Translate) {
     if (isConflictedEntry(entry)) return tr("有冲突", "Conflicted");
     if (entry.indexStatus && entry.worktreeStatus) return tr("部分已暂存", "Partially staged");
     if (entry.indexStatus) return tr("已暂存 · {status}", "Staged · {status}", { status: changeKindLabel(entry.indexStatus) });
+    if (entry.worktreeStatus === "M") return "";
     return changeKindLabel(entry.worktreeStatus);
   }
 

@@ -1,13 +1,17 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NEmpty, NForm, NFormItem, NInput, NSpace, NSpin, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText } from "naive-ui";
+import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
 
 export default defineComponent({
   name: "RepositoryChangesPanel",
-  components: { NAlert, NButton, NCard, NCheckbox, NEmpty, NForm, NFormItem, NInput, NSpace, NSpin, NText },
+  components: { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText },
   setup() {
-    return useWorkspaceControllerContext();
+    return {
+      ...useWorkspaceControllerContext(),
+      ...useRepositoryPanelSplit(),
+    };
   },
 });
 </script>
@@ -17,7 +21,7 @@ export default defineComponent({
 <n-alert v-if="isUnbornRepository" type="info" :bordered="false" class="unborn-repository-alert">
                   {{ tr("这是一个新仓库。先勾选要提交的文件、填写提交说明，再创建首个提交。", "This is a new repository. Include the files you want, add a commit summary, then create the first commit.") }}
                 </n-alert>
-                <div class="changes-workspace">
+                <div class="changes-workspace repository-split-layout" :style="repositoryPanelStyle">
                   <div class="changes-list-pane">
                     <n-card size="small" :title="tr('改动文件', 'Changed files')" class="changes-file-card">
                       <template #header-extra>
@@ -28,6 +32,7 @@ export default defineComponent({
                       </template>
                       <div v-if="snapshot.status.entries.length" class="changes-bulk-control">
                         <n-checkbox
+                          size="small"
                           :checked="allChangesIncluded"
                           :indeterminate="someChangesIncluded"
                           :disabled="mutationBusy"
@@ -48,6 +53,7 @@ export default defineComponent({
                         >
                           <span class="change-file-checkbox" @click.stop>
                             <n-checkbox
+                              size="small"
                               :checked="isChangeFullyIncluded(entry)"
                               :indeterminate="isChangePartiallyIncluded(entry)"
                               :disabled="mutationBusy"
@@ -57,7 +63,7 @@ export default defineComponent({
                           </span>
                           <span class="change-file-copy">
                             <span class="change-file-path" :title="entry.path">{{ entry.path }}</span>
-                            <span class="change-file-state">{{ changeStatusLabel(entry) }}</span>
+                            <span v-if="changeStatusLabel(entry)" class="change-file-state">{{ changeStatusLabel(entry) }}</span>
                           </span>
                           <span class="change-file-status" :class="`is-${changeStatusTagType(entry)}`" aria-hidden="true" />
                         </div>
@@ -66,16 +72,38 @@ export default defineComponent({
                     </n-card>
 
                     <n-card size="small" :title="tr('创建提交', 'Create commit')" class="commit-card changes-commit-card">
-                      <n-form label-placement="top">
-                        <n-form-item :label="tr('提交说明', 'Commit summary')">
-                          <n-input v-model:value="commitMessage" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :placeholder="tr('简洁说明这次改动', 'Briefly describe this change')" />
-                        </n-form-item>
-                        <n-form-item v-if="canAmendLatestCommit"><n-checkbox :checked="amendLastCommit" @update:checked="setAmendLastCommit">{{ tr("修改最近一次提交（amend）", "Amend the latest commit") }}</n-checkbox></n-form-item>
-                      </n-form>
+                      <div class="commit-form">
+                        <label for="commit-message" class="commit-message-label">{{ tr('提交说明', 'Commit message') }}</label>
+                        <n-input
+                          v-model:value="commitMessage"
+                          type="textarea"
+                          :autosize="{ minRows: 3, maxRows: 5 }"
+                          :input-props="{ id: 'commit-message' }"
+                          :placeholder="tr('第一行写标题；需要时空一行补充正文', 'Write the title on the first line; add a body after a blank line if needed')"
+                        />
+                        <n-checkbox v-if="canAmendLatestCommit" class="commit-amend-checkbox" :checked="amendLastCommit" @update:checked="setAmendLastCommit">{{ tr("修改最近一次提交（amend）", "Amend the latest commit") }}</n-checkbox>
+                      </div>
                       <n-text depth="3" class="commit-selection-summary">{{ commitSelectionSummary }}</n-text>
                       <n-button block type="primary" class="commit-primary-action" :loading="mutationBusy" :disabled="!stagedCount && !amendLastCommit" @click="commitChanges">{{ commitActionLabel }}</n-button>
                     </n-card>
                   </div>
+
+                  <div
+                    ref="repositoryPanelResizer"
+                    class="repository-column-resizer"
+                    role="separator"
+                    tabindex="0"
+                    aria-orientation="vertical"
+                    :aria-label="tr('调整文件列表宽度', 'Resize file list')"
+                    :aria-valuemin="240"
+                    :aria-valuenow="repositoryPanelAriaValue"
+                    :aria-valuemax="repositoryPanelAriaMax"
+                    :aria-valuetext="tr('{width} 像素', '{width} pixels', { width: repositoryPanelAriaValue })"
+                    :title="tr('拖动调整宽度，双击恢复默认值', 'Drag to resize; double-click to restore the default')"
+                    @pointerdown="startRepositoryPanelResize"
+                    @keydown="resizeRepositoryPanelWithKeyboard"
+                    @dblclick="resetRememberedRepositoryPanelWidth"
+                  />
 
                   <n-card size="small" :title="selectedChange ? selectedChange.path : tr('差异预览', 'Diff preview')" class="diff-card changes-diff-card">
                     <template #header-extra>

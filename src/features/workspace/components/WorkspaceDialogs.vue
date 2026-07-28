@@ -1,48 +1,87 @@
 <script lang="ts">
-import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText } from "naive-ui";
+import { defineComponent, onBeforeUnmount, ref } from "vue";
+import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
+import packageMetadata from "../../../../package.json";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NText },
+  components: { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
-    return useWorkspaceControllerContext();
+    const narrowSettingsViewport = typeof window === "undefined" || typeof window.matchMedia !== "function"
+      ? null
+      : window.matchMedia("(max-width: 600px)");
+    const settingsTabsPlacement = ref<"left" | "top">(narrowSettingsViewport?.matches ? "top" : "left");
+    function updateSettingsTabsPlacement(event: MediaQueryListEvent): void {
+      settingsTabsPlacement.value = event.matches ? "top" : "left";
+    }
+    narrowSettingsViewport?.addEventListener("change", updateSettingsTabsPlacement);
+    onBeforeUnmount(() => narrowSettingsViewport?.removeEventListener("change", updateSettingsTabsPlacement));
+    return {
+      ...useWorkspaceControllerContext(),
+      appVersion: packageMetadata.version,
+      settingsSection: ref<"general" | "about">("general"),
+      settingsTabsPlacement,
+    };
   },
 });
 </script>
 
 <template>
   <n-modal v-model:show="settingsModalShown" preset="card" :title="tr('设置', 'Settings')" class="settings-dialog-card">
-    <n-form label-placement="left" label-width="100">
-      <n-form-item :label="tr('界面语言', 'Language')">
-        <n-select :value="appLocale" :options="localeOptions" @update:value="updateAppLocale" />
-      </n-form-item>
-      <n-form-item :label="tr('外观主题', 'Appearance')">
-        <n-select
-          :value="colorMode"
-          :options="colorModeOptions.map((option) => ({ label: option.label, value: option.key }))"
-          @update:value="updateColorMode"
-        />
-      </n-form-item>
-      <n-form-item :label="tr('主题色', 'Theme color')">
-        <n-space vertical class="theme-color-setting">
-          <n-color-picker
-            :value="themeColor"
-            :modes="['hex']"
-            show-alpha
-            :swatches="['#4B0082FF', '#6D28D9FF', '#2563EBFF', '#C026D3FF', '#DC2626FF', '#EA580CFF']"
-            @update:value="updateThemeColor"
-          />
-          <n-space justify="space-between" align="center">
-            <n-text depth="3" class="theme-color-hint">
-              {{ tr("Alpha 调整选中背景、边框和焦点光晕的强度；为保证可见，会保留最低强度。", "Alpha adjusts selected backgrounds, borders, and focus rings; a minimum intensity keeps them visible.") }}
-            </n-text>
-            <n-button size="small" quaternary @click="resetThemeColor">{{ tr("恢复默认", "Reset") }}</n-button>
-          </n-space>
-        </n-space>
-      </n-form-item>
-    </n-form>
+    <n-tabs v-model:value="settingsSection" type="line" :placement="settingsTabsPlacement" class="settings-tabs">
+      <n-tab-pane name="general" :tab="tr('通用', 'General')">
+        <section class="settings-section">
+          <div class="settings-section-heading">
+            <strong>{{ tr("外观与语言", "Appearance & language") }}</strong>
+            <n-text depth="3">{{ tr("这些选项会自动保存在本机。", "These options are saved automatically on this device.") }}</n-text>
+          </div>
+          <n-form label-placement="top" class="settings-form">
+            <n-form-item :label="tr('界面语言', 'Language')">
+              <n-select :value="appLocale" :options="localeOptions" @update:value="updateAppLocale" />
+            </n-form-item>
+            <n-form-item :label="tr('外观主题', 'Appearance')">
+              <n-select
+                :value="colorMode"
+                :options="colorModeOptions.map((option) => ({ label: option.label, value: option.key }))"
+                @update:value="updateColorMode"
+              />
+            </n-form-item>
+            <n-form-item :label="tr('主题色', 'Theme color')">
+              <n-space vertical class="theme-color-setting">
+                <n-color-picker
+                  :value="themeColor"
+                  :modes="['hex']"
+                  show-alpha
+                  :swatches="['#4B0082FF', '#6D28D9FF', '#2563EBFF', '#C026D3FF', '#DC2626FF', '#EA580CFF']"
+                  @update:value="updateThemeColor"
+                />
+                <div class="theme-color-description">
+                  <n-text depth="3" class="theme-color-hint">
+                    {{ tr("透明度会影响选中背景、边框和焦点光晕的强度。", "Alpha controls the strength of selected backgrounds, borders, and focus rings.") }}
+                  </n-text>
+                  <n-button size="small" quaternary @click="resetThemeColor">{{ tr("恢复默认", "Reset") }}</n-button>
+                </div>
+              </n-space>
+            </n-form-item>
+          </n-form>
+        </section>
+      </n-tab-pane>
+      <n-tab-pane name="about" :tab="tr('关于', 'About')">
+        <section class="settings-about">
+          <div class="about-brand-mark" aria-hidden="true">BK</div>
+          <div class="settings-about-heading">
+            <strong>BroKnowMyGitDesktop</strong>
+            <n-text depth="3">{{ tr("版本 {version}", "Version {version}", { version: appVersion }) }}</n-text>
+          </div>
+          <p>{{ tr("轻量的多账号 Git 与代码托管桌面客户端。以本地 Git 为核心，并提供 GitHub、GitLab、Gitee 与通用 Git 服务集成。", "A lightweight multi-account desktop client for Git and code hosting. It keeps local Git at the center, with integrations for GitHub, GitLab, Gitee, and generic Git services.") }}</p>
+          <div class="settings-about-details">
+            <span>{{ tr("技术栈", "Built with") }}</span>
+            <strong>Tauri 2 · Vue 3 · TypeScript · Rust</strong>
+          </div>
+        </section>
+      </n-tab-pane>
+    </n-tabs>
     <template #action>
       <n-space justify="end">
         <n-button type="primary" @click="settingsModalShown = false">{{ tr("完成", "Done") }}</n-button>
