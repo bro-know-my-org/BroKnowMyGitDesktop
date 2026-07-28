@@ -13,6 +13,7 @@ import type {
   CreateBranchInput,
   ExternalEditorConfig,
   GitOperationKind,
+  GitHubPublishOwner,
   GitStatusEntry,
   InitRepositoryInput,
   LfsStatus,
@@ -427,6 +428,25 @@ let browserAccounts: AccountProfile[] = [
     isDefaultCandidate: false,
   },
 ];
+
+function browserGitHubPublishOwnersFor(account: AccountProfile): GitHubPublishOwner[] {
+  const personalOwner: GitHubPublishOwner = {
+    login: account.login,
+    name: account.displayName,
+    kind: "user",
+    canCreateRepositories: true,
+  };
+  if (account.id !== "github-cli") return [personalOwner];
+  return [
+    personalOwner,
+    {
+      login: "broknowmyorg",
+      name: "BroKnowMy Organization",
+      kind: "organization",
+      canCreateRepositories: true,
+    },
+  ];
+}
 let browserEndpoints = copy(builtinEndpoints);
 
 function copy<T>(value: T): T {
@@ -1862,6 +1882,20 @@ export const api = {
     });
   },
 
+  listGitHubPublishOwners(endpointId: string, accountProfileId: string): Promise<GitHubPublishOwner[]> {
+    return request("list_github_publish_owners", { endpointId, accountProfileId }, () => {
+      const endpoint = browserEndpoints.find((item) => item.id === endpointId);
+      if (!endpoint || endpoint.kind !== "gitHub") {
+        throw { code: "adapter_endpoint_mismatch", message: "只有 GitHub Endpoint 支持查询发布所有者。" } satisfies AppError;
+      }
+      const account = requireBrowserAccountForEndpoint(accountProfileId, endpointId);
+      if (account.authMethod !== "ghCli") {
+        throw { code: "github_publish_auth_unsupported", message: "查询 GitHub 发布所有者需要匹配的 gh CLI 账号。" } satisfies AppError;
+      }
+      return copy(browserGitHubPublishOwnersFor(account));
+    });
+  },
+
   listPullRequests(repositoryPath: string, remoteName: string): Promise<PullRequestSummary[]> {
     return request("list_pull_requests", { repositoryPath, remoteName }, () => {
       requireBrowserGitHubRemote(repositoryPath, remoteName);
@@ -1898,15 +1932,24 @@ export const api = {
     repositoryPath: string,
     endpointId: string,
     accountProfileId: string,
+    ownerLogin: string,
     name: string,
     isPrivate: boolean,
   ): Promise<RepositorySnapshot> {
     return request(
       "publish_github_repository",
-      { repositoryPath, endpointId, accountProfileId, name, isPrivate },
+      { repositoryPath, endpointId, accountProfileId, ownerLogin, name, isPrivate },
       () => {
         requireBrowserSnapshot(repositoryPath);
-        if (!name.trim() || name.trim().startsWith("-")) {
+        const repositoryName = name.trim();
+        if (
+          !repositoryName
+          || repositoryName.length > 100
+          || repositoryName.startsWith("-")
+          || repositoryName === "."
+          || repositoryName === ".."
+          || !/^[A-Za-z0-9._-]+$/u.test(repositoryName)
+        ) {
           throw { code: "invalid_repository_name", message: "GitHub 仓库名称无效。" } satisfies AppError;
         }
         if (browserSnapshot.remotes.length) {
@@ -1929,8 +1972,14 @@ export const api = {
         if (account.status !== "available" && account.status !== "valid") {
           throw { code: "cli_auth_unavailable", message: "当前 gh 登录与所选账号不匹配或已失效。" } satisfies AppError;
         }
+        const owner = browserGitHubPublishOwnersFor(account).find(
+          (entry) => entry.login.toLowerCase() === ownerLogin.toLowerCase() && entry.canCreateRepositories,
+        );
+        if (!owner) {
+          throw { code: "github_organization_publish_forbidden", message: "所选所有者不允许当前账号创建仓库。" } satisfies AppError;
+        }
         return updateMockSnapshot((snapshot) => {
-          const remote = browserRemoteProfile("origin", "https://" + endpoint.gitHost + "/" + account.login + "/" + name.trim() + ".git");
+          const remote = browserRemoteProfile("origin", "https://" + endpoint.gitHost + "/" + owner.login + "/" + repositoryName + ".git");
           snapshot.remotes.push(remote);
           snapshot.bindings.push({
             repositoryPath: snapshot.repository.path,

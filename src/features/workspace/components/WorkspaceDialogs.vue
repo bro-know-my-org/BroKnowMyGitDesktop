@@ -278,15 +278,24 @@ export default defineComponent({
   </n-modal>
 
   <n-modal v-model:show="publishModalShown" preset="card" :title="tr('发布到 GitHub', 'Publish to GitHub')" class="dialog-card" :mask-closable="!mutationBusy">
-    <n-alert type="warning" :bordered="false" class="token-alert">{{ tr("此操作会通过所选 gh CLI 身份在 GitHub 创建仓库、添加 origin，并推送当前分支。不会切换全局 gh 活跃账号。", "This creates a GitHub repository through the selected gh CLI identity, adds origin, and pushes the current branch. It never switches the global active gh account.") }}</n-alert>
+    <n-alert type="warning" :bordered="false" class="token-alert">{{ tr("此操作会固定使用所选 gh CLI 身份在 GitHub 创建仓库、添加 origin，并推送当前分支。不会切换全局 gh 活跃账号；为避免认证令牌被仓库 hook 读取，本次发布推送不会执行 Git hooks。", "This pins the selected gh CLI identity to create the repository, add origin, and push the current branch. It never switches the global active gh account. Git hooks are disabled for this publish push so repository hooks cannot read the authentication token.") }}</n-alert>
     <n-form label-placement="top">
       <n-form-item :label="tr('GitHub Endpoint', 'GitHub endpoint')"><n-select v-model:value="publishForm.endpointId" :options="publishEndpoints.map((endpoint) => ({ label: endpoint.displayName, value: endpoint.id }))" /></n-form-item>
       <n-form-item :label="tr('发布所用 gh 账号', 'gh account used to publish')"><n-select v-model:value="publishForm.accountId" :options="publishAccountOptions" :placeholder="tr('选择已验证的 gh 账号', 'Select a verified gh account')" /></n-form-item>
-      <n-form-item :label="tr('仓库名称', 'Repository name')"><n-input v-model:value="publishForm.name" placeholder="desktop-client 或 owner/desktop-client" /></n-form-item>
+      <n-form-item :label="tr('仓库所有者', 'Repository owner')">
+        <n-select v-model:value="publishForm.ownerLogin" :options="publishOwnerOptions" :loading="publishOwnersLoading" :placeholder="tr('选择个人账号或组织', 'Select a personal account or organization')" />
+      </n-form-item>
+      <n-form-item :label="tr('仓库名称', 'Repository name')"><n-input v-model:value="publishForm.name" placeholder="desktop-client" /></n-form-item>
       <n-form-item><n-checkbox v-model:checked="publishForm.isPrivate">{{ tr("创建私有仓库", "Create a private repository") }}</n-checkbox></n-form-item>
     </n-form>
     <n-alert v-if="!publishAccountOptions.length" type="error" :bordered="false">{{ tr("没有可用的 gh CLI 账号。请先在“账号与认证”中导入已登录的 gh 身份。", "No usable gh CLI account is available. Import a signed-in gh identity from Accounts & authentication first.") }}</n-alert>
-    <template #action><n-space justify="end"><n-button @click="publishModalShown = false">{{ tr("取消", "Cancel") }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="!publishAccountOptions.length" @click="publishGitHubRepository">{{ tr("创建并发布", "Create and publish") }}</n-button></n-space></template>
+    <n-alert v-else-if="publishOwnersError" type="warning" :bordered="false">
+      <n-space vertical size="small">
+        <span>{{ publishOwnersError }} {{ tr("请重新获取成功后再发布。", "Reload the owners successfully before publishing.") }}</span>
+        <n-button size="tiny" tertiary :loading="publishOwnersLoading" @click="loadPublishOwners">{{ tr("重新获取组织", "Reload organizations") }}</n-button>
+      </n-space>
+    </n-alert>
+    <template #action><n-space justify="end"><n-button @click="publishModalShown = false">{{ tr("取消", "Cancel") }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="!publishAccountOptions.length || !canPublishToSelectedOwner" @click="publishGitHubRepository">{{ tr("创建并发布", "Create and publish") }}</n-button></n-space></template>
   </n-modal>
 
   <n-modal v-model:show="squashModalShown" preset="card" :title="tr('压缩最近提交', 'Squash recent commits')" class="dialog-card" :mask-closable="!mutationBusy">

@@ -93,6 +93,7 @@ pub fn run() {
             commands::get_codehost_repository_info,
             commands::list_pull_requests,
             commands::create_pull_request,
+            commands::list_github_publish_owners,
             commands::publish_github_repository,
         ])
         .run(tauri::generate_context!());

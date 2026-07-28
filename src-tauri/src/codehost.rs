@@ -77,6 +77,22 @@ pub struct PullRequestSummary {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubPublishOwner {
+    pub login: String,
+    pub name: Option<String>,
+    pub kind: GitHubPublishOwnerKind,
+    pub can_create_repositories: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum GitHubPublishOwnerKind {
+    User,
+    Organization,
+}
+
 /// User-authored fields for a new pull request. The backend validates these
 /// before passing them as JSON on stdin to the GitHub CLI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

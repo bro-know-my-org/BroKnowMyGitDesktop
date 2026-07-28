@@ -2,6 +2,49 @@ use super::support::*;
 use super::*;
 
 #[tauri::command]
+pub async fn list_github_publish_owners(
+    endpoint_id: String,
+    account_profile_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<GitHubPublishOwner>, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _account_operation_lease =
+            state.acquire_account_operation_lease(&account_profile_id)?;
+        let store = state.snapshot()?;
+        let endpoint = store
+            .endpoint(&endpoint_id)
+            .ok_or_else(|| AppError::new("endpoint_not_found", "找不到该代码托管 Endpoint。"))?;
+        if endpoint.kind != CodeHostKind::GitHub {
+            return Err(AppError::new(
+                "adapter_endpoint_mismatch",
+                "只有 GitHub Endpoint 支持查询发布所有者。",
+            ));
+        }
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::new("account_not_found", "找不到发布所选的账号。"))?;
+        if account.endpoint_id != endpoint.id || account.auth_method != AuthenticationMethod::GhCli
+        {
+            return Err(AppError::new(
+                "github_publish_auth_unsupported",
+                "查询 GitHub 发布所有者需要与 Endpoint 匹配的 gh CLI 账号。",
+            ));
+        }
+        GitHubAdapter.list_publish_owners_until(
+            &endpoint,
+            &account.login,
+            GitHubAdapter::operation_deadline(),
+        )
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "GitHub 后台任务未能完成。"))?
+}
+
+#[tauri::command]
 pub async fn get_codehost_repository_info(
     repository_path: String,
     remote_name: String,
@@ -61,6 +104,7 @@ pub async fn publish_github_repository(
     repository_path: String,
     endpoint_id: String,
     account_profile_id: String,
+    owner_login: String,
     name: String,
     is_private: bool,
     state: State<'_, AppState>,
@@ -75,10 +119,18 @@ pub async fn publish_github_repository(
         // removal cannot delete the durable publish intent after `gh` starts.
         let _account_operation_lease =
             state.acquire_account_operation_lease(&account_profile_id)?;
-        if reconcile_pending_publish(&state, &repository, &endpoint_id, &account_profile_id)? {
+        let git = GitCore::new();
+        git.ensure_network_configuration_is_safe(&repository)?;
+        let requested_repository_slug = github_publish_expected_slug(&owner_login, &name)?;
+        if reconcile_pending_publish(
+            &state,
+            &repository,
+            &endpoint_id,
+            &account_profile_id,
+            &requested_repository_slug,
+        )? {
             return snapshot_for(&state, &repository);
         }
-        let git = GitCore::new();
         let repository_record = git.repository_record(&repository)?;
         // A previous `gh repo create --push` can fail before creating either
         // the GitHub repository or local `origin`. `reconcile_pending_publish`
@@ -137,22 +189,23 @@ pub async fn publish_github_repository(
                 "发布 GitHub 仓库需要与 Endpoint 匹配的 gh CLI 账号。",
             ));
         }
-        if current_account_status(&account, &store.all_endpoints()) != AuthenticationStatus::Valid {
-            return Err(AppError::new(
-                "cli_auth_unavailable",
-                "当前 gh 登录与所选账号不匹配或已失效。",
-            ));
-        }
-
+        let deadline = GitHubAdapter::operation_deadline();
+        let validated_owner = GitHubAdapter.validate_publish_owner_until(
+            &endpoint,
+            &account.login,
+            &owner_login,
+            deadline,
+        )?;
+        let expected_repository_slug =
+            github_publish_expected_slug(validated_owner.login(), &name)?;
         let expected_head = git.head_commit_id(&repository)?;
-        let expected_repository_slug = github_publish_expected_slug(&name, &account.login)?;
         let pending = PendingPublish {
             repository_path: repository_record.path.clone(),
             endpoint_id: endpoint.id.clone(),
             account_profile_id: account.id.clone(),
             remote_name: "origin".into(),
             expected_head,
-            expected_repository_slug,
+            expected_repository_slug: expected_repository_slug.clone(),
         };
         state.mutate(|store| {
             store.queue_pending_publish(pending.clone());
@@ -168,8 +221,9 @@ pub async fn publish_github_repository(
             &endpoint,
             &repository,
             &name,
-            &account.login,
+            validated_owner,
             is_private,
+            deadline,
         )?;
         let origin_exists = git
             .remotes(&repository)?
@@ -181,7 +235,14 @@ pub async fn publish_github_repository(
                 "GitHub 已返回成功，但本地未找到 origin remote；发布状态已保留，请检查仓库配置后重试。",
             ));
         }
-        if !reconcile_pending_publish(&state, &repository, &endpoint_id, &account_profile_id)? {
+        git.ensure_network_configuration_is_safe(&repository)?;
+        if !reconcile_pending_publish(
+            &state,
+            &repository,
+            &endpoint_id,
+            &account_profile_id,
+            &expected_repository_slug,
+        )? {
             return Err(AppError::new(
                 "github_publish_reconciliation_required",
                 "GitHub 已返回成功，但发布状态尚未完成确认；请检查仓库配置后重试。",

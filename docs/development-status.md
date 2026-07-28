@@ -21,7 +21,7 @@
 
 - GitHub、GitLab、Gitee、Gitea、Forgejo 和通用 Git Endpoint 的账号/remote binding 模型。
 - 显式绑定的系统钥匙串 PAT，以及按 remote URL 自动工作的 SSH 配置和系统 Git credential helper；SSH agent 账号资料只用于状态显示，不能把实际 SSH identity 固定到 Profile。PAT 不会写入前端状态、Git 配置、remote URL 或应用元数据。
-- GitHub 通过当前匹配的 `gh` 身份支持仓库信息、PR 列表、创建 PR 和发布仓库；这些 `gh` 网络命令在后台 worker 执行，有 45 秒超时，并以有限 pipe-operation permit 抑制异常后代长期持有输出管道时的重复读取线程。进程树终止后仍未关闭的 pipe 会在清理宽限期后释放 permit，不能永久把后续 GitHub 操作锁成 busy；Unix 用独立 process group，Windows 用 Job Object 保持进程树身份，避免直接子进程退出后以 PID 误杀复用进程。PR 一次读取 100 条、最多 10 页，所有分页和最终探测共享同一个 45 秒总时限；超过上限会明确报错，绝不静默截断。
+- GitHub 通过当前匹配的 `gh` 身份支持仓库信息、PR 列表、创建 PR 和发布仓库；发布前会自动读取个人账号与组织所有者，并标记当前身份能否在组织中创建仓库。所有者读取失败时发布按钮保持禁用，最终创建权限仍由 GitHub 的组织策略、仓库可见性和 SSO 授权判定。发布会通过 `gh auth token --user` 将所选账号固定到本次内存态操作，查询、创建和初次推送不受并发 `gh auth switch` 影响；令牌不进入参数、日志、IPC 或持久化，并通过禁用本次推送的 hooks、fsmonitor 和不受信任 Git 网络配置，避免仓库进程读取或重定向认证信息。这些 `gh` 网络命令在后台 worker 执行，有 45 秒超时，并以有限 pipe-operation permit 抑制异常后代长期持有输出管道时的重复读取线程。进程树终止后仍未关闭的 pipe 会在清理宽限期后释放 permit，不能永久把后续 GitHub 操作锁成 busy；Unix 用独立 process group，Windows 用 Job Object 保持进程树身份，避免直接子进程退出后以 PID 误杀复用进程。PR 和组织列表分页均共享各自命令的 45 秒总时限；超过上限会明确报错，绝不静默截断。
 - “账号与认证”路由先读取持久化的认证状态缓存，再在后台刷新 CLI、钥匙串和 SSH agent 状态；后台检测不持有应用状态锁，60 秒内避免重复触发，页面提供手动刷新入口。网络 Git 操作仍会在执行前即时校验账号，缓存不参与授权放行。
 
 完整的信任边界和账号选择规则见 [architecture.md](architecture.md)。

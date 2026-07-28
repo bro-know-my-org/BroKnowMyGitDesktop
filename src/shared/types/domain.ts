@@ -255,6 +255,13 @@ export interface PullRequestSummary {
   updatedAt: string | null;
 }
 
+export interface GitHubPublishOwner {
+  login: string;
+  name: string | null;
+  kind: "user" | "organization";
+  canCreateRepositories: boolean;
+}
+
 export interface CreatePullRequestInput {
   title: string;
   body: string;

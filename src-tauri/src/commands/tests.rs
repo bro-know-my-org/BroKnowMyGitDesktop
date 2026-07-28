@@ -437,14 +437,14 @@ fn codehost_adapter_requires_all_operation_urls_to_match_endpoint() {
 #[test]
 fn pending_publish_identity_requires_the_expected_github_slug() {
     assert_eq!(
-        github_publish_expected_slug("project", "octo").unwrap(),
+        github_publish_expected_slug("octo", "project").unwrap(),
         "octo/project"
     );
     assert_eq!(
-        github_publish_expected_slug("team/project", "octo").unwrap(),
+        github_publish_expected_slug("team", "project").unwrap(),
         "team/project"
     );
-    assert!(github_publish_expected_slug("../project", "octo").is_err());
+    assert!(github_publish_expected_slug("..", "project").is_err());
     assert!(pending_publish_remote_matches(
         "https://github.com/octo/project.git",
         "octo/project"
@@ -551,17 +551,26 @@ fn pending_publish_reconciliation_requires_the_original_identity() {
     assert!(pending_publish_matches_requested_identity(
         &pending,
         "github.com",
-        "account-a"
+        "account-a",
+        "owner/project"
     ));
     assert!(!pending_publish_matches_requested_identity(
         &pending,
         "github.com",
-        "account-b"
+        "account-b",
+        "owner/project"
     ));
     assert!(!pending_publish_matches_requested_identity(
         &pending,
         "github.example.test",
-        "account-a"
+        "account-a",
+        "owner/project"
+    ));
+    assert!(!pending_publish_matches_requested_identity(
+        &pending,
+        "github.com",
+        "account-a",
+        "another/project"
     ));
 }
 

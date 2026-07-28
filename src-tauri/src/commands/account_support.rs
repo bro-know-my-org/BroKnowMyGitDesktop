@@ -187,13 +187,6 @@ pub(super) fn validate_method_for_endpoint(
     }
 }
 
-pub(super) fn current_account_status(
-    account: &AccountProfile,
-    endpoints: &[CodeHostEndpoint],
-) -> AuthenticationStatus {
-    current_account_status_with_ssh_agent_status(account, endpoints, None)
-}
-
 fn current_account_status_with_ssh_agent_status(
     account: &AccountProfile,
     endpoints: &[CodeHostEndpoint],

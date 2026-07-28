@@ -1,7 +1,7 @@
 use crate::app_error::AppError;
 use crate::codehost::{
     AdapterContext, CodeHostAdapter, CodeHostRepositoryInfo, CreatePullRequestInput,
-    PullRequestSummary,
+    GitHubPublishOwner, PullRequestSummary,
 };
 use crate::command_models::{
     CleanUntrackedPreview, GitOperationState, NetworkOperationResult, RepositorySnapshot,

@@ -27,6 +27,7 @@ uuid = { version = "1", features = ["v4"] }
 # keyring falls back to its in-memory mock backend and would violate the PAT policy.
 keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native-sync-persistent", "crypto-rust", "vendored"] }
 fs2 = "0.4"
+zeroize = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

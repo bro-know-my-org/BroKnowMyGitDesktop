@@ -18,6 +18,7 @@ import {
   type CodeHostRepositoryInfo,
   type ExternalEditorConfig,
   type GitStatusEntry,
+  type GitHubPublishOwner,
   type LfsStatus,
   type PullRequestSummary,
   type RemoteBinding,
@@ -184,6 +185,7 @@ const networkBusy = ref<NetworkAction | null>(null);
 let networkOperationGeneration = 0;
 const networkOperationsInFlight = new Set<string>();
 const mutationBusy = ref(false);
+const publishOwnersLoading = ref(false);
 
 const cloneModalShown = ref(false);
 const initModalShown = ref(false);
@@ -226,7 +228,10 @@ const lfsTrackForm = reactive({ pattern: "" });
 const externalEditorForm = reactive({ executable: "", arguments: "" });
 const pullRequestForm = reactive({ title: "", body: "", base: "", draft: false });
 const squashForm = reactive({ count: "2", message: "" });
-const publishForm = reactive({ endpointId: "github.com", accountId: "", name: "", isPrivate: true });
+const publishForm = reactive({ endpointId: "github.com", accountId: "", ownerLogin: "", name: "", isPrivate: true });
+const publishOwners = ref<GitHubPublishOwner[]>([]);
+const publishOwnersError = ref("");
+let publishOwnersRequestGeneration = 0;
 const tagForm = reactive({ name: "", target: "", message: "" });
 const tagRepositoryPath = ref<string | null>(null);
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
@@ -328,6 +333,21 @@ const publishAccountOptions = computed(() =>
     label: (account.displayName || account.login) + " · " + authenticationStatusLabel(account.status, appLocale.value),
     value: account.id,
   })),
+);
+const publishOwnerOptions = computed(() =>
+  publishOwners.value.map((owner) => ({
+    label: (owner.name
+      ? `${owner.name} (${owner.login}) · ${owner.kind === "organization" ? tr("组织", "Organization") : tr("个人", "Personal")}`
+      : `${owner.login} · ${owner.kind === "organization" ? tr("组织", "Organization") : tr("个人", "Personal")}`)
+      + (owner.canCreateRepositories ? "" : tr(" · 无创建权限", " · No create permission")),
+    value: owner.login,
+    disabled: !owner.canCreateRepositories,
+  })),
+);
+const canPublishToSelectedOwner = computed(() =>
+  !publishOwnersLoading.value && !publishOwnersError.value && publishOwners.value.some(
+    (owner) => owner.login === publishForm.ownerLogin && owner.canCreateRepositories,
+  ),
 );
 const accountFormCapabilities = computed(() => capabilityForEndpoint(accountForm.endpointId));
 const accountUsesPat = computed(() => accountForm.authMethod === "personalAccessToken");
@@ -2555,17 +2575,66 @@ async function createPullRequest(): Promise<void> {
   }
 }
 
+function fallbackPublishOwner(): GitHubPublishOwner | null {
+  const account = publishAccounts.value.find((item) => item.id === publishForm.accountId);
+  return account
+    ? {
+        login: account.login,
+        name: account.displayName,
+        kind: "user",
+        canCreateRepositories: true,
+      }
+    : null;
+}
+
+async function loadPublishOwners(): Promise<void> {
+  const requestGeneration = ++publishOwnersRequestGeneration;
+  const fallback = fallbackPublishOwner();
+  publishOwners.value = fallback ? [fallback] : [];
+  publishOwnersError.value = "";
+  if (!publishForm.endpointId || !publishForm.accountId) {
+    publishOwnersLoading.value = false;
+    publishForm.ownerLogin = "";
+    return;
+  }
+  if (!publishOwners.value.some((owner) => owner.login === publishForm.ownerLogin)) {
+    publishForm.ownerLogin = fallback?.login || "";
+  }
+  publishOwnersLoading.value = true;
+  try {
+    const owners = await api.listGitHubPublishOwners(publishForm.endpointId, publishForm.accountId);
+    if (requestGeneration !== publishOwnersRequestGeneration) return;
+    publishOwners.value = owners;
+    if (!owners.some((owner) => owner.login === publishForm.ownerLogin && owner.canCreateRepositories)) {
+      publishForm.ownerLogin = owners.find((owner) => owner.canCreateRepositories)?.login || "";
+    }
+  } catch (error) {
+    if (requestGeneration !== publishOwnersRequestGeneration) return;
+    const appError: AppError = isAppError(error)
+      ? error
+      : { code: "unexpected_error", message: tr("发生未预期错误。", "An unexpected error occurred."), details: null };
+    publishOwnersError.value = localizedErrorMessage(appError.code, appError.message);
+  } finally {
+    if (requestGeneration === publishOwnersRequestGeneration) publishOwnersLoading.value = false;
+  }
+}
+
 function openPublishModal(): void {
   publishForm.endpointId = publishEndpoints.value[0]?.id || "github.com";
   publishForm.accountId = publishAccounts.value[0]?.id || "";
+  publishForm.ownerLogin = publishAccounts.value[0]?.login || "";
   publishForm.name = snapshot.value?.repository.name || "";
   publishForm.isPrivate = true;
   publishModalShown.value = true;
 }
 
 async function publishGitHubRepository(): Promise<void> {
-  if (!activeRepositoryPath.value || !publishForm.endpointId || !publishForm.accountId || !publishForm.name.trim()) {
-    message.warning(tr("请选择匹配的 gh 账号并填写 GitHub 仓库名称。", "Select a matching gh account and enter a GitHub repository name."));
+  if (!activeRepositoryPath.value || !publishForm.endpointId || !publishForm.accountId || !canPublishToSelectedOwner.value || !publishForm.name.trim()) {
+    message.warning(tr("请选择可发布的所有者并填写 GitHub 仓库名称。", "Select an eligible owner and enter a GitHub repository name."));
+    return;
+  }
+  if (publishForm.name.trim().includes("/")) {
+    message.warning(tr("仓库名称只填写名称即可，所有者请使用上方选项。", "Enter only the repository name; choose its owner above."));
     return;
   }
   mutationBusy.value = true;
@@ -2575,6 +2644,7 @@ async function publishGitHubRepository(): Promise<void> {
         activeRepositoryPath.value,
         publishForm.endpointId,
         publishForm.accountId,
+        publishForm.ownerLogin,
         publishForm.name.trim(),
         publishForm.isPrivate,
       ),
@@ -2629,8 +2699,23 @@ watch(
 watch(
   () => publishForm.endpointId,
   () => {
+    publishOwnersRequestGeneration += 1;
+    publishOwners.value = [];
+    publishOwnersError.value = "";
+    publishOwnersLoading.value = false;
     if (!publishAccounts.value.some((account) => account.id === publishForm.accountId)) {
       publishForm.accountId = publishAccounts.value[0]?.id || "";
+    }
+  },
+);
+
+watch(
+  () => [publishModalShown.value, publishForm.endpointId, publishForm.accountId] as const,
+  ([shown]) => {
+    if (shown) void loadPublishOwners();
+    else {
+      publishOwnersRequestGeneration += 1;
+      publishOwnersLoading.value = false;
     }
   },
 );
@@ -2726,6 +2811,7 @@ onBeforeUnmount(() => {
     lfsLoading,
     networkBusy,
     mutationBusy,
+    publishOwnersLoading,
     cloneModalShown,
     initModalShown,
     discoverModalShown,
@@ -2801,6 +2887,9 @@ onBeforeUnmount(() => {
     publishEndpoints,
     publishAccounts,
     publishAccountOptions,
+    publishOwnerOptions,
+    canPublishToSelectedOwner,
+    publishOwnersError,
     accountFormCapabilities,
     accountUsesPat,
     accountMethodOptions,
@@ -2945,6 +3034,7 @@ onBeforeUnmount(() => {
     openCreatePullRequest,
     createPullRequest,
     openPublishModal,
+    loadPublishOwners,
     publishGitHubRepository,
     updateSection,
     api,

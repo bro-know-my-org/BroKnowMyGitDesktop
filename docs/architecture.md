@@ -22,7 +22,7 @@ Commands ── AppState（安全的账号、绑定、Endpoint 与本地仓库�
 
 - 只以 `std::process::Command` 加参数数组启动系统 `git`，从不拼接 shell 命令。
 - 覆盖仓库发现、clone、status、diff、暂存/取消暂存、commit、分支、merge、fetch/pull/push、tag 和 remote 管理。
-- 不使用 libgit2，因此保留用户的 SSH、Git LFS、正常 hook 与 credential helper 行为；使用应用管理 PAT 的网络命令会以命令级 `core.hooksPath` 禁用 hook，避免 capability 被仓库代码读取。
+- 不使用 libgit2，因此保留用户的 SSH、Git LFS、正常 hook 与 credential helper 行为；使用应用管理 PAT 或固定 gh bearer token 的网络命令会以命令级 `core.hooksPath` 禁用 hook，避免认证信息被仓库代码读取。
 - GitCore 不知道平台令牌，也不读写 Git 全局配置。
 
 ### CredentialBroker
@@ -33,7 +33,7 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 
 - `SshAgent`：沿用进程环境中的 SSH agent，但实际身份由 SSH host 配置与 agent 选择。SSH 账号资料仅可显示状态，不能成为 remote 的显式 Profile binding，也不参与 Auto 的账号选择。
 - `SystemGitCredentialHelper`：不是 `CredentialStrategy`，也不能保存为“某个账号”的 remote binding；没有明确 PAT 候选时，系统 Git 只按实际 remote URL 调用用户已有 helper。
-- `GhCli` / `GlabCli`：检测、导入并重新校验当前 CLI 账号，并用于各自已实现的平台 API（GitHub 的发布也依赖 gh）；不会切换 CLI 活跃账号。由于 CLI token 命令无法安全固定到某个账号，它们绝不作为 Git HTTPS askpass 来源；需要显式账号绑定的 Git 网络操作应使用 PAT，SSH 则保持 Git/SSH 配置的无绑定选择。
+- `GhCli` / `GlabCli`：检测、导入并重新校验当前 CLI 账号，并用于各自已实现的平台 API（GitHub 的发布也依赖 gh）；不会切换 CLI 活跃账号。普通 Git HTTPS binding 不把 CLI token 当作 askpass 来源；GitHub 发布是受限例外，会用 `gh auth token --user` 在内存中固定所选账号，并同时禁用本次初始推送的 hooks 和不受信任网络配置。其他需要显式账号绑定的 Git 网络操作应使用 PAT，SSH 则保持 Git/SSH 配置的无绑定选择。
 - `KeychainPatAskPass`：应用保存的 PAT 只放进系统钥匙串。父 Git 路径为临时 askpass 子进程签发短时、随机、一次性 capability；Git 需要 HTTPS 密码时，helper 先原子消费 capability，再核对 capability 中的 account profile ID 与钥匙串引用一致后读取并直接写给 Git。令牌不经过前端、日志、JSON、SQLite、Git remote 或 Git 配置。
 
 账号与本地仓库元数据存放在应用数据目录的 JSON 中。账号部分只包含账号 ID、平台、登录名、认证方式、状态和钥匙串引用；绝不包含 PAT。仓库部分只保存规范化路径、显示名、手动分组、已解析 remote 的 host/组织路径和最近显式打开时间；它不会写入 Git 配置。本地持久化采用原子写入，避免半写入的账号绑定或仓库分组；Unix 会同步文件和父目录，macOS 不把系统对目录 `fsync` 返回的 `EINVAL` 误报成写入失败。同一仓库的工作树 / index / ref 写入、凭据化网络 Git 操作、remote / binding 修改，以及依赖 remote 身份的 GitHub 平台请求会持有同一个进程内 lease；移除 linked worktree 时会原子取得发起端与目标端两把路径锁，避免在强制删除时让目标工作树继续操作。GitHub 平台能力还要求 `api_url` 精确匹配 `gh --hostname` 对该 Git host 的标准路由，避免把 host-scoped CLI token 发到 Endpoint 配置之外的 API。
@@ -44,7 +44,7 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 
 | 平台 | MVP 状态 |
 | --- | --- |
-| GitHub | URL 识别、gh 账号导入/状态、仓库信息、PR 列表与创建、发布仓库（均经匹配的 gh 身份） |
+| GitHub | URL 识别、gh 账号导入/状态、仓库信息、PR 列表与创建、自动读取个人/组织发布所有者、发布仓库（均经匹配的 gh 身份） |
 | GitLab | URL 识别、glab 账号导入/状态、账号模型与 capability 占位 |
 | Gitee | URL 识别、账号模型、钥匙串 PAT、remote 绑定及按绑定账号 HTTPS Git 认证 |
 | Gitea / Forgejo | 账号、PAT、remote 绑定和 Git 网络操作；平台 API capability 暂不展示 |
@@ -84,7 +84,7 @@ Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL �
 
 - PAT 只可写入系统钥匙串；添加 PAT 的 IPC 是一次性写入，任何查询接口都不会返回它。
 - 不把令牌写入日志、持久化元数据、SQLite、repository config、remote URL 或命令行参数。
-- Git 认证使用 askpass 时，子进程只能通过父 Git 路径签发的一次性 capability 恢复受限账号配置；密码提示在 capability 原子消费后才可读取钥匙串内容。capability 目录和记录在 Unix 为 owner-only；Windows 会在写入机密前用当前用户 SID 设置受保护的 DACL。应用管理 PAT 的网络 Git 命令还会以命令级 `core.hooksPath` 禁用 hook，避免 repository-controlled hook 继承 capability。token 不作为命令参数或 UI 数据返回。gh/glab 的平台 API 子进程使用有界并发的管道读取：异常后代长期持有 pipe 时，有限 permit 会先抑制重复 worker，再在清理宽限期后释放 slot，避免永久 busy；Unix 以独立 process group 清理，Windows 以带 `KILL_ON_JOB_CLOSE` 的 Job Object 保持树身份，避免子进程退出后的 PID 重用。
+- Git 认证使用 askpass 时，子进程只能通过父 Git 路径签发的一次性 capability 恢复受限账号配置；密码提示在 capability 原子消费后才可读取钥匙串内容。capability 目录和记录在 Unix 为 owner-only；Windows 会在写入机密前用当前用户 SID 设置受保护的 DACL。应用管理 PAT 和固定 gh token 的网络 Git 命令还会以命令级 `core.hooksPath` 禁用 hook，避免 repository-controlled hook 继承认证信息。token 不作为命令参数或 UI 数据返回，也不写入持久化。gh/glab 的平台 API 子进程使用有界并发的管道读取：异常后代长期持有 pipe 时，有限 permit 会先抑制重复 worker，再在清理宽限期后释放 slot，避免永久 busy；Unix 以独立 process group 清理，Windows 以带 `KILL_ON_JOB_CLOSE` 的 Job Object 保持树身份，避免子进程退出后的 PID 重用。
 - 所有子进程错误均被安全化后再返回；命令本身和环境变量中的密钥不记录。
 - 不自动变更用户全局 Git 配置、gh/glab 活跃账号、SSH 配置或 remote URL。
 

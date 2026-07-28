@@ -270,6 +270,7 @@ pub(super) fn reconcile_pending_publish(
     repository: &Path,
     requested_endpoint_id: &str,
     requested_account_profile_id: &str,
+    requested_repository_slug: &str,
 ) -> Result<bool, AppError> {
     let git = GitCore::new();
     let repository_record = git.repository_record(repository)?;
@@ -284,10 +285,11 @@ pub(super) fn reconcile_pending_publish(
         &pending,
         requested_endpoint_id,
         requested_account_profile_id,
+        requested_repository_slug,
     ) {
         return Err(AppError::new(
             "github_publish_reconciliation_required",
-            "检测到待完成的 GitHub 发布，但所选账号或 Endpoint 与该发布不匹配；请使用原账号重试。",
+            "检测到待完成的 GitHub 发布，但所选账号、Endpoint 或仓库所有者与该发布不匹配；请使用原发布目标重试。",
         ));
     }
     let reconciliation_error = || {
@@ -404,26 +406,21 @@ pub(super) fn pending_publish_matches_requested_identity(
     pending: &PendingPublish,
     endpoint_id: &str,
     account_profile_id: &str,
+    expected_repository_slug: &str,
 ) -> bool {
-    pending.endpoint_id == endpoint_id && pending.account_profile_id == account_profile_id
+    pending.endpoint_id == endpoint_id
+        && pending.account_profile_id == account_profile_id
+        && pending
+            .expected_repository_slug
+            .eq_ignore_ascii_case(expected_repository_slug)
 }
 
 pub(super) fn github_publish_expected_slug(
-    name: &str,
-    account_login: &str,
+    owner: &str,
+    repository: &str,
 ) -> Result<String, AppError> {
-    let name = name.trim();
-    let parts: Vec<&str> = name.split('/').collect();
-    let (owner, repository) = match parts.as_slice() {
-        [repository] => (account_login.trim(), *repository),
-        [owner, repository] => (*owner, *repository),
-        _ => {
-            return Err(AppError::new(
-                "invalid_repository_name",
-                "GitHub 仓库名称无效。",
-            ))
-        }
-    };
+    let owner = owner.trim();
+    let repository = repository.trim();
     if !is_github_publish_slug_segment(owner) || !is_github_publish_slug_segment(repository) {
         return Err(AppError::new(
             "invalid_repository_name",
