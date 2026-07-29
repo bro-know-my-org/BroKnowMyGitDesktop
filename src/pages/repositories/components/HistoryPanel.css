@@ -48,20 +48,21 @@
   flex-direction: column;
 }
 
-.history-commit-list {
-  display: grid;
+.history-commit-scroll {
   min-height: 0;
-  align-content: start;
   flex: 1 1 0;
-  gap: 3px;
-  overflow: auto;
-  overscroll-behavior: contain;
-  margin: 0;
-  padding: 3px;
 }
 
-.history-commit-list.is-context-menu-open {
-  overflow: hidden;
+.history-commit-scroll > .n-scrollbar-container {
+  overscroll-behavior: contain;
+}
+
+.history-commit-list {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  margin: 0;
+  padding: 3px;
 }
 
 .history-commit-row {

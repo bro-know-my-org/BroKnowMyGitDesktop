@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
-import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag, useMessage } from "naive-ui";
+import { NButton, NCard, NDataTable, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, useMessage } from "naive-ui";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
@@ -8,7 +8,7 @@ import type { CommitChangedFile, CommitFileStatus, CommitSummary } from "../../.
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag, RepositoryDiffViewer },
+  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const message = useMessage();
@@ -188,10 +188,10 @@ export default defineComponent({
                       </n-space>
                     </template>
                     <n-spin :show="historyLoading">
-                      <div
+                      <n-scrollbar
                         v-if="commits.length"
-                        class="history-commit-list"
-                        :class="{ 'is-context-menu-open': commitContextMenuOpen }"
+                        class="history-commit-scroll"
+                        content-class="history-commit-list"
                         :aria-label="tr('提交历史列表', 'Commit history list')"
                       >
                         <button
@@ -218,7 +218,7 @@ export default defineComponent({
                             <span class="history-commit-date" :title="commit.authoredAt">{{ commit.authoredAt }}</span>
                           </span>
                         </button>
-                      </div>
+                      </n-scrollbar>
                       <n-dropdown
                         v-model:show="commitContextMenuOpen"
                         trigger="manual"
