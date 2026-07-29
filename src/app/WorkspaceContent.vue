@@ -34,7 +34,8 @@ export default defineComponent({
             <template v-if="lastError.code === 'account_selection_required'">{{ tr("请在 remote 绑定中选择明确账号，然后重试。", "Select an explicit account in the remote binding, then retry.") }}</template>
           </n-alert>
     <AccountsPage v-if="section === 'accounts'" />
-<section v-else-if="!snapshot && !snapshotLoading" class="repository-empty-state">
+<n-spin v-else-if="workspaceInitializing || (snapshotLoading && !snapshot)" size="large" class="loading-state" />
+<section v-else-if="!snapshot" class="repository-empty-state">
             <n-empty :description="tr('选择或添加一个本地 Git 仓库', 'Select or add a local Git repository')">
               <template #extra>
                 <n-space justify="center">
@@ -45,7 +46,6 @@ export default defineComponent({
               </template>
             </n-empty>
           </section>
-<n-spin v-else-if="snapshotLoading && !snapshot" size="large" class="loading-state" />
     <RepositoriesPage v-else-if="snapshot" />
   </main>
 </n-layout-content>

@@ -247,6 +247,7 @@ const commitDiffMaximumReached = ref(false);
 const lastError = ref<AppError | null>(null);
 const lastErrorAction = ref("");
 
+const workspaceInitializing = ref(true);
 const repositoriesLoading = ref(false);
 const snapshotLoading = ref(false);
 const accountsLoading = ref(false);
@@ -3627,6 +3628,7 @@ onMounted(async () => {
   )[0];
   const startupRepository = storedRepository ?? mostRecentRepository;
   if (startupRepository) await selectRepository(startupRepository.path);
+  if (controllerMounted) workspaceInitializing.value = false;
 });
 
 onBeforeUnmount(() => {
@@ -3702,6 +3704,7 @@ onBeforeUnmount(() => {
     commitDiffLineLimitReached,
     lastError,
     lastErrorAction,
+    workspaceInitializing,
     repositoriesLoading,
     snapshotLoading,
     accountsLoading,
