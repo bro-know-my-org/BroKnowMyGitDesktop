@@ -808,7 +808,7 @@ impl GitCore {
             maximum_bytes,
             "读取提交文件改动",
         )?;
-        let mut truncated = preview.truncated || preview.stdout.len() > maximum_bytes;
+        let truncated = preview.truncated || preview.stdout.len() > maximum_bytes;
         preview.stdout.truncate(maximum_bytes);
         if truncated {
             trim_incomplete_utf8_suffix(&mut preview.stdout);
