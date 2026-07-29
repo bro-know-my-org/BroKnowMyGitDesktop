@@ -50,6 +50,7 @@ mod network;
 mod remotes;
 mod repositories;
 mod repository_support;
+mod repository_watcher;
 mod support;
 mod workspace;
 
@@ -65,4 +66,5 @@ pub use endpoints::*;
 pub use network::*;
 pub use remotes::*;
 pub use repositories::*;
+pub use repository_watcher::*;
 pub use workspace::*;

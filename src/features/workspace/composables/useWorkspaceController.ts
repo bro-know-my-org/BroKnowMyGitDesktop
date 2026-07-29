@@ -1,5 +1,7 @@
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { NButton, useDialog, useMessage } from "naive-ui";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
 import { colorMode, resetThemeColor, setColorMode, setThemeColor, themeColor, type ColorMode } from "../../../shared/theme";
@@ -50,6 +52,19 @@ interface RepositorySidebarGroup {
   key: string;
   label: string;
   repositories: RepositoryRecord[];
+}
+
+interface RepositoryChangedPayload {
+  repositoryPath: string;
+  requestGeneration: number;
+  errorKind: string | null;
+  retryable: boolean;
+}
+
+interface RefreshSnapshotOptions {
+  includeAuxiliary?: boolean;
+  reportErrors?: boolean;
+  silent?: boolean;
 }
 
 const message = useMessage();
@@ -134,6 +149,9 @@ const repositories = ref<RepositoryRecord[]>([]);
 const repositoryGrouping = ref<RepositoryGrouping>(initialRepositoryGrouping());
 const activeRepositoryPath = ref<string | null>(null);
 let repositorySelectionGeneration = 0;
+let repositoryWatchRequestGeneration = Date.now();
+let snapshotApplicationGeneration = 0;
+let snapshotRefreshRequestGeneration = 0;
 const snapshot = ref<RepositorySnapshot | null>(null);
 const accounts = ref<AccountProfile[]>([]);
 const selectedRemoteName = ref("");
@@ -241,6 +259,21 @@ const repositoryGroupForm = reactive({ name: "" });
 const endpoints = ref<CodeHostEndpoint[]>([...builtinEndpoints]);
 let lastAccountStatusRefreshAt = 0;
 const accountStatusRefreshCacheMs = 60_000;
+const automaticRefreshDebounceMs = 500;
+const automaticRefreshRetryMs = 750;
+const repositoryWatcherMaxRetryDelayMs = 12_000;
+const repositoryWatcherMaxRetryAttempts = 5;
+let automaticRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let repositoryWatcherRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let repositoryWatcherRetryAttempt = 0;
+let repositoryWatcherUnavailable = false;
+let automaticRefreshDirty = false;
+let automaticRefreshInFlight = false;
+let windowFocused = typeof document === "undefined" || document.hasFocus();
+let controllerMounted = false;
+let stopRepositoryChangeListener: UnlistenFn | null = null;
+let stopRepositoryWatchErrorListener: UnlistenFn | null = null;
+let stopWindowFocusListener: UnlistenFn | null = null;
 
 const activeRemote = computed(() => snapshot.value?.remotes.find((remote) => remote.name === selectedRemoteName.value) ?? null);
 const canPullFromActiveRemote = computed(() => {
@@ -632,10 +665,12 @@ function repositorySelectionIsCurrent(repositoryPath: string, generation: number
   return activeRepositoryPath.value === repositoryPath && repositorySelectionGeneration === generation;
 }
 
-function applySnapshot(nextSnapshot: RepositorySnapshot): boolean {
+function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshRequests = true): boolean {
   // Every backend snapshot is scoped to one repository. Never let a late
   // mutation response overwrite the currently selected repository.
   if (activeRepositoryPath.value !== nextSnapshot.repository.path) return false;
+  snapshotApplicationGeneration += 1;
+  if (invalidateRefreshRequests) snapshotRefreshRequestGeneration += 1;
   const selectedPath = selectedChange.value?.path;
   snapshot.value = nextSnapshot;
   replaceRepositoryRecord(nextSnapshot.repository);
@@ -677,13 +712,14 @@ async function syncSelectedDiff(
   selectedPath?: string,
   selectFirst = false,
   repositoryPath = activeRepositoryPath.value,
+  reportErrors = true,
 ): Promise<void> {
   if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
   const nextChange =
     (selectedPath ? nextSnapshot.status.entries.find((entry) => entry.path === selectedPath) : null) ??
     (selectFirst ? nextSnapshot.status.entries[0] : null);
   if (nextChange) {
-    await loadDiff(nextChange, repositoryPath);
+    await loadDiff(nextChange, repositoryPath, reportErrors);
   } else {
     clearDiffSelection();
   }
@@ -786,7 +822,46 @@ async function loadEndpoints(): Promise<void> {
   }
 }
 
+function installRepositoryWatcher(repositoryPath: string): void {
+  if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
+  repositoryWatcherRetryTimer = null;
+  const requestGeneration = ++repositoryWatchRequestGeneration;
+  void api.watchRepositoryChanges(repositoryPath, requestGeneration)
+    .then(() => {
+      if (
+        controllerMounted &&
+        repositoryWatchRequestGeneration === requestGeneration &&
+        activeRepositoryPath.value === repositoryPath
+      ) {
+        repositoryWatcherRetryAttempt = 0;
+        repositoryWatcherUnavailable = false;
+      }
+    })
+    .catch((error) => {
+      if (
+        controllerMounted &&
+        repositoryWatchRequestGeneration === requestGeneration &&
+        activeRepositoryPath.value === repositoryPath
+      ) {
+        handleRepositoryWatchError({
+          payload: {
+            repositoryPath,
+            requestGeneration,
+            errorKind: isAppError(error) ? error.code : "installation_failed",
+            retryable: !isAppError(error) || error.code !== "repository_watch_failed_permanent",
+          },
+        });
+      }
+    });
+}
+
 async function selectRepository(repositoryPath: string): Promise<void> {
+  if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
+  repositoryWatcherRetryTimer = null;
+  repositoryWatcherRetryAttempt = 0;
+  repositoryWatcherUnavailable = false;
+  snapshotApplicationGeneration += 1;
+  snapshotRefreshRequestGeneration += 1;
   historyRequestGeneration += 1;
   worktreesRequestGeneration += 1;
   submodulesRequestGeneration += 1;
@@ -826,6 +901,7 @@ async function selectRepository(repositoryPath: string): Promise<void> {
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
     if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     applySnapshot(nextSnapshot);
+    installRepositoryWatcher(nextSnapshot.repository.path);
     rememberLastRepositoryPath(nextSnapshot.repository.path);
     activeTab.value = "changes";
     repositoryInfo.value = null;
@@ -851,26 +927,168 @@ async function selectRepository(repositoryPath: string): Promise<void> {
 }
 
 async function refreshSnapshot(): Promise<void> {
+  await refreshSnapshotWithOptions();
+}
+
+async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}): Promise<void> {
   if (!activeRepositoryPath.value) return;
+  const {
+    includeAuxiliary = true,
+    reportErrors = true,
+    silent = false,
+  } = options;
   const repositoryPath = activeRepositoryPath.value;
   const selectionGeneration = repositorySelectionGeneration;
-  snapshotLoading.value = true;
+  const applicationGeneration = snapshotApplicationGeneration;
+  const refreshGeneration = ++snapshotRefreshRequestGeneration;
+  if (!silent) snapshotLoading.value = true;
   try {
     const selectedPath = selectedChange.value?.path;
-    const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
-    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-    applySnapshot(nextSnapshot);
-    await syncSelectedDiff(nextSnapshot, selectedPath, !selectedPath);
-    await Promise.all([loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
+    const selectedDiffGeneration = diffRequestGeneration;
+    const nextSnapshot = await api.refreshRepositorySnapshot(repositoryPath);
+    if (
+      !repositorySelectionIsCurrent(repositoryPath, selectionGeneration) ||
+      applicationGeneration !== snapshotApplicationGeneration ||
+      refreshGeneration !== snapshotRefreshRequestGeneration
+    ) return;
+    applySnapshot(nextSnapshot, false);
+    const appliedApplicationGeneration = snapshotApplicationGeneration;
+    if (selectedDiffGeneration === diffRequestGeneration) {
+      await syncSelectedDiff(nextSnapshot, selectedPath, !selectedPath, repositoryPath, reportErrors);
+    }
+    if (
+      includeAuxiliary &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      appliedApplicationGeneration === snapshotApplicationGeneration &&
+      refreshGeneration === snapshotRefreshRequestGeneration
+    ) {
+      await Promise.all([
+        loadWorktrees(reportErrors),
+        loadSubmodules(reportErrors),
+        loadLfsStatus(reportErrors),
+      ]);
+    }
   } catch (error) {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+    if (
+      reportErrors &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      applicationGeneration === snapshotApplicationGeneration &&
+      refreshGeneration === snapshotRefreshRequestGeneration
+    ) {
       reportError(error, tr("刷新仓库失败", "Could not refresh repository"));
     }
   } finally {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+    if (
+      !silent &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      refreshGeneration === snapshotRefreshRequestGeneration
+    ) {
       snapshotLoading.value = false;
     }
   }
+}
+
+function applicationCanAutoRefresh(): boolean {
+  return controllerMounted && windowFocused && (typeof document === "undefined" || !document.hidden);
+}
+
+function scheduleAutomaticRefresh(delay = automaticRefreshDebounceMs): void {
+  automaticRefreshDirty = true;
+  if (!applicationCanAutoRefresh() || section.value !== "repositories" || !activeRepositoryPath.value) return;
+  if (automaticRefreshTimer) clearTimeout(automaticRefreshTimer);
+  automaticRefreshTimer = setTimeout(() => {
+    automaticRefreshTimer = null;
+    void runAutomaticRefresh();
+  }, delay);
+}
+
+async function runAutomaticRefresh(): Promise<void> {
+  if (!automaticRefreshDirty || !applicationCanAutoRefresh() || section.value !== "repositories") return;
+  if (automaticRefreshInFlight || snapshotLoading.value || mutationBusy.value || networkBusy.value) {
+    scheduleAutomaticRefresh(automaticRefreshRetryMs);
+    return;
+  }
+
+  automaticRefreshDirty = false;
+  automaticRefreshInFlight = true;
+  const tab = activeTab.value;
+  try {
+    await Promise.all([
+      refreshSnapshotWithOptions({
+        includeAuxiliary: tab === "branches",
+        reportErrors: false,
+        silent: true,
+      }),
+      tab === "history" ? loadHistoryWithOptions(false) : Promise.resolve(),
+    ]);
+  } finally {
+    automaticRefreshInFlight = false;
+    if (automaticRefreshDirty) scheduleAutomaticRefresh();
+  }
+}
+
+function handleRepositoryChanged(event: { payload: RepositoryChangedPayload }): void {
+  if (
+    event.payload.repositoryPath !== activeRepositoryPath.value ||
+    event.payload.requestGeneration !== repositoryWatchRequestGeneration
+  ) return;
+  scheduleAutomaticRefresh();
+}
+
+function handleRepositoryWatchError(event: { payload: RepositoryChangedPayload }): void {
+  if (
+    event.payload.repositoryPath !== activeRepositoryPath.value ||
+    event.payload.requestGeneration !== repositoryWatchRequestGeneration
+  ) return;
+  scheduleAutomaticRefresh();
+  repositoryWatcherUnavailable = true;
+  if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
+  if (!event.payload.retryable || repositoryWatcherRetryAttempt >= repositoryWatcherMaxRetryAttempts) {
+    repositoryWatcherRetryTimer = null;
+    return;
+  }
+  repositoryWatcherRetryAttempt += 1;
+  const requestGeneration = event.payload.requestGeneration;
+  const retryDelay = Math.min(
+    automaticRefreshRetryMs * (2 ** (repositoryWatcherRetryAttempt - 1)),
+    repositoryWatcherMaxRetryDelayMs,
+  );
+  repositoryWatcherRetryTimer = setTimeout(() => {
+    repositoryWatcherRetryTimer = null;
+    if (
+      controllerMounted &&
+      repositoryWatchRequestGeneration === requestGeneration &&
+      activeRepositoryPath.value === event.payload.repositoryPath
+    ) {
+      installRepositoryWatcher(event.payload.repositoryPath);
+    }
+  }, retryDelay);
+}
+
+function handleWindowFocus(): void {
+  windowFocused = true;
+  if (repositoryWatcherUnavailable && activeRepositoryPath.value) {
+    repositoryWatcherRetryAttempt = 0;
+    installRepositoryWatcher(activeRepositoryPath.value);
+  }
+  if (section.value === "accounts") {
+    void refreshAccountStatuses();
+  } else {
+    scheduleAutomaticRefresh(0);
+  }
+}
+
+function handleWindowBlur(): void {
+  windowFocused = false;
+}
+
+function handleVisibilityChange(): void {
+  if (document.hidden) {
+    windowFocused = false;
+    return;
+  }
+  windowFocused = document.hasFocus();
+  if (windowFocused) handleWindowFocus();
 }
 
 // A backend mutation can succeed before its follow-up snapshot read fails.
@@ -975,7 +1193,11 @@ async function initRepository(): Promise<void> {
   }
 }
 
-async function loadDiff(entry: GitStatusEntry, repositoryPath = activeRepositoryPath.value): Promise<void> {
+async function loadDiff(
+  entry: GitStatusEntry,
+  repositoryPath = activeRepositoryPath.value,
+  reportErrors = true,
+): Promise<void> {
   if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
   const requestGeneration = ++diffRequestGeneration;
   selectedChange.value = entry;
@@ -993,7 +1215,7 @@ async function loadDiff(entry: GitStatusEntry, repositoryPath = activeRepository
     diffText.value = diff;
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
-      reportError(error, tr("读取差异失败", "Could not load diff"));
+      if (reportErrors) reportError(error, tr("读取差异失败", "Could not load diff"));
     }
   } finally {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
@@ -1044,6 +1266,10 @@ async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
+  await loadHistoryWithOptions(true);
+}
+
+async function loadHistoryWithOptions(reportErrors: boolean): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) return;
   const requestGeneration = ++historyRequestGeneration;
@@ -1062,7 +1288,7 @@ async function loadHistory(): Promise<void> {
     }
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
-      reportError(error, tr("读取历史记录失败", "Could not load repository history"));
+      if (reportErrors) reportError(error, tr("读取历史记录失败", "Could not load repository history"));
     }
   } finally {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
@@ -1087,7 +1313,7 @@ async function openReflog(): Promise<void> {
   }
 }
 
-async function loadWorktrees(): Promise<void> {
+async function loadWorktrees(reportErrors = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     worktrees.value = [];
@@ -1104,14 +1330,14 @@ async function loadWorktrees(): Promise<void> {
     ) worktrees.value = nextWorktrees;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) {
-      reportError(error, tr("读取工作树失败", "Could not load worktrees"));
+      if (reportErrors) reportError(error, tr("读取工作树失败", "Could not load worktrees"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) worktreesLoading.value = false;
   }
 }
 
-async function loadSubmodules(): Promise<void> {
+async function loadSubmodules(reportErrors = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     submodules.value = [];
@@ -1128,14 +1354,14 @@ async function loadSubmodules(): Promise<void> {
     ) submodules.value = nextSubmodules;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) {
-      reportError(error, tr("读取子模块失败", "Could not load submodules"));
+      if (reportErrors) reportError(error, tr("读取子模块失败", "Could not load submodules"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) submodulesLoading.value = false;
   }
 }
 
-async function loadLfsStatus(): Promise<void> {
+async function loadLfsStatus(reportErrors = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     lfsStatus.value = null;
@@ -1152,7 +1378,7 @@ async function loadLfsStatus(): Promise<void> {
     ) lfsStatus.value = nextLfsStatus;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) {
-      reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
+      if (reportErrors) reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) lfsLoading.value = false;
@@ -2663,6 +2889,8 @@ function updateSection(value: string | number): void {
   section.value = value === "accounts" ? "accounts" : "repositories";
   if (section.value === "accounts") {
     void loadAccountsThenRefreshStatuses();
+  } else if (automaticRefreshDirty) {
+    scheduleAutomaticRefresh(0);
   }
 }
 
@@ -2738,8 +2966,34 @@ watch(repositoryGrouping, (grouping) => {
 });
 
 onMounted(async () => {
+  controllerMounted = true;
   if (!browserDemo) window.addEventListener("keydown", handleDevtoolsShortcut);
+  window.addEventListener("focus", handleWindowFocus);
+  window.addEventListener("blur", handleWindowBlur);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  if (!browserDemo) {
+    const [repositoryListener, watchErrorListener, focusListener] = await Promise.allSettled([
+      listen<RepositoryChangedPayload>("repository-changed", handleRepositoryChanged),
+      listen<RepositoryChangedPayload>("repository-watch-error", handleRepositoryWatchError),
+      getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (focused) handleWindowFocus();
+        else handleWindowBlur();
+      }),
+    ]);
+    if (!controllerMounted) {
+      if (repositoryListener.status === "fulfilled") repositoryListener.value();
+      if (watchErrorListener.status === "fulfilled") watchErrorListener.value();
+      if (focusListener.status === "fulfilled") focusListener.value();
+      return;
+    }
+    // Repository data must still load when a platform cannot expose one of
+    // the optional native focus or file-change event streams.
+    if (repositoryListener.status === "fulfilled") stopRepositoryChangeListener = repositoryListener.value;
+    if (watchErrorListener.status === "fulfilled") stopRepositoryWatchErrorListener = watchErrorListener.value;
+    if (focusListener.status === "fulfilled") stopWindowFocusListener = focusListener.value;
+  }
   await Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
+  if (!controllerMounted) return;
   const storedPath = storedLastRepositoryPath();
   const storedRepository = storedPath
     ? repositories.value.find((repository) => repository.path === storedPath)
@@ -2752,7 +3006,23 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  controllerMounted = false;
+  const stopWatcherGeneration = ++repositoryWatchRequestGeneration;
+  void api.stopRepositoryWatcher(stopWatcherGeneration).catch(() => undefined);
+  if (automaticRefreshTimer) clearTimeout(automaticRefreshTimer);
+  if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
+  automaticRefreshTimer = null;
+  repositoryWatcherRetryTimer = null;
+  stopRepositoryChangeListener?.();
+  stopRepositoryWatchErrorListener?.();
+  stopWindowFocusListener?.();
+  stopRepositoryChangeListener = null;
+  stopRepositoryWatchErrorListener = null;
+  stopWindowFocusListener = null;
   window.removeEventListener("keydown", handleDevtoolsShortcut);
+  window.removeEventListener("focus", handleWindowFocus);
+  window.removeEventListener("blur", handleWindowBlur);
+  document.removeEventListener("visibilitychange", handleVisibilityChange);
 });
 
   return {

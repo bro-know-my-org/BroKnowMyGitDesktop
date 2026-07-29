@@ -808,6 +808,18 @@ export const api = {
     });
   },
 
+  refreshRepositorySnapshot(repositoryPath: string): Promise<RepositorySnapshot> {
+    return request("refresh_repository_snapshot", { repositoryPath }, () => copy(requireBrowserSnapshot(repositoryPath)));
+  },
+
+  watchRepositoryChanges(repositoryPath: string, requestGeneration: number): Promise<void> {
+    return request("watch_repository_changes", { repositoryPath, requestGeneration }, () => undefined);
+  },
+
+  stopRepositoryWatcher(requestGeneration: number): Promise<void> {
+    return request("stop_repository_watcher", { requestGeneration }, () => undefined);
+  },
+
   setRepositoryGroup(repositoryPath: string, group: string | null): Promise<RepositoryRecord> {
     return request("set_repository_group", { repositoryPath, group }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);

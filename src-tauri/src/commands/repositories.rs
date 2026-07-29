@@ -241,6 +241,25 @@ pub async fn get_repository_snapshot(
     .map_err(|_| AppError::new("command_failed", "仓库快照后台任务未能完成。"))?
 }
 
+/// Refreshes an already-open repository without recording another recent-open
+/// timestamp. Automatic refreshes can run often, so they must remain a read-only
+/// operation over application metadata.
+#[tauri::command]
+pub async fn refresh_repository_snapshot(
+    repository_path: String,
+    state: State<'_, AppState>,
+) -> Result<RepositorySnapshot, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        let _repository_operation_lease =
+            state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
+        snapshot_for(&state, &repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "仓库刷新后台任务未能完成。"))?
+}
+
 #[tauri::command]
 pub async fn set_repository_group(
     repository_path: String,
