@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
-import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag } from "naive-ui";
+import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag, useMessage } from "naive-ui";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
@@ -11,12 +11,17 @@ export default defineComponent({
   components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag, RepositoryDiffViewer },
   setup() {
     const workspace = useWorkspaceControllerContext();
+    const message = useMessage();
     const commitContextMenuOpen = ref(false);
     const commitContextMenuX = ref(0);
     const commitContextMenuY = ref(0);
     const commitContextTarget = ref<{ repositoryPath: string; sha: string } | null>(null);
     let commitContextMenuGeneration = 0;
     const commitContextMenuOptions = computed(() => [
+      { label: workspace.tr("复制完整 SHA", "Copy full SHA"), key: "copy-sha" },
+      { label: workspace.tr("复制提交摘要", "Copy commit summary"), key: "copy-summary" },
+      { label: workspace.tr("复制提交详情", "Copy commit details"), key: "copy-details" },
+      { type: "divider", key: "copy-divider" },
       { label: workspace.tr("在此提交创建标签…", "Create tag at this commit…"), key: "create-tag" },
     ]);
     const commitFileStatusCodes: Record<CommitFileStatus, string> = {
@@ -74,18 +79,74 @@ export default defineComponent({
       });
     }
 
+    function writeClipboardTextWithSelection(text: string): boolean {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        return document.execCommand("copy");
+      } catch {
+        return false;
+      } finally {
+        textarea.remove();
+      }
+    }
+
+    async function writeClipboardText(text: string): Promise<void> {
+      // Keep this synchronous attempt in the context-menu event call stack so
+      // WebViews that require transient user activation can grant clipboard access.
+      if (writeClipboardTextWithSelection(text)) return;
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(text);
+    }
+
+    function commitDetails(commit: CommitSummary): string {
+      const author = commit.authorEmail
+        ? `${commit.authorName || workspace.tr("未知作者", "Unknown author")} <${commit.authorEmail}>`
+        : commit.authorName || workspace.tr("未知作者", "Unknown author");
+      return `commit ${commit.sha}\nAuthor: ${author}\nDate: ${commit.authoredAt}\n\n    ${commit.summary || "—"}`;
+    }
+
+    async function copyCommitInformation(commit: CommitSummary, value: string | number): Promise<void> {
+      let text: string;
+      let successText: string;
+      if (value === "copy-sha") {
+        text = commit.sha;
+        successText = workspace.tr("完整 SHA 已复制。", "Full SHA copied.");
+      } else if (value === "copy-summary") {
+        text = commit.summary;
+        successText = workspace.tr("提交摘要已复制。", "Commit summary copied.");
+      } else if (value === "copy-details") {
+        text = commitDetails(commit);
+        successText = workspace.tr("提交详情已复制。", "Commit details copied.");
+      } else {
+        return;
+      }
+
+      try {
+        await writeClipboardText(text);
+        message.success(successText);
+      } catch {
+        message.error(workspace.tr("无法复制到剪贴板。", "Could not copy to the clipboard."));
+      }
+    }
+
     function selectCommitContextMenuItem(value: string | number): void {
       const target = commitContextTarget.value;
       commitContextMenuGeneration += 1;
       commitContextMenuOpen.value = false;
       commitContextTarget.value = null;
-      if (
-        value === "create-tag" &&
-        target &&
-        target.repositoryPath === workspace.activeRepositoryPath.value &&
-        workspace.commits.value.some((commit) => commit.sha === target.sha)
-      ) {
+      if (!target || target.repositoryPath !== workspace.activeRepositoryPath.value) return;
+      const commit = workspace.commits.value.find((candidate) => candidate.sha === target.sha);
+      if (!commit) return;
+      if (value === "create-tag") {
         workspace.openTagModal(target.sha);
+      } else {
+        void copyCommitInformation(commit, value);
       }
     }
 
@@ -127,7 +188,12 @@ export default defineComponent({
                       </n-space>
                     </template>
                     <n-spin :show="historyLoading">
-                      <div v-if="commits.length" class="history-commit-list" :aria-label="tr('提交历史列表', 'Commit history list')">
+                      <div
+                        v-if="commits.length"
+                        class="history-commit-list"
+                        :class="{ 'is-context-menu-open': commitContextMenuOpen }"
+                        :aria-label="tr('提交历史列表', 'Commit history list')"
+                      >
                         <button
                           v-for="commit in commits"
                           :key="commit.sha"

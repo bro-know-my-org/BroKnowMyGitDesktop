@@ -60,6 +60,10 @@
   padding: 3px;
 }
 
+.history-commit-list.is-context-menu-open {
+  overflow: hidden;
+}
+
 .history-commit-row {
   display: grid;
   width: 100%;
