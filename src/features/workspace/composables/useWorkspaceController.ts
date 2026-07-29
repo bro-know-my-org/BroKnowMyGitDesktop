@@ -1947,20 +1947,29 @@ async function unstageAll(): Promise<void> {
   }
 }
 
-function confirmDiscardChanges(paths: string[]): void {
+async function confirmDiscardChanges(paths: string[]): Promise<void> {
   if (!activeRepositoryPath.value || !paths.length) return;
+  const repositoryPath = activeRepositoryPath.value;
   const uniquePaths = [...new Set(paths)];
-  const includesUntracked = snapshot.value?.status.entries.some(
-    (entry) => uniquePaths.includes(entry.path) && !entry.indexStatus && entry.worktreeStatus === "?",
-  );
+  mutationBusy.value = true;
+  let discardPreview: Awaited<ReturnType<typeof api.previewDiscardChanges>>;
+  try {
+    discardPreview = await api.previewDiscardChanges(repositoryPath, uniquePaths);
+  } catch (error) {
+    reportError(error, tr("准备丢弃改动失败", "Could not prepare to discard changes"));
+    return;
+  } finally {
+    mutationBusy.value = false;
+  }
+  if (activeRepositoryPath.value !== repositoryPath) return;
   dialog.error({
     title: tr("丢弃改动", "Discard changes"),
     content: tr(
       "永久丢弃 {count} 个文件的工作区和暂存区改动？此操作不能撤销。{untracked}",
       "Permanently discard working-tree and staged changes in {count} file(s)? This cannot be undone.{untracked}",
       {
-        count: uniquePaths.length,
-        untracked: includesUntracked
+        count: discardPreview.pathCount,
+        untracked: discardPreview.untrackedCount > 0
           ? tr("其中的未跟踪文件会从磁盘删除。", " Untracked files among them will be deleted from disk.")
           : "",
       },
@@ -1968,9 +1977,13 @@ function confirmDiscardChanges(paths: string[]): void {
     positiveText: tr("丢弃改动", "Discard changes"),
     negativeText: tr("取消", "Cancel"),
     onPositiveClick: async () => {
+      if (activeRepositoryPath.value !== repositoryPath) {
+        message.warning(tr("当前仓库已切换，请重新操作。", "The active repository changed. Please try again."));
+        return;
+      }
       mutationBusy.value = true;
       try {
-        applySnapshot(await api.discardChanges(activeRepositoryPath.value!, uniquePaths));
+        applySnapshot(await api.discardChanges(repositoryPath, discardPreview.confirmation));
         if (selectedChange.value && uniquePaths.includes(selectedChange.value.path)) {
           clearDiffSelection();
         }
@@ -1985,7 +1998,7 @@ function confirmDiscardChanges(paths: string[]): void {
 }
 
 function discardSelectedChange(): void {
-  if (selectedChange.value) confirmDiscardChanges([selectedChange.value.path]);
+  if (selectedChange.value) void confirmDiscardChanges([selectedChange.value.path]);
 }
 
 async function confirmCleanUntracked(): Promise<void> {

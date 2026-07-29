@@ -1546,7 +1546,7 @@ fn unstages_files_without_head_in_an_unborn_repository() {
 }
 
 #[test]
-fn discard_staged_rename_restores_both_original_and_destination_paths() {
+fn confirmed_discard_of_staged_rename_restores_both_paths() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -1556,6 +1556,7 @@ fn discard_staged_rename_restores_both_original_and_destination_paths() {
         std::process::id()
     ));
     fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
     let run_git = |arguments: &[&str]| {
         let status = test_git_command()
             .args(["-C", repository.to_str().unwrap()])
@@ -1572,8 +1573,11 @@ fn discard_staged_rename_restores_both_original_and_destination_paths() {
     run_git(&["commit", "-qm", "initial"]);
     run_git(&["mv", "old-name.txt", "new-name.txt"]);
 
-    GitCore::new()
-        .discard_paths(&repository, &["new-name.txt".into()])
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["new-name.txt".into()])
+        .expect("rename discard state is captured");
+    git.discard_paths_with_fingerprint(&repository, &fingerprint)
         .expect("discarding a staged rename restores HEAD");
 
     assert_eq!(
@@ -1581,6 +1585,608 @@ fn discard_staged_rename_restores_both_original_and_destination_paths() {
         "original\n"
     );
     assert!(!repository.join("new-name.txt").exists());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_restores_a_deleted_file_and_parent_directory() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-deleted-parent-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::create_dir_all(repository.join("nested")).unwrap();
+    fs::write(repository.join("nested/file.txt"), "original\n").unwrap();
+    run_git(&["add", "nested/file.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::remove_file(repository.join("nested/file.txt")).unwrap();
+    fs::remove_dir(repository.join("nested")).unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["nested/file.txt".into()])
+        .expect("deleted path state is captured");
+    git.discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the deleted file is restored without overwriting a concurrent path");
+
+    assert_eq!(
+        fs::read_to_string(repository.join("nested/file.txt")).unwrap(),
+        "original\n"
+    );
+    assert!(git.status(&repository).unwrap().entries.is_empty());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_confirmed_discard_removes_parent_directories_created_by_the_transaction() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-parent-rollback-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::create_dir_all(repository.join("nested")).unwrap();
+    fs::write(repository.join("nested/file.txt"), "original\n").unwrap();
+    run_git(&["add", "nested/file.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::remove_file(repository.join("nested/file.txt")).unwrap();
+    fs::remove_dir(repository.join("nested")).unwrap();
+
+    let normal_git = GitCore::new();
+    let fingerprint = normal_git
+        .capture_discard_changes_fingerprint(&repository, &["nested/file.txt".into()])
+        .expect("deleted path state is captured");
+    let fake_git = repository.join("index-failure-git.sh");
+    fs::write(
+        &fake_git,
+        "#!/bin/sh\nroot=$(dirname \"$0\")\nis_checkout=0\nis_ls_files=0\nfor argument in \"$@\"; do\n  if [ \"$argument\" = checkout-index ]; then is_checkout=1; fi\n  if [ \"$argument\" = ls-files ]; then is_ls_files=1; fi\ndone\nif [ \"$is_ls_files\" -eq 1 ] && [ -f \"$root/fail-next-index-read\" ]; then exit 1; fi\ngit \"$@\"\nstatus=$?\nif [ \"$status\" -eq 0 ] && [ \"$is_checkout\" -eq 1 ]; then\n  : > \"$root/fail-next-index-read\"\nfi\nexit \"$status\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+
+    GitCore::with_executable(&fake_git)
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("the injected final index read failure aborts the discard");
+    assert!(!repository.join("nested").exists());
+    assert!(!repository.join("nested/file.txt").exists());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_rejects_a_changed_worktree_file() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-confirmation-worktree-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("changed.txt"), "original\n").unwrap();
+    run_git(&["add", "changed.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::write(repository.join("changed.txt"), "reviewed\n").unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["changed.txt".into()])
+        .expect("discard state is captured");
+    fs::write(repository.join("changed.txt"), "newer\n").unwrap();
+
+    let error = git
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("a newer edit must not be discarded by an older confirmation");
+    assert_eq!(error.code(), "discard_confirmation_changed");
+    assert_eq!(
+        fs::read_to_string(repository.join("changed.txt")).unwrap(),
+        "newer\n"
+    );
+    assert!(fs::read_dir(&repository).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".bkm-discard-transaction-")));
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_discard_does_not_overwrite_a_file_changed_during_execution() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-execution-race-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("changed.txt"), "original\n").unwrap();
+    run_git(&["add", "changed.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::write(repository.join("changed.txt"), "reviewed\n").unwrap();
+
+    let normal_git = GitCore::new();
+    let fingerprint = normal_git
+        .capture_discard_changes_fingerprint(&repository, &["changed.txt".into()])
+        .expect("discard state is captured");
+    let fake_git = repository.join("race-git.sh");
+    fs::write(
+        &fake_git,
+        "#!/bin/sh\nrace=0\nfor argument in \"$@\"; do\n  if [ \"$argument\" = checkout-index ]; then race=1; fi\ndone\ngit \"$@\"\nstatus=$?\nif [ \"$status\" -eq 0 ] && [ \"$race\" -eq 1 ]; then\n  target=$(dirname \"$0\")/changed.txt\n  rm -f \"$target\"\n  printf 'newer\\n' > \"$target\"\nfi\nexit \"$status\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let error = GitCore::with_executable(&fake_git)
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("an edit racing the final mutation must not be overwritten");
+    assert_eq!(error.code(), "discard_confirmation_changed");
+    assert_eq!(
+        fs::read_to_string(repository.join("changed.txt")).unwrap(),
+        "newer\n"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_discard_holds_the_current_branch_ref_during_index_commit() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-ref-lock-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("changed.txt"), "original\n").unwrap();
+    run_git(&["add", "changed.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    let reviewed_head = run_git(&["rev-parse", "HEAD"]);
+    fs::write(repository.join("changed.txt"), "future\n").unwrap();
+    run_git(&["commit", "-qam", "future"]);
+    let future_head = run_git(&["rev-parse", "HEAD"]);
+    run_git(&["reset", "--hard", &reviewed_head]);
+    fs::write(repository.join("changed.txt"), "reviewed\n").unwrap();
+
+    let normal_git = GitCore::new();
+    let fingerprint = normal_git
+        .capture_discard_changes_fingerprint(&repository, &["changed.txt".into()])
+        .expect("discard state is captured");
+    let fake_git = repository.join("ref-race-git.sh");
+    fs::write(
+        &fake_git,
+        format!(
+            "#!/bin/sh\nrace=0\nfor argument in \"$@\"; do\n  if [ \"$argument\" = checkout-index ]; then race=1; fi\ndone\ngit \"$@\"\nstatus=$?\nif [ \"$status\" -eq 0 ] && [ \"$race\" -eq 1 ]; then\n  root=$(dirname \"$0\")\n  if git -C \"$root\" update-ref refs/heads/main {future_head}; then\n    printf changed > \"$root/ref-race-result\"\n  else\n    printf blocked > \"$root/ref-race-result\"\n  fi\nfi\nexit \"$status\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+
+    GitCore::with_executable(&fake_git)
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the guarded discard succeeds against the reviewed commit");
+    assert_eq!(run_git(&["rev-parse", "HEAD"]), reviewed_head);
+    assert_eq!(
+        fs::read_to_string(repository.join("ref-race-result")).unwrap(),
+        "blocked"
+    );
+    assert_eq!(
+        fs::read_to_string(repository.join("changed.txt")).unwrap(),
+        "original\n"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_discard_supports_a_split_index() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-split-index-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("changed.txt"), "original\n").unwrap();
+    run_git(&["add", "changed.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    run_git(&["update-index", "--split-index"]);
+    fs::write(repository.join("changed.txt"), "reviewed\n").unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["changed.txt".into()])
+        .expect("split-index discard state is captured");
+    git.discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the prepared index resolves its adjacent shared index");
+
+    assert_eq!(
+        fs::read_to_string(repository.join("changed.txt")).unwrap(),
+        "original\n"
+    );
+    assert!(git.status(&repository).unwrap().entries.is_empty());
+    let git_directory = repository.join(".git");
+    assert!(fs::read_dir(git_directory).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".bkm-discard-index-")));
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_discard_rejects_gitlinks_before_mutation() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-gitlink-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("seed.txt"), "one\n").unwrap();
+    run_git(&["add", "seed.txt"]);
+    run_git(&["commit", "-qm", "one"]);
+    let first = run_git(&["rev-parse", "HEAD"]);
+    fs::write(repository.join("seed.txt"), "two\n").unwrap();
+    run_git(&["commit", "-qam", "two"]);
+    let second = run_git(&["rev-parse", "HEAD"]);
+    run_git(&[
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        &format!("160000,{first},submodule"),
+    ]);
+    run_git(&["commit", "-qm", "add gitlink"]);
+    run_git(&[
+        "update-index",
+        "--cacheinfo",
+        &format!("160000,{second},submodule"),
+    ]);
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["submodule".into()])
+        .expect("gitlink discard state is captured");
+    let error = git
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("gitlink worktree changes need a dedicated protected transaction");
+    assert_eq!(error.code(), "discard_protected_unsupported");
+    let staged = run_git(&["ls-files", "--stage", "submodule"]);
+    assert!(staged.contains(&second));
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_rejects_an_index_change() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-confirmation-index-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("changed.txt"), "original\n").unwrap();
+    run_git(&["add", "changed.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::write(repository.join("changed.txt"), "reviewed\n").unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["changed.txt".into()])
+        .expect("discard state is captured");
+    run_git(&["add", "changed.txt"]);
+
+    let error = git
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("a changed index must invalidate the confirmation");
+    assert_eq!(error.code(), "discard_confirmation_changed");
+    assert_eq!(
+        git.status(&repository).unwrap().entries[0].index_status,
+        "M"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_rejects_a_replaced_untracked_file() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-confirmation-untracked-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+    fs::write(repository.join("untracked.txt"), "reviewed\n").unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+        .expect("discard state is captured");
+    fs::remove_file(repository.join("untracked.txt")).unwrap();
+    fs::write(repository.join("untracked.txt"), "replacement\n").unwrap();
+
+    let error = git
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect_err("a replacement must not inherit the old confirmation");
+    assert_eq!(error.code(), "discard_confirmation_changed");
+    assert_eq!(
+        fs::read_to_string(repository.join("untracked.txt")).unwrap(),
+        "replacement\n"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn confirmed_untracked_discard_blocks_promotion_into_the_index() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-discard-untracked-index-race-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+    run_git(&["init", "-q"]);
+    fs::write(repository.join("untracked.txt"), "reviewed\n").unwrap();
+
+    let normal_git = GitCore::new();
+    let fingerprint = normal_git
+        .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+        .expect("untracked discard state is captured");
+    let fake_git = repository.join("index-promotion-git.sh");
+    fs::write(
+        &fake_git,
+        "#!/bin/sh\nroot=$(dirname \"$0\")\nis_ls_files=0\nfor argument in \"$@\"; do\n  if [ \"$argument\" = ls-files ]; then is_ls_files=1; fi\ndone\nif [ \"$is_ls_files\" -eq 1 ] && [ -f \"$root/.git/index.lock\" ]; then\n  if git -C \"$root\" add untracked.txt; then\n    printf promoted > \"$root/index-promotion-result\"\n  else\n    printf blocked > \"$root/index-promotion-result\"\n  fi\nfi\ngit \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+
+    GitCore::with_executable(&fake_git)
+        .discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the untracked path is claimed while index writers are blocked");
+    assert_eq!(
+        fs::read_to_string(repository.join("index-promotion-result")).unwrap(),
+        "blocked"
+    );
+    assert!(!repository.join("untracked.txt").exists());
+    assert!(run_git(&["ls-files", "untracked.txt"]).is_empty());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_restores_tracked_and_removes_untracked_paths() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-confirmed-discard-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "discard@example.invalid"]);
+    run_git(&["config", "user.name", "Discard Test"]);
+    fs::write(repository.join("tracked.txt"), "original\n").unwrap();
+    run_git(&["add", "tracked.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
+    fs::write(repository.join("untracked.txt"), "temporary\n").unwrap();
+
+    let git = GitCore::new();
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(
+            &repository,
+            &["tracked.txt".into(), "untracked.txt".into()],
+        )
+        .expect("discard state is captured");
+    git.discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the exact reviewed state is discarded");
+
+    assert_eq!(
+        fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+        "original\n"
+    );
+    assert!(!repository.join("untracked.txt").exists());
+    assert!(git.status(&repository).unwrap().entries.is_empty());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn confirmed_discard_removes_a_staged_file_from_an_unborn_repository() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-confirmed-discard-unborn-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let _cleanup = TemporaryTestDirectory(repository.clone());
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+    fs::write(repository.join("first.txt"), "first\n").unwrap();
+    let git = GitCore::new();
+    git.stage_paths(&repository, &["first.txt".into()]).unwrap();
+
+    let fingerprint = git
+        .capture_discard_changes_fingerprint(&repository, &["first.txt".into()])
+        .expect("discard state is captured");
+    git.discard_paths_with_fingerprint(&repository, &fingerprint)
+        .expect("the staged initial file is discarded");
+
+    assert!(!repository.join("first.txt").exists());
+    assert!(git.status(&repository).unwrap().entries.is_empty());
 
     let _ = fs::remove_dir_all(repository);
 }

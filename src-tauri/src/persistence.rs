@@ -4,7 +4,7 @@ use crate::domain::{
     AccountProfile, AuthenticationMethod, CodeHostEndpoint, ExternalEditorConfig,
     KeychainReference, RemoteBinding, RepositoryRecord,
 };
-use crate::git_core::{CleanUntrackedPathFingerprint, GitCore};
+use crate::git_core::{CleanUntrackedPathFingerprint, DiscardChangesFingerprint, GitCore};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -19,6 +19,8 @@ const STORE_FILE_NAME: &str = "profiles.json";
 const MAX_REPOSITORIES: usize = 200;
 const CLEAN_UNTRACKED_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 const MAX_CLEAN_UNTRACKED_CONFIRMATIONS: usize = 256;
+const DISCARD_CHANGES_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
+const MAX_DISCARD_CHANGES_CONFIRMATIONS: usize = 256;
 
 /// Durable intent recorded before `gh repo create --push`. It contains only
 /// local metadata needed to reconcile an origin that was created successfully
@@ -538,6 +540,7 @@ pub struct AppState {
     active_cli_account_imports: Arc<Mutex<HashSet<String>>>,
     account_status_refresh_generation: Arc<Mutex<u64>>,
     clean_untracked_confirmations: Arc<Mutex<HashMap<String, CleanUntrackedConfirmation>>>,
+    discard_changes_confirmations: Arc<Mutex<HashMap<String, DiscardChangesConfirmation>>>,
     // An advisory lock held for this AppState's lifetime. It serializes
     // independent desktop processes using the same profile directory.
     _profile_store_lock: Arc<fs::File>,
@@ -546,6 +549,12 @@ pub struct AppState {
 struct CleanUntrackedConfirmation {
     token: String,
     fingerprints: Vec<CleanUntrackedPathFingerprint>,
+    issued_at: Instant,
+}
+
+struct DiscardChangesConfirmation {
+    token: String,
+    fingerprint: DiscardChangesFingerprint,
     issued_at: Instant,
 }
 
@@ -654,6 +663,7 @@ impl AppState {
             active_cli_account_imports: Arc::new(Mutex::new(HashSet::new())),
             account_status_refresh_generation: Arc::new(Mutex::new(0)),
             clean_untracked_confirmations: Arc::new(Mutex::new(HashMap::new())),
+            discard_changes_confirmations: Arc::new(Mutex::new(HashMap::new())),
             _profile_store_lock: Arc::new(profile_store_lock),
         };
         state.retry_pending_secret_deletions_in_background();
@@ -801,6 +811,87 @@ impl AppState {
         let fingerprints = confirmation.fingerprints.clone();
         confirmations.remove(repository_path);
         Ok(fingerprints)
+    }
+
+    /// Records the exact selected Git and filesystem state shown by a discard
+    /// confirmation. A later preview for the same repository supersedes the
+    /// earlier one instead of allowing multiple destructive grants to coexist.
+    pub(crate) fn issue_discard_changes_confirmation(
+        &self,
+        repository_path: &str,
+        fingerprint: DiscardChangesFingerprint,
+    ) -> Result<String, AppError> {
+        let token = Uuid::new_v4().to_string();
+        let mut confirmations = self
+            .discard_changes_confirmations
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        confirmations.retain(|_, confirmation| {
+            confirmation.issued_at.elapsed() <= DISCARD_CHANGES_CONFIRMATION_TTL
+        });
+        if !confirmations.contains_key(repository_path)
+            && confirmations.len() >= MAX_DISCARD_CHANGES_CONFIRMATIONS
+        {
+            if let Some(oldest_path) = confirmations
+                .iter()
+                .min_by_key(|(_, confirmation)| confirmation.issued_at)
+                .map(|(path, _)| path.clone())
+            {
+                confirmations.remove(&oldest_path);
+            }
+        }
+        confirmations.insert(
+            repository_path.to_owned(),
+            DiscardChangesConfirmation {
+                token: token.clone(),
+                fingerprint,
+                issued_at: Instant::now(),
+            },
+        );
+        Ok(token)
+    }
+
+    /// Consumes a repository-scoped discard confirmation. Invalid attempts do
+    /// not consume a matching grant, but a successful take is always one-shot.
+    pub(crate) fn take_discard_changes_confirmation(
+        &self,
+        repository_path: &str,
+        token: &str,
+    ) -> Result<DiscardChangesFingerprint, AppError> {
+        let mut confirmations = self
+            .discard_changes_confirmations
+            .lock()
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))?;
+        confirmations.retain(|path, confirmation| {
+            path == repository_path
+                || confirmation.issued_at.elapsed() <= DISCARD_CHANGES_CONFIRMATION_TTL
+        });
+        let confirmation = confirmations.get(repository_path).ok_or_else(|| {
+            AppError::new(
+                "discard_confirmation_required",
+                "请先重新确认要丢弃的改动。",
+            )
+        })?;
+        if confirmation.token != token {
+            return Err(AppError::new(
+                "discard_confirmation_required",
+                "请先重新确认要丢弃的改动。",
+            ));
+        }
+        if confirmation.issued_at.elapsed() > DISCARD_CHANGES_CONFIRMATION_TTL {
+            confirmations.remove(repository_path);
+            return Err(AppError::new(
+                "discard_confirmation_expired",
+                "丢弃改动确认已过期，请重新确认。",
+            ));
+        }
+        let confirmation = confirmations.remove(repository_path).ok_or_else(|| {
+            AppError::new(
+                "discard_confirmation_required",
+                "请先重新确认要丢弃的改动。",
+            )
+        })?;
+        Ok(confirmation.fingerprint)
     }
 
     pub fn mutate<T>(
@@ -1384,6 +1475,191 @@ mod tests {
             "clean_untracked_confirmation_required"
         );
 
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn discard_confirmation_is_repository_scoped_and_one_shot() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-discard-confirmation-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let repository = directory.join("repository");
+        let other_repository = directory.join("other-repository");
+        let git = GitCore::new();
+        git.init_repository(&repository, None)
+            .expect("test repository initializes");
+        git.init_repository(&other_repository, None)
+            .expect("other repository initializes");
+        std::fs::write(repository.join("untracked.txt"), "previewed\n")
+            .expect("untracked file is created");
+        let repository_path = repository.to_string_lossy().into_owned();
+        let other_repository_path = other_repository.to_string_lossy().into_owned();
+        let fingerprint = git
+            .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+            .expect("discard state is captured");
+        let token = state
+            .issue_discard_changes_confirmation(&repository_path, fingerprint)
+            .expect("discard preview issues a token");
+
+        assert_eq!(
+            state
+                .take_discard_changes_confirmation(&other_repository_path, &token)
+                .expect_err("a token cannot authorize another repository")
+                .code(),
+            "discard_confirmation_required"
+        );
+        let fingerprint = state
+            .take_discard_changes_confirmation(&repository_path, &token)
+            .expect("the matching repository consumes its confirmation");
+        assert_eq!(fingerprint.path_count(), 1);
+        assert_eq!(
+            state
+                .take_discard_changes_confirmation(&repository_path, &token)
+                .expect_err("a consumed confirmation cannot be replayed")
+                .code(),
+            "discard_confirmation_required"
+        );
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn discard_confirmation_expires_and_is_removed() {
+        let directory = std::env::temp_dir().join(format!(
+            "bkm-discard-confirmation-expiry-{}",
+            Uuid::new_v4()
+        ));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let repository = directory.join("repository");
+        let git = GitCore::new();
+        git.init_repository(&repository, None)
+            .expect("test repository initializes");
+        std::fs::write(repository.join("untracked.txt"), "previewed\n")
+            .expect("untracked file is created");
+        let repository_path = repository.to_string_lossy().into_owned();
+        let fingerprint = git
+            .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+            .expect("discard state is captured");
+        let token = state
+            .issue_discard_changes_confirmation(&repository_path, fingerprint)
+            .expect("discard preview issues a token");
+        {
+            let mut confirmations = state
+                .discard_changes_confirmations
+                .lock()
+                .expect("confirmation state is available");
+            confirmations
+                .get_mut(&repository_path)
+                .expect("discard confirmation exists")
+                .issued_at =
+                Instant::now() - DISCARD_CHANGES_CONFIRMATION_TTL - Duration::from_secs(1);
+        }
+
+        assert_eq!(
+            state
+                .take_discard_changes_confirmation(&repository_path, &token)
+                .expect_err("an expired confirmation cannot be consumed")
+                .code(),
+            "discard_confirmation_expired"
+        );
+        assert!(!state
+            .discard_changes_confirmations
+            .lock()
+            .expect("confirmation state is available")
+            .contains_key(&repository_path));
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn newer_discard_preview_supersedes_the_previous_token() {
+        let directory = std::env::temp_dir().join(format!(
+            "bkm-discard-confirmation-replace-{}",
+            Uuid::new_v4()
+        ));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let repository = directory.join("repository");
+        let git = GitCore::new();
+        git.init_repository(&repository, None)
+            .expect("test repository initializes");
+        std::fs::write(repository.join("untracked.txt"), "previewed\n")
+            .expect("untracked file is created");
+        let repository_path = repository.to_string_lossy().into_owned();
+        let fingerprint = git
+            .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+            .expect("discard state is captured");
+        let first = state
+            .issue_discard_changes_confirmation(&repository_path, fingerprint.clone())
+            .expect("first preview issues a token");
+        let second = state
+            .issue_discard_changes_confirmation(&repository_path, fingerprint)
+            .expect("second preview replaces the token");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            state
+                .take_discard_changes_confirmation(&repository_path, &first)
+                .expect_err("the older token is invalidated")
+                .code(),
+            "discard_confirmation_required"
+        );
+        state
+            .take_discard_changes_confirmation(&repository_path, &second)
+            .expect("the newest token remains valid");
+
+        drop(state);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn discard_confirmation_store_evicts_the_oldest_repository() {
+        let directory =
+            std::env::temp_dir().join(format!("bkm-discard-confirmation-bound-{}", Uuid::new_v4()));
+        let state = AppState::load(&directory).expect("profile store loads");
+        let repository = directory.join("repository");
+        let git = GitCore::new();
+        git.init_repository(&repository, None)
+            .expect("test repository initializes");
+        std::fs::write(repository.join("untracked.txt"), "previewed\n")
+            .expect("untracked file is created");
+        let fingerprint = git
+            .capture_discard_changes_fingerprint(&repository, &["untracked.txt".into()])
+            .expect("discard state is captured");
+
+        for index in 0..MAX_DISCARD_CHANGES_CONFIRMATIONS {
+            state
+                .issue_discard_changes_confirmation(
+                    &format!("repository-{index}"),
+                    fingerprint.clone(),
+                )
+                .expect("bounded confirmation is issued");
+        }
+        state
+            .discard_changes_confirmations
+            .lock()
+            .expect("confirmation state is available")
+            .get_mut("repository-0")
+            .expect("oldest confirmation exists")
+            .issued_at = Instant::now() - Duration::from_secs(1);
+        state
+            .issue_discard_changes_confirmation(
+                &format!("repository-{}", MAX_DISCARD_CHANGES_CONFIRMATIONS),
+                fingerprint,
+            )
+            .expect("a newer repository evicts the oldest confirmation");
+        let confirmations = state
+            .discard_changes_confirmations
+            .lock()
+            .expect("confirmation state is available");
+        assert_eq!(confirmations.len(), MAX_DISCARD_CHANGES_CONFIRMATIONS);
+        assert!(!confirmations.contains_key("repository-0"));
+        assert!(confirmations
+            .contains_key(&format!("repository-{}", MAX_DISCARD_CHANGES_CONFIRMATIONS)));
+
+        drop(confirmations);
         drop(state);
         let _ = std::fs::remove_dir_all(directory);
     }

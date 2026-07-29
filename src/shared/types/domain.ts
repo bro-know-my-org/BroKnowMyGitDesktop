@@ -246,6 +246,12 @@ export interface CleanUntrackedPreview {
   confirmation: string;
 }
 
+export interface DiscardChangesPreview {
+  confirmation: string;
+  pathCount: number;
+  untrackedCount: number;
+}
+
 export interface CodeHostRepositoryInfo {
   fullName: string;
   description: string | null;

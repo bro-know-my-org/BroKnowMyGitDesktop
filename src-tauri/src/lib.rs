@@ -46,6 +46,7 @@ pub fn run() {
             commands::stage_paths,
             commands::unstage_paths,
             commands::apply_patch,
+            commands::preview_discard_changes,
             commands::discard_changes,
             commands::commit_changes,
             commands::create_branch,

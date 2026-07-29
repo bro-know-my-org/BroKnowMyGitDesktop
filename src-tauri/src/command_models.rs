@@ -46,6 +46,17 @@ pub struct CleanUntrackedPreview {
     pub confirmation: String,
 }
 
+/// A short-lived server-side confirmation for one exact discard operation.
+/// Execution accepts only the token, so callers cannot substitute a different
+/// repository path set after the user has reviewed the warning.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscardChangesPreview {
+    pub confirmation: String,
+    pub path_count: usize,
+    pub untracked_count: usize,
+}
+
 impl NetworkOperationResult {
     pub fn completed(message: impl Into<String>) -> Self {
         Self {

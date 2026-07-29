@@ -116,15 +116,49 @@ pub fn apply_patch(
 }
 
 #[tauri::command]
-pub fn discard_changes(
+pub fn preview_discard_changes(
     repository_path: String,
     paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<DiscardChangesPreview, AppError> {
+    let repository = repository_root(&repository_path)?;
+    let _repository_operation_lease =
+        state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
+    let git = GitCore::new();
+    let fingerprint = git.capture_discard_changes_fingerprint(&repository, &paths)?;
+    // Refuse to issue a token if the selected state changed while the preview
+    // was being assembled.
+    git.validate_discard_changes_fingerprint(&repository, &fingerprint)?;
+    let path_count = fingerprint.path_count();
+    let untracked_count = fingerprint.untracked_count();
+    #[cfg(not(target_os = "linux"))]
+    if path_count > untracked_count {
+        return Err(AppError::new(
+            "discard_protected_unsupported",
+            "当前平台暂不支持安全丢弃已跟踪改动。",
+        ));
+    }
+    let confirmation =
+        state.issue_discard_changes_confirmation(&repository.to_string_lossy(), fingerprint)?;
+    Ok(DiscardChangesPreview {
+        confirmation,
+        path_count,
+        untracked_count,
+    })
+}
+
+#[tauri::command]
+pub fn discard_changes(
+    repository_path: String,
+    confirmation: String,
     state: State<'_, AppState>,
 ) -> Result<RepositorySnapshot, AppError> {
     let repository = repository_root(&repository_path)?;
     let _repository_operation_lease =
         state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-    GitCore::new().discard_paths(&repository, &paths)?;
+    let fingerprint =
+        state.take_discard_changes_confirmation(&repository.to_string_lossy(), &confirmation)?;
+    GitCore::new().discard_paths_with_fingerprint(&repository, &fingerprint)?;
     snapshot_for(&state, &repository)
 }
 

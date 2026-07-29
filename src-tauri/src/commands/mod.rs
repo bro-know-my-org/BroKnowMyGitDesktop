@@ -4,7 +4,8 @@ use crate::codehost::{
     GitHubPublishOwner, PullRequestSummary,
 };
 use crate::command_models::{
-    CleanUntrackedPreview, GitOperationState, NetworkOperationResult, RepositorySnapshot,
+    CleanUntrackedPreview, DiscardChangesPreview, GitOperationState, NetworkOperationResult,
+    RepositorySnapshot,
 };
 use crate::credential_broker::{
     default_pat_keychain_reference, delete_personal_access_token, gh_auth_status, glab_auth_status,

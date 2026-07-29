@@ -12,6 +12,7 @@ import type {
   CodeHostRepositoryInfo,
   CreatePullRequestInput,
   CreateBranchInput,
+  DiscardChangesPreview,
   ExternalEditorConfig,
   GitOperationKind,
   GitHubPublishOwner,
@@ -372,6 +373,13 @@ let browserLfsStatus: LfsStatus = {
 };
 let browserExternalEditor: ExternalEditorConfig | null = null;
 let browserCleanUntrackedConfirmation: { repositoryPath: string; token: string; paths: Set<string> } | null = null;
+const browserDiscardConfirmationTtlMs = 60_000;
+let browserDiscardChangesConfirmation: {
+  repositoryPath: string;
+  token: string;
+  paths: Set<string>;
+  issuedAt: number;
+} | null = null;
 type BrowserStash = StashEntry & { entries: GitStatusEntry[] };
 
 let browserStashes: BrowserStash[] = [];
@@ -531,6 +539,7 @@ function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): Re
   // fingerprinted flow. Any intervening mock mutation can therefore replace
   // an untracked entry at the same path, so it invalidates the preview.
   browserCleanUntrackedConfirmation = null;
+  browserDiscardChangesConfirmation = null;
   return copy(browserSnapshot);
 }
 
@@ -1135,12 +1144,43 @@ export const api = {
     });
   },
 
-  discardChanges(repositoryPath: string, paths: string[]): Promise<RepositorySnapshot> {
-    return request("discard_changes", { repositoryPath, paths }, () => {
+  previewDiscardChanges(repositoryPath: string, paths: string[]): Promise<DiscardChangesPreview> {
+    return request("preview_discard_changes", { repositoryPath, paths }, () => {
       requireBrowserSnapshot(repositoryPath);
       const selected = new Set(paths);
-      const found = browserSnapshot.status.entries.some((entry) => selected.has(entry.path));
-      if (!found) throw { code: "nothing_to_discard", message: "没有可丢弃的改动。" } satisfies AppError;
+      const entries = browserSnapshot.status.entries.filter((entry) => selected.has(entry.path));
+      if (!entries.length) throw { code: "nothing_to_discard", message: "没有可丢弃的改动。" } satisfies AppError;
+      const confirmation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      browserDiscardChangesConfirmation = {
+        repositoryPath,
+        token: confirmation,
+        paths: selected,
+        issuedAt: Date.now(),
+      };
+      return {
+        confirmation,
+        pathCount: entries.length,
+        untrackedCount: entries.filter((entry) => !entry.indexStatus && entry.worktreeStatus === "?").length,
+      };
+    });
+  },
+
+  discardChanges(repositoryPath: string, confirmation: string): Promise<RepositorySnapshot> {
+    return request("discard_changes", { repositoryPath, confirmation }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      if (
+        !confirmation
+        || confirmation !== browserDiscardChangesConfirmation?.token
+        || repositoryPath !== browserDiscardChangesConfirmation?.repositoryPath
+      ) {
+        throw { code: "discard_confirmation_required", message: "请先重新确认要丢弃的改动。" } satisfies AppError;
+      }
+      if (Date.now() - browserDiscardChangesConfirmation.issuedAt > browserDiscardConfirmationTtlMs) {
+        browserDiscardChangesConfirmation = null;
+        throw { code: "discard_confirmation_expired", message: "丢弃改动确认已过期，请重新确认。" } satisfies AppError;
+      }
+      const selected = browserDiscardChangesConfirmation.paths;
+      browserDiscardChangesConfirmation = null;
       return updateMockSnapshot((snapshot) => {
         snapshot.status.entries = snapshot.status.entries.filter((entry) => !selected.has(entry.path));
       });

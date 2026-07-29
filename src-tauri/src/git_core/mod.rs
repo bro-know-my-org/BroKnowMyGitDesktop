@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -71,7 +71,7 @@ mod workspace;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use changes::CleanUntrackedPathFingerprint;
+pub(crate) use changes::{CleanUntrackedPathFingerprint, DiscardChangesFingerprint};
 pub use editor::normalize_external_editor_config;
 pub use environment::GitEnvironment;
 pub use models::{

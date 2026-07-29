@@ -3,6 +3,7 @@ use super::environment::*;
 use super::error::*;
 use super::models::*;
 use super::parser::*;
+use super::runtime::git_path_from_output;
 use super::validation::*;
 use super::*;
 use std::collections::HashMap;
@@ -27,6 +28,37 @@ static ACTIVE_EXTERNAL_EDITOR_REAPERS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) struct CleanUntrackedPathFingerprint {
     pub(crate) path: String,
     identity: CleanUntrackedPathIdentity,
+}
+
+/// Exact repository and filesystem state authorized by a discard preview.
+/// This value remains backend-only and is consumed through a short-lived
+/// token rather than being trusted from IPC input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DiscardChangesFingerprint {
+    paths: Vec<String>,
+    head_commit: Option<String>,
+    head_reference: Option<String>,
+    entries: Vec<GitStatusEntry>,
+    index_entries: Vec<u8>,
+    worktree_paths: Vec<DiscardWorktreePathFingerprint>,
+    removal_fingerprints: Vec<CleanUntrackedPathFingerprint>,
+    untracked_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DiscardWorktreePathFingerprint {
+    Missing(String),
+    Present(CleanUntrackedPathFingerprint),
+}
+
+impl DiscardChangesFingerprint {
+    pub(crate) fn path_count(&self) -> usize {
+        self.paths.len()
+    }
+
+    pub(crate) fn untracked_count(&self) -> usize {
+        self.untracked_count
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +106,46 @@ fn clean_untracked_confirmation_changed_error() -> AppError {
         "clean_untracked_confirmation_changed",
         "未跟踪文件已变化，请重新预览后再清理。",
     )
+}
+
+fn discard_confirmation_changed_error() -> AppError {
+    AppError::new(
+        "discard_confirmation_changed",
+        "所选改动已变化，请重新确认后再丢弃。",
+    )
+}
+
+fn discard_index_contains_gitlink(index_entries: &[u8]) -> Result<bool, AppError> {
+    for record in index_entries
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
+            return Err(AppError::new(
+                "git_parse_error",
+                "无法读取待丢弃的暂存区状态。",
+            ));
+        };
+        if record[..tab].starts_with(b"160000 ") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn discard_worktree_path_fingerprint(
+    repository: &Path,
+    relative_path: &str,
+) -> Result<DiscardWorktreePathFingerprint, AppError> {
+    match fs::symlink_metadata(repository.join(relative_path)) {
+        Ok(_) => clean_untracked_path_fingerprint(repository, relative_path)
+            .map(DiscardWorktreePathFingerprint::Present)
+            .map_err(|_| discard_confirmation_changed_error()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(
+            DiscardWorktreePathFingerprint::Missing(relative_path.to_owned()),
+        ),
+        Err(_) => Err(discard_confirmation_changed_error()),
+    }
 }
 
 fn clean_untracked_path_fingerprint(
@@ -312,6 +384,634 @@ fn rename_at_no_replace(
     } else {
         Err(std::io::Error::last_os_error())
     }
+}
+
+#[cfg(target_os = "linux")]
+fn discard_transaction_cleanup_error() -> AppError {
+    AppError::with_safe_details(
+        "discard_cleanup_required",
+        "改动已丢弃，但临时备份无法自动清理。",
+        "请在仓库根目录检查并清理 .bkm-discard-transaction-* 或 .bkm-discard-cleanup-* 目录。",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn claim_directory_entry_for_cleanup(
+    directory: &fs::File,
+    name: &CStr,
+    expected: &libc::stat,
+) -> std::io::Result<CString> {
+    let claimed = CString::new(format!("entry-{}", Uuid::new_v4()))
+        .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+    rename_at_no_replace(directory.as_raw_fd(), name, directory.as_raw_fd(), &claimed)?;
+    let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+    let current_result = unsafe {
+        libc::fstatat(
+            directory.as_raw_fd(),
+            claimed.as_ptr(),
+            current.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if current_result == 0 {
+        let current = unsafe { current.assume_init() };
+        if current.st_dev == expected.st_dev && current.st_ino == expected.st_ino {
+            return Ok(claimed);
+        }
+    }
+    let _ = rename_at_no_replace(directory.as_raw_fd(), &claimed, directory.as_raw_fd(), name);
+    Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+}
+
+#[cfg(target_os = "linux")]
+fn remove_directory_contents_at(directory: &fs::File) -> std::io::Result<()> {
+    let duplicated = unsafe { libc::dup(directory.as_raw_fd()) };
+    if duplicated < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let stream = unsafe { libc::fdopendir(duplicated) };
+    if stream.is_null() {
+        unsafe { libc::close(duplicated) };
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let result = (|| -> std::io::Result<()> {
+        loop {
+            unsafe { *libc::__errno_location() = 0 };
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                let error = std::io::Error::last_os_error();
+                return if error.raw_os_error() == Some(0) {
+                    Ok(())
+                } else {
+                    Err(error)
+                };
+            }
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+            if name.to_bytes() == b"." || name.to_bytes() == b".." {
+                continue;
+            }
+            let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe {
+                libc::fstatat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    metadata.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let metadata = unsafe { metadata.assume_init() };
+            if metadata.st_mode & libc::S_IFMT == libc::S_IFDIR {
+                let child = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        name.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    )
+                };
+                if child < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let child = unsafe { fs::File::from_raw_fd(child) };
+                let mut opened = std::mem::MaybeUninit::<libc::stat>::uninit();
+                if unsafe { libc::fstat(child.as_raw_fd(), opened.as_mut_ptr()) } != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let opened = unsafe { opened.assume_init() };
+                if opened.st_dev != metadata.st_dev || opened.st_ino != metadata.st_ino {
+                    return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                }
+                remove_directory_contents_at(&child)?;
+                let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+                if unsafe {
+                    libc::fstatat(
+                        directory.as_raw_fd(),
+                        name.as_ptr(),
+                        current.as_mut_ptr(),
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                } != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let current = unsafe { current.assume_init() };
+                if current.st_dev != opened.st_dev || current.st_ino != opened.st_ino {
+                    return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                }
+                let claimed = claim_directory_entry_for_cleanup(directory, name, &opened)?;
+                if unsafe {
+                    libc::unlinkat(directory.as_raw_fd(), claimed.as_ptr(), libc::AT_REMOVEDIR)
+                } != 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+            } else {
+                let claimed = claim_directory_entry_for_cleanup(directory, name, &metadata)?;
+                if unsafe { libc::unlinkat(directory.as_raw_fd(), claimed.as_ptr(), 0) } != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+        }
+    })();
+    unsafe { libc::closedir(stream) };
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn remove_stale_empty_discard_cleanup_directories(worktree: &fs::File) {
+    let duplicated = unsafe { libc::dup(worktree.as_raw_fd()) };
+    if duplicated < 0 {
+        return;
+    }
+    let stream = unsafe { libc::fdopendir(duplicated) };
+    if stream.is_null() {
+        unsafe { libc::close(duplicated) };
+        return;
+    }
+    let mut inspected = 0usize;
+    loop {
+        let entry = unsafe { libc::readdir(stream) };
+        if entry.is_null() || inspected >= 256 {
+            break;
+        }
+        inspected += 1;
+        let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) };
+        if !name.to_bytes().starts_with(b".bkm-discard-cleanup-") {
+            continue;
+        }
+        // rmdir semantics are intentional: a retained recovery directory or
+        // any concurrently populated replacement is never removed.
+        let _ = unsafe { libc::unlinkat(worktree.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    }
+    unsafe { libc::closedir(stream) };
+}
+
+#[cfg(target_os = "linux")]
+struct DiscardTransaction {
+    worktree_parent: fs::File,
+    directory_name: CString,
+    directory_file: fs::File,
+    contains_claimed_user_data: bool,
+    completed: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl DiscardTransaction {
+    fn create(worktree: &Path) -> Result<Self, AppError> {
+        let worktree_parent =
+            open_directory_no_follow(worktree).map_err(|_| discard_filesystem_error())?;
+        remove_stale_empty_discard_cleanup_directories(&worktree_parent);
+        for _ in 0..16 {
+            let name = format!(".bkm-discard-transaction-{}", Uuid::new_v4());
+            let directory_name =
+                CString::new(name.as_bytes()).map_err(|_| discard_filesystem_error())?;
+            if unsafe { libc::mkdirat(worktree_parent.as_raw_fd(), directory_name.as_ptr(), 0o700) }
+                != 0
+            {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    continue;
+                }
+                return Err(discard_filesystem_error());
+            }
+            let descriptor = unsafe {
+                libc::openat(
+                    worktree_parent.as_raw_fd(),
+                    directory_name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+            if descriptor < 0 {
+                let _ = unsafe {
+                    libc::unlinkat(
+                        worktree_parent.as_raw_fd(),
+                        directory_name.as_ptr(),
+                        libc::AT_REMOVEDIR,
+                    )
+                };
+                return Err(discard_filesystem_error());
+            }
+            return Ok(Self {
+                worktree_parent,
+                directory_name,
+                directory_file: unsafe { fs::File::from_raw_fd(descriptor) },
+                contains_claimed_user_data: false,
+                completed: false,
+            });
+        }
+        Err(discard_filesystem_error())
+    }
+
+    fn mark_claimed(&mut self) {
+        self.contains_claimed_user_data = true;
+    }
+
+    fn anchored_path(directory: &fs::File, name: &str) -> PathBuf {
+        PathBuf::from(format!("/proc/self/fd/{}/{}", directory.as_raw_fd(), name))
+    }
+
+    fn create_anchored_directory(&self, name: &CStr) -> Result<(), AppError> {
+        if unsafe { libc::mkdirat(self.directory_file.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+            return Err(discard_filesystem_error());
+        }
+        Ok(())
+    }
+
+    fn inheritable_directory_anchor(&self) -> Result<fs::File, AppError> {
+        let descriptor = unsafe { libc::fcntl(self.directory_file.as_raw_fd(), libc::F_DUPFD, 3) };
+        if descriptor < 0 {
+            return Err(discard_filesystem_error());
+        }
+        Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+    }
+
+    fn cleanup(&mut self) -> Result<(), AppError> {
+        let original_name = self.directory_name.clone();
+        let cleanup_name = CString::new(format!(".bkm-discard-cleanup-{}", Uuid::new_v4()))
+            .map_err(|_| discard_transaction_cleanup_error())?;
+        rename_at_no_replace(
+            self.worktree_parent.as_raw_fd(),
+            &self.directory_name,
+            self.worktree_parent.as_raw_fd(),
+            &cleanup_name,
+        )
+        .map_err(|_| discard_transaction_cleanup_error())?;
+        self.directory_name = cleanup_name;
+
+        let restore_replacement = |transaction: &mut Self| {
+            if rename_at_no_replace(
+                transaction.worktree_parent.as_raw_fd(),
+                &transaction.directory_name,
+                transaction.worktree_parent.as_raw_fd(),
+                &original_name,
+            )
+            .is_ok()
+            {
+                transaction.directory_name = original_name.clone();
+            }
+        };
+
+        let mut held = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+        let held_result =
+            unsafe { libc::fstat(self.directory_file.as_raw_fd(), held.as_mut_ptr()) };
+        let current_result = unsafe {
+            libc::fstatat(
+                self.worktree_parent.as_raw_fd(),
+                self.directory_name.as_ptr(),
+                current.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if held_result != 0 || current_result != 0 {
+            restore_replacement(self);
+            return Err(discard_transaction_cleanup_error());
+        }
+        let held = unsafe { held.assume_init() };
+        let current = unsafe { current.assume_init() };
+        if held.st_dev != current.st_dev
+            || held.st_ino != current.st_ino
+            || current.st_mode & libc::S_IFMT != libc::S_IFDIR
+        {
+            restore_replacement(self);
+            return Err(discard_transaction_cleanup_error());
+        }
+
+        remove_directory_contents_at(&self.directory_file)
+            .map_err(|_| discard_transaction_cleanup_error())?;
+        // Keep the now-empty, randomly named directory rather than unlinking
+        // a pathname after a potentially long recursive cleanup. Empty
+        // directories are invisible to Git status, and retaining this shell
+        // closes the final directory-for-directory substitution race.
+        self.completed = true;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<(), AppError> {
+        self.cleanup()
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct DiscardIndexLock {
+    index_path: PathBuf,
+    lock_path: PathBuf,
+    prepared_index_path: PathBuf,
+    file: Option<fs::File>,
+    committed: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl DiscardIndexLock {
+    fn acquire(git: &GitCore, repository: &Path) -> Result<Self, AppError> {
+        let index_path = git.git_directory(repository)?.join("index");
+        let mut lock_name = index_path
+            .file_name()
+            .ok_or_else(discard_filesystem_error)?
+            .to_os_string();
+        lock_name.push(".lock");
+        let lock_path = index_path.with_file_name(lock_name);
+        let prepared_index_path =
+            index_path.with_file_name(format!(".bkm-discard-index-{}", Uuid::new_v4()));
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    AppError::new(
+                        "git_index_locked",
+                        "Git 暂存区正被其他操作修改，请稍后重试。",
+                    )
+                } else {
+                    discard_filesystem_error()
+                }
+            })?;
+        Ok(Self {
+            index_path,
+            lock_path,
+            prepared_index_path,
+            file: Some(file),
+            committed: false,
+        })
+    }
+
+    fn prepared_index_path(&self) -> &Path {
+        &self.prepared_index_path
+    }
+
+    fn copy_current_to_prepared(&self) -> Result<(), AppError> {
+        if self.index_path.exists() {
+            fs::copy(&self.index_path, &self.prepared_index_path)
+                .map_err(|_| discard_filesystem_error())?;
+        }
+        Ok(())
+    }
+
+    fn commit(mut self) -> Result<(), AppError> {
+        let file = self.file.as_mut().ok_or_else(discard_filesystem_error)?;
+        file.set_len(0).map_err(|_| discard_filesystem_error())?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|_| discard_filesystem_error())?;
+        let mut prepared =
+            fs::File::open(&self.prepared_index_path).map_err(|_| discard_filesystem_error())?;
+        std::io::copy(&mut prepared, file).map_err(|_| discard_filesystem_error())?;
+        file.sync_all().map_err(|_| discard_filesystem_error())?;
+        self.file.take();
+        fs::rename(&self.lock_path, &self.index_path).map_err(|_| discard_filesystem_error())?;
+        let _ = fs::remove_file(&self.prepared_index_path);
+        self.committed = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DiscardIndexLock {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.file.take();
+            let _ = fs::remove_file(&self.lock_path);
+        }
+        let _ = fs::remove_file(&self.prepared_index_path);
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct DiscardReferenceLocks {
+    locks: Vec<(PathBuf, fs::File)>,
+}
+
+#[cfg(target_os = "linux")]
+impl DiscardReferenceLocks {
+    fn acquire(
+        git: &GitCore,
+        repository: &Path,
+        head_reference: Option<&str>,
+    ) -> Result<Self, AppError> {
+        let mut targets = vec![git.git_directory(repository)?.join("HEAD")];
+        if let Some(reference) = head_reference {
+            let output = git.run(
+                Some(repository),
+                &[
+                    OsString::from("rev-parse"),
+                    OsString::from("--git-path"),
+                    OsString::from(reference),
+                ],
+                &GitEnvironment::default(),
+                "读取当前分支位置",
+            )?;
+            let path = git_path_from_output(&output.stdout, "无法读取当前分支位置。")?;
+            targets.push(if path.is_absolute() {
+                path
+            } else {
+                repository.join(path)
+            });
+        }
+
+        let mut guard = Self { locks: Vec::new() };
+        for target in targets {
+            let parent = target.parent().ok_or_else(discard_filesystem_error)?;
+            fs::create_dir_all(parent).map_err(|_| discard_filesystem_error())?;
+            let mut lock_name = target
+                .file_name()
+                .ok_or_else(discard_filesystem_error)?
+                .to_os_string();
+            lock_name.push(".lock");
+            let lock_path = target.with_file_name(lock_name);
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        AppError::new(
+                            "git_reference_locked",
+                            "当前分支正被其他 Git 操作修改，请稍后重试。",
+                        )
+                    } else {
+                        discard_filesystem_error()
+                    }
+                })?;
+            guard.locks.push((lock_path, file));
+        }
+        Ok(guard)
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DiscardReferenceLocks {
+    fn drop(&mut self) {
+        while let Some((path, file)) = self.locks.pop() {
+            drop(file);
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for DiscardTransaction {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if self.contains_claimed_user_data {
+            // A failed rollback must leave every claimed object in the private
+            // transaction directory for manual recovery rather than deleting it.
+            return;
+        }
+        let _ = self.cleanup();
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct AppliedDiscardPath {
+    target_parent: fs::File,
+    target_leaf: CString,
+    backup_name: Option<CString>,
+    desired_parent: Option<fs::File>,
+    desired_leaf: Option<CString>,
+    desired_fingerprint: Option<CleanUntrackedPathFingerprint>,
+    desired_installed: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn discard_filesystem_error() -> AppError {
+    AppError::new("discard_failed", "无法在文件变化保护下安全丢弃所选改动。")
+}
+
+#[cfg(target_os = "linux")]
+fn discard_recovery_required_error(_transaction: &DiscardTransaction) -> AppError {
+    AppError::with_safe_details(
+        "discard_recovery_required",
+        "丢弃失败且部分文件无法自动恢复。",
+        "请从仓库根目录的 .bkm-discard-transaction-* 目录恢复文件。",
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn open_or_create_discard_parent(
+    repository: &Path,
+    relative_path: &str,
+    created_directories: &mut Vec<CleanUntrackedDirectoryFingerprint>,
+) -> Result<(fs::File, CString), AppError> {
+    validate_worktree_relative_path(relative_path)?;
+    let mut components = Path::new(relative_path).components();
+    let leaf = match components.next_back() {
+        Some(std::path::Component::Normal(component)) => {
+            c_string_from_os_str(component).map_err(|_| discard_confirmation_changed_error())?
+        }
+        _ => return Err(discard_confirmation_changed_error()),
+    };
+    let mut parent =
+        open_directory_no_follow(repository).map_err(|_| discard_filesystem_error())?;
+    let mut relative_parent = PathBuf::new();
+    for component in components {
+        let std::path::Component::Normal(component) = component else {
+            return Err(discard_confirmation_changed_error());
+        };
+        relative_parent.push(component);
+        let component =
+            c_string_from_os_str(component).map_err(|_| discard_confirmation_changed_error())?;
+        let mut was_created = false;
+        let mut descriptor = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if descriptor < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound
+        {
+            let created = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o777) };
+            if created != 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(discard_filesystem_error());
+            }
+            was_created = created == 0;
+            descriptor = unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    component.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                )
+            };
+        }
+        if descriptor < 0 {
+            return Err(discard_confirmation_changed_error());
+        }
+        if was_created {
+            let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            if unsafe { libc::fstat(descriptor, metadata.as_mut_ptr()) } != 0 {
+                unsafe { libc::close(descriptor) };
+                return Err(discard_filesystem_error());
+            }
+            let metadata = unsafe { metadata.assume_init() };
+            created_directories.push(CleanUntrackedDirectoryFingerprint {
+                path: relative_parent.to_string_lossy().into_owned(),
+                device: metadata.st_dev,
+                inode: metadata.st_ino,
+            });
+        }
+        parent = unsafe { fs::File::from_raw_fd(descriptor) };
+    }
+    Ok((parent, leaf))
+}
+
+#[cfg(target_os = "linux")]
+fn rollback_applied_discard_paths(
+    transaction: &DiscardTransaction,
+    applied: &[AppliedDiscardPath],
+) -> bool {
+    let mut rollback_succeeded = true;
+    for entry in applied.iter().rev() {
+        if entry.desired_installed {
+            let Some(desired_parent) = entry.desired_parent.as_ref() else {
+                rollback_succeeded = false;
+                continue;
+            };
+            let Some(desired_leaf) = entry.desired_leaf.as_ref() else {
+                rollback_succeeded = false;
+                continue;
+            };
+            if rename_at_no_replace(
+                entry.target_parent.as_raw_fd(),
+                &entry.target_leaf,
+                desired_parent.as_raw_fd(),
+                desired_leaf,
+            )
+            .is_err()
+            {
+                rollback_succeeded = false;
+            } else if let Some(fingerprint) = &entry.desired_fingerprint {
+                match clean_untracked_fingerprint_matches_at(
+                    desired_parent.as_raw_fd(),
+                    desired_leaf,
+                    fingerprint,
+                ) {
+                    Ok(true) => {}
+                    Ok(false) | Err(_) => rollback_succeeded = false,
+                }
+            }
+        }
+        if let Some(backup_name) = &entry.backup_name {
+            if rename_at_no_replace(
+                transaction.directory_file.as_raw_fd(),
+                backup_name,
+                entry.target_parent.as_raw_fd(),
+                &entry.target_leaf,
+            )
+            .is_err()
+            {
+                rollback_succeeded = false;
+            }
+        }
+    }
+    rollback_succeeded
 }
 
 #[cfg(target_os = "linux")]
@@ -1108,11 +1808,545 @@ impl GitCore {
         Ok(())
     }
 
+    fn discard_index_entries(
+        &self,
+        repository: &Path,
+        tracked_paths: &[String],
+    ) -> Result<Vec<u8>, AppError> {
+        if tracked_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut arguments = os_arguments(&["ls-files", "--stage", "-z", "--"]);
+        arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+        Ok(self
+            .run(
+                Some(repository),
+                &arguments,
+                &GitEnvironment::default(),
+                "读取暂存区状态",
+            )?
+            .stdout)
+    }
+
+    fn discard_head_reference(&self, repository: &Path) -> Result<Option<String>, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.success() {
+            let reference = output_text(&output.stdout).trim().to_owned();
+            if reference.starts_with("refs/") && !reference.contains(['\r', '\n', '\0']) {
+                return Ok(Some(reference));
+            }
+            return Err(AppError::new("git_parse_error", "无法读取当前分支引用。"));
+        }
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        Err(git_command_error("读取当前分支引用", &output))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn discard_confirmed_paths_linux(
+        &self,
+        repository: &Path,
+        tracked_paths: &[String],
+        removal_fingerprints: &[CleanUntrackedPathFingerprint],
+        confirmation: &DiscardChangesFingerprint,
+    ) -> Result<(), AppError> {
+        let mut transaction = DiscardTransaction::create(repository)?;
+        let desired_name = CString::new("desired").expect("fixed directory name has no NUL");
+        transaction.create_anchored_directory(&desired_name)?;
+        let desired_root =
+            DiscardTransaction::anchored_path(&transaction.directory_file, "desired");
+        let mut index_guard_paths = tracked_paths.to_vec();
+        index_guard_paths.extend(
+            removal_fingerprints
+                .iter()
+                .map(|fingerprint| fingerprint.path.clone()),
+        );
+        index_guard_paths.sort();
+        index_guard_paths.dedup();
+        let mut index_lock = if index_guard_paths.is_empty() {
+            None
+        } else {
+            Some(DiscardIndexLock::acquire(self, repository)?)
+        };
+        let _reference_locks = if tracked_paths.is_empty() {
+            None
+        } else {
+            Some(DiscardReferenceLocks::acquire(
+                self,
+                repository,
+                confirmation.head_reference.as_deref(),
+            )?)
+        };
+        if index_lock.is_some() {
+            // Do not run `git status` while holding the real index.lock: it
+            // may refresh the index and contend with our own guard. The locks
+            // freeze conventional HEAD/index writers; compare those exact
+            // states directly, while filesystem identities are checked when
+            // each worktree entry is atomically claimed below.
+            let head_changed = match confirmation.head_commit.as_deref() {
+                Some(expected) => self.head_commit_id(repository)? != expected,
+                None => self.has_head(repository)?,
+            };
+            if head_changed
+                || self.discard_head_reference(repository)? != confirmation.head_reference
+                || self.discard_index_entries(repository, &index_guard_paths)?
+                    != confirmation.index_entries
+            {
+                return Err(discard_confirmation_changed_error());
+            }
+        }
+        if discard_index_contains_gitlink(&confirmation.index_entries)? {
+            return Err(AppError::new(
+                "discard_protected_unsupported",
+                "暂不支持安全丢弃子模块改动。",
+            ));
+        }
+
+        let captured_head = confirmation.head_commit.as_deref();
+        let next_index = index_lock
+            .as_ref()
+            .map(|lock| lock.prepared_index_path().to_path_buf())
+            .unwrap_or_else(|| {
+                DiscardTransaction::anchored_path(&transaction.directory_file, "next-index")
+            });
+        if !tracked_paths.is_empty() {
+            let lock = index_lock.as_ref().ok_or_else(discard_filesystem_error)?;
+            lock.copy_current_to_prepared()?;
+            let environment = GitEnvironment::new().with_variable("GIT_INDEX_FILE", &next_index);
+            if !next_index.exists() {
+                self.run(
+                    Some(repository),
+                    &os_arguments(&["read-tree", "--empty"]),
+                    &environment,
+                    "准备暂存区回滚",
+                )?;
+            }
+            if let Some(head_commit) = captured_head {
+                let source = format!("--source={head_commit}");
+                let mut arguments = os_arguments(&["restore"]);
+                arguments.push(OsString::from(source));
+                arguments.extend(os_arguments(&["--staged", "--"]));
+                arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+                self.run(Some(repository), &arguments, &environment, "准备暂存区回滚")?;
+            } else {
+                let mut arguments = os_arguments(&["rm", "--cached", "--ignore-unmatch", "--"]);
+                arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+                self.run(Some(repository), &arguments, &environment, "准备暂存区回滚")?;
+            }
+        }
+
+        let mut materialized_paths = HashSet::new();
+        let mut gitlink_paths = HashSet::new();
+        if let Some(head_commit) = captured_head.filter(|_| !tracked_paths.is_empty()) {
+            // Scope the inheritable duplicate to only the Git processes that
+            // must resolve transaction-local proc-fd paths. All later Git
+            // commands see only the normal CLOEXEC descriptor.
+            let git_directory_anchor = transaction.inheritable_directory_anchor()?;
+            let temporary_index =
+                DiscardTransaction::anchored_path(&git_directory_anchor, "head-index");
+            let git_desired_root =
+                DiscardTransaction::anchored_path(&git_directory_anchor, "desired");
+            let environment =
+                GitEnvironment::new().with_variable("GIT_INDEX_FILE", &temporary_index);
+            self.run(
+                Some(repository),
+                &os_arguments(&["read-tree", head_commit]),
+                &environment,
+                "准备丢弃改动",
+            )?;
+
+            let mut list_arguments = os_arguments(&["ls-files", "--stage", "-z", "--"]);
+            list_arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+            let listed = self.run(
+                Some(repository),
+                &list_arguments,
+                &environment,
+                "准备丢弃改动",
+            )?;
+            for record in listed
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|record| !record.is_empty())
+            {
+                let Some(tab) = record.iter().position(|byte| *byte == b'\t') else {
+                    return Err(AppError::new("git_parse_error", "无法读取待恢复文件状态。"));
+                };
+                let metadata = std::str::from_utf8(&record[..tab])
+                    .map_err(|_| AppError::new("git_parse_error", "无法读取待恢复文件状态。"))?;
+                let path = std::str::from_utf8(&record[tab + 1..])
+                    .map_err(|_| AppError::new("git_parse_error", "无法读取待恢复文件路径。"))?
+                    .to_owned();
+                if metadata.starts_with("160000 ") {
+                    gitlink_paths.insert(path);
+                } else {
+                    materialized_paths.insert(path);
+                }
+            }
+
+            if !gitlink_paths.is_empty() {
+                return Err(AppError::new(
+                    "discard_protected_unsupported",
+                    "暂不支持安全丢弃子模块改动。",
+                ));
+            }
+
+            if !materialized_paths.is_empty() {
+                let mut prefix = OsString::from("--prefix=");
+                prefix.push(&git_desired_root);
+                prefix.push(std::path::MAIN_SEPARATOR.to_string());
+                let mut checkout_arguments = os_arguments(&["checkout-index", "--force"]);
+                checkout_arguments.push(prefix);
+                checkout_arguments.push(OsString::from("--"));
+                // checkout-index treats arguments after `--` as exact cache
+                // entry names rather than pathspecs, so Git pathspec magic
+                // would become part of the filename here.
+                checkout_arguments.extend(materialized_paths.iter().map(OsString::from));
+                self.run(
+                    Some(repository),
+                    &checkout_arguments,
+                    &environment,
+                    "准备丢弃改动",
+                )?;
+            }
+        }
+
+        let mut applied = Vec::new();
+        let mut created_directories = Vec::new();
+        let worktree_fingerprints = confirmation
+            .worktree_paths
+            .iter()
+            .map(|fingerprint| match fingerprint {
+                DiscardWorktreePathFingerprint::Missing(path) => (path.as_str(), fingerprint),
+                DiscardWorktreePathFingerprint::Present(path) => (path.path.as_str(), fingerprint),
+            })
+            .collect::<HashMap<_, _>>();
+        let tracked_path_set = tracked_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let worktree_result = (|| -> Result<(), AppError> {
+            for path in tracked_paths {
+                if gitlink_paths.contains(path) {
+                    continue;
+                }
+                let expected = *worktree_fingerprints
+                    .get(path.as_str())
+                    .ok_or_else(discard_confirmation_changed_error)?;
+                if matches!(
+                    expected,
+                    DiscardWorktreePathFingerprint::Present(fingerprint)
+                        if matches!(
+                            fingerprint.identity.kind,
+                            CleanUntrackedPathKind::Directory | CleanUntrackedPathKind::Other
+                        )
+                ) {
+                    return Err(discard_confirmation_changed_error());
+                }
+
+                let desired_exists = materialized_paths.contains(path);
+                if matches!(expected, DiscardWorktreePathFingerprint::Missing(_)) && !desired_exists
+                {
+                    continue;
+                }
+                let (target_parent, target_leaf) =
+                    open_or_create_discard_parent(repository, path, &mut created_directories)?;
+                let mut entry = AppliedDiscardPath {
+                    target_parent,
+                    target_leaf,
+                    backup_name: None,
+                    desired_parent: None,
+                    desired_leaf: None,
+                    desired_fingerprint: None,
+                    desired_installed: false,
+                };
+
+                if let DiscardWorktreePathFingerprint::Present(fingerprint) = expected {
+                    let backup_name = CString::new(format!("backup-{}", Uuid::new_v4()))
+                        .map_err(|_| discard_filesystem_error())?;
+                    rename_at_no_replace(
+                        entry.target_parent.as_raw_fd(),
+                        &entry.target_leaf,
+                        transaction.directory_file.as_raw_fd(),
+                        &backup_name,
+                    )
+                    .map_err(|_| discard_confirmation_changed_error())?;
+                    transaction.mark_claimed();
+                    entry.backup_name = Some(backup_name);
+                    applied.push(entry);
+                    let claimed = applied.last().expect("the claimed path is retained");
+                    let identity_matches = clean_untracked_fingerprint_matches_at(
+                        transaction.directory_file.as_raw_fd(),
+                        claimed
+                            .backup_name
+                            .as_ref()
+                            .expect("the backup name is retained"),
+                        fingerprint,
+                    )?;
+                    if !identity_matches {
+                        return Err(discard_confirmation_changed_error());
+                    }
+                } else {
+                    applied.push(entry);
+                }
+
+                if desired_exists {
+                    let desired_fingerprint = clean_untracked_path_fingerprint(&desired_root, path)
+                        .map_err(|_| discard_filesystem_error())?;
+                    let (desired_parent, desired_leaf) =
+                        open_clean_untracked_parent(&desired_root, path)
+                            .map_err(|_| discard_filesystem_error())?;
+                    let current = applied.last_mut().expect("the pending path is retained");
+                    rename_at_no_replace(
+                        desired_parent.as_raw_fd(),
+                        &desired_leaf,
+                        current.target_parent.as_raw_fd(),
+                        &current.target_leaf,
+                    )
+                    .map_err(|_| discard_confirmation_changed_error())?;
+                    current.desired_parent = Some(desired_parent);
+                    current.desired_leaf = Some(desired_leaf);
+                    current.desired_fingerprint = Some(desired_fingerprint);
+                    current.desired_installed = true;
+                }
+            }
+
+            for fingerprint in removal_fingerprints {
+                if tracked_path_set.contains(fingerprint.path.as_str()) {
+                    continue;
+                }
+                let (target_parent, target_leaf) =
+                    open_clean_untracked_parent(repository, &fingerprint.path)
+                        .map_err(|_| discard_confirmation_changed_error())?;
+                let backup_name = CString::new(format!("backup-{}", Uuid::new_v4()))
+                    .map_err(|_| discard_filesystem_error())?;
+                rename_at_no_replace(
+                    target_parent.as_raw_fd(),
+                    &target_leaf,
+                    transaction.directory_file.as_raw_fd(),
+                    &backup_name,
+                )
+                .map_err(|_| discard_confirmation_changed_error())?;
+                transaction.mark_claimed();
+                applied.push(AppliedDiscardPath {
+                    target_parent,
+                    target_leaf,
+                    backup_name: Some(backup_name),
+                    desired_parent: None,
+                    desired_leaf: None,
+                    desired_fingerprint: None,
+                    desired_installed: false,
+                });
+                let claimed = applied.last().expect("the claimed path is retained");
+                if !clean_untracked_fingerprint_matches_at(
+                    transaction.directory_file.as_raw_fd(),
+                    claimed
+                        .backup_name
+                        .as_ref()
+                        .expect("the backup name is retained"),
+                    fingerprint,
+                )? {
+                    return Err(discard_confirmation_changed_error());
+                }
+            }
+            Ok(())
+        })();
+        if let Err(error) = worktree_result {
+            if !rollback_applied_discard_paths(&transaction, &applied) {
+                return Err(discard_recovery_required_error(&transaction));
+            }
+            remove_empty_clean_untracked_parent_directories(repository, &created_directories);
+            transaction.finish()?;
+            return Err(error);
+        }
+
+        let state_still_matches = (|| -> Result<bool, AppError> {
+            if let Some(head_commit) = captured_head {
+                if self.head_commit_id(repository)?.as_str() != head_commit {
+                    return Ok(false);
+                }
+            }
+            Ok(self.discard_index_entries(repository, &index_guard_paths)?
+                == confirmation.index_entries)
+        })();
+        let state_still_matches = match state_still_matches {
+            Ok(matches) => matches,
+            Err(error) => {
+                if !rollback_applied_discard_paths(&transaction, &applied) {
+                    return Err(discard_recovery_required_error(&transaction));
+                }
+                remove_empty_clean_untracked_parent_directories(repository, &created_directories);
+                transaction.finish()?;
+                return Err(error);
+            }
+        };
+        if !state_still_matches {
+            if !rollback_applied_discard_paths(&transaction, &applied) {
+                return Err(discard_recovery_required_error(&transaction));
+            }
+            remove_empty_clean_untracked_parent_directories(repository, &created_directories);
+            transaction.finish()?;
+            return Err(discard_confirmation_changed_error());
+        }
+        if !tracked_paths.is_empty() {
+            let lock = index_lock.take().ok_or_else(discard_filesystem_error)?;
+            if let Err(error) = lock.commit() {
+                if !rollback_applied_discard_paths(&transaction, &applied) {
+                    return Err(discard_recovery_required_error(&transaction));
+                }
+                remove_empty_clean_untracked_parent_directories(repository, &created_directories);
+                transaction.finish()?;
+                return Err(error);
+            }
+        }
+
+        transaction.finish()
+    }
+
+    /// Captures the exact state that a later destructive discard is allowed
+    /// to consume. Unrelated repository changes are intentionally excluded,
+    /// while HEAD, selected status records, index entries, rename sources and
+    /// filesystem identities are all bound to the confirmation.
+    pub(crate) fn capture_discard_changes_fingerprint(
+        &self,
+        repository: &Path,
+        paths: &[String],
+    ) -> Result<DiscardChangesFingerprint, AppError> {
+        validate_paths(paths)?;
+        for path in paths {
+            validate_worktree_relative_path(path)?;
+        }
+        self.ensure_no_operation(repository)?;
+
+        let mut paths = paths.to_vec();
+        paths.sort();
+        paths.dedup();
+        let status = self.status(repository)?;
+        let entries_by_path = status
+            .entries
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry))
+            .collect::<HashMap<_, _>>();
+        let mut entries = Vec::with_capacity(paths.len());
+        let mut observed_paths = HashSet::new();
+        let mut tracked_seen = HashSet::new();
+        let mut tracked_paths = Vec::new();
+        let mut untracked_paths = Vec::new();
+        for path in &paths {
+            let entry = entries_by_path.get(path.as_str()).copied().ok_or_else(|| {
+                AppError::new("nothing_to_discard", "所选文件已经没有可丢弃的改动")
+            })?;
+            entries.push(entry.clone());
+            observed_paths.insert(entry.path.clone());
+            if entry.index_status.is_empty() && entry.worktree_status == "?" {
+                untracked_paths.push(entry.path.clone());
+            } else {
+                let related_path = (entry.index_status == "R" || entry.worktree_status == "R")
+                    .then_some(entry.original_path.as_deref())
+                    .flatten();
+                for tracked_path in std::iter::once(entry.path.as_str()).chain(related_path) {
+                    validate_worktree_relative_path(tracked_path)?;
+                    observed_paths.insert(tracked_path.to_owned());
+                    if tracked_seen.insert(tracked_path) {
+                        tracked_paths.push(tracked_path.to_owned());
+                    }
+                }
+            }
+        }
+
+        tracked_paths.sort();
+        let mut index_guard_paths = tracked_paths.clone();
+        index_guard_paths.extend(untracked_paths.iter().cloned());
+        index_guard_paths.sort();
+        index_guard_paths.dedup();
+        let index_entries = self.discard_index_entries(repository, &index_guard_paths)?;
+
+        let mut observed_paths = observed_paths.into_iter().collect::<Vec<_>>();
+        observed_paths.sort();
+        let worktree_paths = observed_paths
+            .iter()
+            .map(|path| discard_worktree_path_fingerprint(repository, path))
+            .collect::<Result<Vec<_>, _>>()?;
+        let untracked_path_set = untracked_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let tracked_path_set = tracked_paths
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let removal_fingerprints = worktree_paths
+            .iter()
+            .filter_map(|fingerprint| match fingerprint {
+                DiscardWorktreePathFingerprint::Present(fingerprint)
+                    if untracked_path_set.contains(fingerprint.path.as_str())
+                        || status.head_commit.is_none()
+                            && tracked_path_set.contains(fingerprint.path.as_str()) =>
+                {
+                    Some(fingerprint.clone())
+                }
+                _ => None,
+            })
+            .collect();
+
+        Ok(DiscardChangesFingerprint {
+            paths,
+            head_commit: status.head_commit,
+            head_reference: self.discard_head_reference(repository)?,
+            entries,
+            index_entries,
+            worktree_paths,
+            removal_fingerprints,
+            untracked_count: untracked_paths.len(),
+        })
+    }
+
+    pub(crate) fn validate_discard_changes_fingerprint(
+        &self,
+        repository: &Path,
+        fingerprint: &DiscardChangesFingerprint,
+    ) -> Result<(), AppError> {
+        let current = self
+            .capture_discard_changes_fingerprint(repository, &fingerprint.paths)
+            .map_err(|error| {
+                if error.code() == "nothing_to_discard" {
+                    discard_confirmation_changed_error()
+                } else {
+                    error
+                }
+            })?;
+        if current != *fingerprint {
+            return Err(discard_confirmation_changed_error());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn discard_paths_with_fingerprint(
+        &self,
+        repository: &Path,
+        fingerprint: &DiscardChangesFingerprint,
+    ) -> Result<(), AppError> {
+        self.discard_paths_internal(repository, &fingerprint.paths, Some(fingerprint))
+    }
+
     /// Discards all indexed and working-tree changes for the selected status
     /// entries. Purely untracked entries are removed directly, while tracked
     /// entries go through Git so renames, the index, and file modes remain
-    /// consistent. Callers must ask the user for confirmation before this.
+    /// consistent. IPC callers must use `discard_paths_with_fingerprint`.
     pub fn discard_paths(&self, repository: &Path, paths: &[String]) -> Result<(), AppError> {
+        self.discard_paths_internal(repository, paths, None)
+    }
+
+    fn discard_paths_internal(
+        &self,
+        repository: &Path,
+        paths: &[String],
+        confirmation: Option<&DiscardChangesFingerprint>,
+    ) -> Result<(), AppError> {
         validate_paths(paths)?;
         for path in paths {
             validate_worktree_relative_path(path)?;
@@ -1160,13 +2394,69 @@ impl GitCore {
             }
         }
 
+        // Revalidate after resolving the current status and immediately
+        // before the first destructive mutation. This minimizes the window in
+        // which an external editor or Git client can invalidate the preview.
+        if let Some(fingerprint) = confirmation {
+            self.validate_discard_changes_fingerprint(repository, fingerprint)?;
+        }
+        let paths_to_remove_set = paths_to_remove.iter().cloned().collect::<HashSet<_>>();
+
+        #[cfg(target_os = "linux")]
+        if let Some(fingerprint) = confirmation {
+            self.ensure_no_operation(repository)?;
+            let removal_fingerprints = fingerprint
+                .removal_fingerprints
+                .iter()
+                .filter(|fingerprint| paths_to_remove_set.contains(&fingerprint.path))
+                .cloned()
+                .collect::<Vec<_>>();
+            return self.discard_confirmed_paths_linux(
+                repository,
+                &tracked_paths,
+                &removal_fingerprints,
+                fingerprint,
+            );
+        }
+
         if !tracked_paths.is_empty() {
             // Another Git client can begin a merge, rebase, or cherry-pick
             // after the earlier status read. Check immediately before each
             // destructive Git mutation so we never knowingly erase conflict
             // stages from a newly paused operation.
             self.ensure_no_operation(repository)?;
-            if self.has_head(repository)? {
+            #[cfg(target_os = "linux")]
+            {
+                if self.has_head(repository)? {
+                    let mut arguments =
+                        os_arguments(&["restore", "--source=HEAD", "--staged", "--worktree", "--"]);
+                    arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+                    self.run(
+                        Some(repository),
+                        &arguments,
+                        &GitEnvironment::default(),
+                        "丢弃改动",
+                    )?;
+                } else {
+                    let mut arguments = os_arguments(&["rm", "--cached", "--ignore-unmatch", "--"]);
+                    arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
+                    self.run(
+                        Some(repository),
+                        &arguments,
+                        &GitEnvironment::default(),
+                        "丢弃改动",
+                    )?;
+                    paths_to_remove.extend(tracked_paths.clone());
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            if confirmation.is_some() {
+                return Err(AppError::new(
+                    "discard_protected_unsupported",
+                    "当前平台暂不支持安全丢弃已跟踪改动。",
+                ));
+            } else if self.has_head(repository)? {
                 let mut arguments =
                     os_arguments(&["restore", "--source=HEAD", "--staged", "--worktree", "--"]);
                 arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
@@ -1177,9 +2467,6 @@ impl GitCore {
                     "丢弃改动",
                 )?;
             } else {
-                // An unborn repository has no HEAD for `git restore` to use.
-                // Remove its index entries first, then remove the matching
-                // worktree paths below.
                 let mut arguments = os_arguments(&["rm", "--cached", "--ignore-unmatch", "--"]);
                 arguments.extend(tracked_paths.iter().map(|path| literal_pathspec(path)));
                 self.run(
@@ -1194,18 +2481,29 @@ impl GitCore {
 
         if !paths_to_remove.is_empty() {
             self.ensure_no_operation(repository)?;
-            // Delegate removal to Git with literal pathspecs rather than
-            // reopening repository-relative paths in this process. Git's
-            // worktree machinery handles symlinks as entries and avoids the
-            // check-then-use filesystem traversal that direct removal needs.
-            let mut arguments = os_arguments(&["clean", "-f", "--"]);
-            arguments.extend(paths_to_remove.iter().map(|path| literal_pathspec(path)));
-            self.run(
-                Some(repository),
-                &arguments,
-                &GitEnvironment::default(),
-                "丢弃未跟踪改动",
-            )?;
+            if let Some(fingerprint) = confirmation {
+                let fingerprints = fingerprint
+                    .removal_fingerprints
+                    .iter()
+                    .filter(|fingerprint| paths_to_remove_set.contains(&fingerprint.path))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !fingerprints.is_empty() {
+                    self.clean_untracked_paths_with_fingerprints(repository, &fingerprints)?;
+                }
+            } else {
+                // Keep this direct core API for internal callers. The Tauri
+                // command always supplies confirmed fingerprints and uses the
+                // descriptor-safe deletion path where the platform supports it.
+                let mut arguments = os_arguments(&["clean", "-f", "--"]);
+                arguments.extend(paths_to_remove.iter().map(|path| literal_pathspec(path)));
+                self.run(
+                    Some(repository),
+                    &arguments,
+                    &GitEnvironment::default(),
+                    "丢弃未跟踪改动",
+                )?;
+            }
         }
         Ok(())
     }
