@@ -125,6 +125,15 @@ const commitDiffPreviewBytes = 512 * 1024;
 const commitDiffMaximumBytes = 4 * 1024 * 1024;
 const commitFilesCacheMaximumWeight = 16 * 1024 * 1024;
 const commitDiffCacheMaximumWeight = 16 * 1024 * 1024;
+const repositorySnapshotSignatures = new WeakMap<RepositorySnapshot, string>();
+
+function repositorySnapshotSignature(repositorySnapshot: RepositorySnapshot): string {
+  const cached = repositorySnapshotSignatures.get(repositorySnapshot);
+  if (cached !== undefined) return cached;
+  const signature = JSON.stringify(repositorySnapshot);
+  repositorySnapshotSignatures.set(repositorySnapshot, signature);
+  return signature;
+}
 
 function initialRepositoryGrouping(): RepositoryGrouping {
   if (typeof window === "undefined") return "manual";
@@ -734,6 +743,13 @@ function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshReques
   // Every backend snapshot is scoped to one repository. Never let a late
   // mutation response overwrite the currently selected repository.
   if (activeRepositoryPath.value !== nextSnapshot.repository.path) return false;
+  if (
+    snapshot.value &&
+    repositorySnapshotSignature(snapshot.value) === repositorySnapshotSignature(nextSnapshot)
+  ) {
+    if (invalidateRefreshRequests) snapshotRefreshRequestGeneration += 1;
+    return true;
+  }
   snapshotApplicationGeneration += 1;
   if (invalidateRefreshRequests) snapshotRefreshRequestGeneration += 1;
   const selectedPath = selectedChange.value?.path;
@@ -1168,9 +1184,10 @@ async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}):
       applicationGeneration !== snapshotApplicationGeneration ||
       refreshGeneration !== snapshotRefreshRequestGeneration
     ) return;
-    applySnapshot(nextSnapshot, false);
+    if (!applySnapshot(nextSnapshot, false)) return;
     const appliedApplicationGeneration = snapshotApplicationGeneration;
-    if (selectedDiffGeneration === diffRequestGeneration) {
+    const snapshotChanged = appliedApplicationGeneration !== applicationGeneration;
+    if (snapshotChanged && selectedDiffGeneration === diffRequestGeneration) {
       await syncSelectedDiff(nextSnapshot, selectedPath, !selectedPath, repositoryPath, reportErrors);
     }
     if (
@@ -1255,7 +1272,13 @@ function scheduleAutomaticRefresh(delay = automaticRefreshDebounceMs): void {
 
 async function runAutomaticRefresh(): Promise<void> {
   if (!automaticRefreshDirty || !applicationCanAutoRefresh() || section.value !== "repositories") return;
-  if (automaticRefreshInFlight || snapshotLoading.value || mutationBusy.value || networkBusy.value) {
+  if (
+    automaticRefreshInFlight ||
+    snapshotLoading.value ||
+    mutationBusy.value ||
+    networkBusy.value ||
+    (typeof document !== "undefined" && document.documentElement.classList.contains("is-resizing-repository-columns"))
+  ) {
     scheduleAutomaticRefresh(automaticRefreshRetryMs);
     return;
   }

@@ -1,13 +1,14 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
 import { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag } from "naive-ui";
+import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
 import type { CommitChangedFile, CommitFileStatus, CommitSummary } from "../../../shared/types/domain";
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag },
+  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NSpace, NSpin, NTag, RepositoryDiffViewer },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const commitContextMenuOpen = ref(false);
@@ -233,7 +234,12 @@ export default defineComponent({
                         <div class="history-diff-content">
                           <n-spin v-if="commitDiffLoading" size="small" class="history-diff-loading" />
                           <template v-else-if="commitDiffText">
-                            <pre class="diff-output"><span v-for="(line, index) in commitDiffVisibleLines" :key="index" class="diff-line" :class="diffLineClass(line)">{{ line }}</span></pre>
+                            <RepositoryDiffViewer
+                              :lines="commitDiffVisibleLines"
+                              :line-class="diffLineClass"
+                              :reset-key="`${selectedCommit?.sha || ''}\u0000${selectedCommitFile?.previousPath || ''}\u0000${selectedCommitFile?.path || ''}`"
+                              :label="tr('提交文件差异', 'Commit file diff')"
+                            />
                             <div v-if="commitDiffCanExpand" class="history-diff-more">
                               <n-button size="small" tertiary @click="showMoreCommitDiffLines">
                                 {{ commitDiffHasMoreLines && !commitDiffLineLimitReached ? tr("再显示 2000 行", "Show 2,000 more lines") : tr("最多加载 4 MiB", "Load up to 4 MiB") }}

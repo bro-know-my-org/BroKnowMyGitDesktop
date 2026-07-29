@@ -49,6 +49,9 @@ export function useRepositoryPanelSplit() {
   let startPointerX = 0;
   let startListPaneWidth = 0;
   let resizeContainerWidth = 0;
+  let liveListPaneWidth = minimumListPaneWidth;
+  let pendingPointerX = 0;
+  let resizeAnimationFrame: number | null = null;
   let activePointerId: number | null = null;
   let activeResizer: HTMLElement | null = null;
   const repositoryPanelResizer = ref<HTMLElement | null>(null);
@@ -81,14 +84,20 @@ export function useRepositoryPanelSplit() {
   function stopRepositoryPanelResize(event?: Event): void {
     if (!resizing) return;
     if (event instanceof PointerEvent && event.pointerId !== activePointerId) return;
+    if (resizeAnimationFrame !== null) {
+      window.cancelAnimationFrame(resizeAnimationFrame);
+      resizeAnimationFrame = null;
+      applyPendingRepositoryPanelResize();
+    }
     resizing = false;
     document.documentElement.classList.remove("is-resizing-repository-columns");
     window.removeEventListener("pointermove", resizeRepositoryPanel);
     window.removeEventListener("pointerup", stopRepositoryPanelResize);
     window.removeEventListener("pointercancel", stopRepositoryPanelResize);
     window.removeEventListener("blur", stopRepositoryPanelResize);
-    updateRepositoryPanelAriaValues();
-    repositoryPanelWidth.value = repositoryPanelAriaValue.value;
+    repositoryPanelAriaValue.value = liveListPaneWidth;
+    repositoryPanelAriaMax.value = maximumListPaneWidth(resizeContainerWidth);
+    repositoryPanelWidth.value = liveListPaneWidth;
     rememberRepositoryPanelWidth();
     if (activeResizer && activePointerId !== null && activeResizer.hasPointerCapture(activePointerId)) {
       activeResizer.releasePointerCapture(activePointerId);
@@ -97,20 +106,27 @@ export function useRepositoryPanelSplit() {
     activeResizer = null;
   }
 
-  function resizeRepositoryPanel(event: PointerEvent): void {
-    if (!resizing || event.pointerId !== activePointerId) return;
+  function applyPendingRepositoryPanelResize(): void {
+    resizeAnimationFrame = null;
+    if (!resizing) return;
     const container = splitContainer(activeResizer);
     if (!container) {
       stopRepositoryPanelResize();
       return;
     }
-    resizeContainerWidth = container.getBoundingClientRect().width;
-    repositoryPanelWidth.value = clampListPaneWidth(
-      startListPaneWidth + event.clientX - startPointerX,
+    liveListPaneWidth = clampListPaneWidth(
+      startListPaneWidth + pendingPointerX - startPointerX,
       resizeContainerWidth,
     );
-    repositoryPanelAriaValue.value = repositoryPanelWidth.value;
-    repositoryPanelAriaMax.value = maximumListPaneWidth(resizeContainerWidth);
+    container.style.setProperty("--repository-list-pane-width", `${liveListPaneWidth}px`);
+  }
+
+  function resizeRepositoryPanel(event: PointerEvent): void {
+    if (!resizing || event.pointerId !== activePointerId) return;
+    pendingPointerX = event.clientX;
+    if (resizeAnimationFrame === null) {
+      resizeAnimationFrame = window.requestAnimationFrame(applyPendingRepositoryPanelResize);
+    }
   }
 
   function startRepositoryPanelResize(event: PointerEvent): void {
@@ -124,8 +140,11 @@ export function useRepositoryPanelSplit() {
     activeResizer?.setPointerCapture(event.pointerId);
     startPointerX = event.clientX;
     startListPaneWidth = currentListPaneWidth(container);
+    liveListPaneWidth = startListPaneWidth;
+    pendingPointerX = startPointerX;
     resizeContainerWidth = container.getBoundingClientRect().width;
-    updateRepositoryPanelAriaValues();
+    repositoryPanelAriaValue.value = clampListPaneWidth(startListPaneWidth, resizeContainerWidth);
+    repositoryPanelAriaMax.value = maximumListPaneWidth(resizeContainerWidth);
     document.documentElement.classList.add("is-resizing-repository-columns");
     window.addEventListener("pointermove", resizeRepositoryPanel);
     window.addEventListener("pointerup", stopRepositoryPanelResize);
@@ -168,6 +187,7 @@ export function useRepositoryPanelSplit() {
   onBeforeUnmount(() => {
     window.removeEventListener("resize", handleViewportResize);
     stopRepositoryPanelResize();
+    if (resizeAnimationFrame !== null) window.cancelAnimationFrame(resizeAnimationFrame);
   });
 
   return {

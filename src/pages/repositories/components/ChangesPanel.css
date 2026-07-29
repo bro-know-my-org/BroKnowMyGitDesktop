@@ -88,6 +88,8 @@
   border: 1px solid transparent;
   border-radius: 0;
   cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 38px;
   outline: none;
 }
 

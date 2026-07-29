@@ -1,12 +1,13 @@
 <script lang="ts">
 import { defineComponent } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText } from "naive-ui";
+import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
 
 export default defineComponent({
   name: "RepositoryChangesPanel",
-  components: { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText },
+  components: { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText, RepositoryDiffViewer },
   setup() {
     return {
       ...useWorkspaceControllerContext(),
@@ -115,7 +116,12 @@ export default defineComponent({
                     <div class="changes-diff-panel">
                       <n-spin v-if="diffLoading" size="small" class="changes-diff-loading" />
                       <template v-else-if="hasDiffText">
-                        <pre class="diff-output"><span v-for="(line, index) in diffLines" :key="index" class="diff-line" :class="diffLineClass(line)">{{ line }}</span></pre>
+                        <RepositoryDiffViewer
+                          :lines="diffLines"
+                          :line-class="diffLineClass"
+                          :reset-key="`${selectedChange?.path || ''}\u0000${selectedDiffStaged}`"
+                          :label="tr('当前文件差异', 'Current file diff')"
+                        />
                         <div v-if="diffHunks.length" class="diff-hunk-actions">
                           <n-space v-for="(hunk, index) in diffHunks" :key="hunk.header + index" justify="space-between" align="center">
                             <n-text code>{{ hunk.header }}</n-text>

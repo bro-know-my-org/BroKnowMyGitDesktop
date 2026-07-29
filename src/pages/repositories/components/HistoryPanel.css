@@ -70,6 +70,8 @@
   border-radius: 0;
   background: transparent;
   color: var(--app-text-body);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 60px;
   cursor: pointer;
   outline: none;
   text-align: left;
@@ -214,6 +216,8 @@
   border-radius: 0;
   background: transparent;
   color: var(--app-text-body);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 38px;
   cursor: pointer;
   outline: none;
   text-align: left;
