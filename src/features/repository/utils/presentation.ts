@@ -3,6 +3,7 @@ import type { AccountProfile, GitOperationKind, GitStatusEntry, SubmoduleInfo } 
 
 export interface DiffHunk {
   header: string;
+  lineIndex: number;
   patch: string;
 }
 
@@ -83,7 +84,7 @@ export function createRepositoryPresentation(tr: Translate) {
     return hunkStarts.map((start, index) => {
       const end = hunkStarts[index + 1] ?? lines.length;
       const hunk = lines.slice(start, end).join("\n");
-      return { header: lines[start], patch: `${preamble}\n${hunk}` };
+      return { header: lines[start], lineIndex: start, patch: `${preamble}\n${hunk}` };
     });
   }
 

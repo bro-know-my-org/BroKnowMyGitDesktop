@@ -236,12 +236,6 @@
   margin-bottom: 16px;
 }
 
-.diff-hunk-actions {
-  display: grid;
-  gap: 8px;
-  margin-top: 12px;
-}
-
 @media (width <= 1120px) {
   .changes-grid {
     grid-template-columns: 1fr;

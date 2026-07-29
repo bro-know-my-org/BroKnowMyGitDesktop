@@ -8,6 +8,10 @@ const props = defineProps<{
   label: string;
 }>();
 
+defineSlots<{
+  "line-action"?(props: { line: string; index: number }): unknown;
+}>();
+
 const diffLineHeight = 19.44;
 const diffLineOverscan = 24;
 const maximumMeasuredColumns = 10_000;
@@ -92,7 +96,12 @@ onBeforeUnmount(() => {
         class="diff-line virtual-diff-line"
         :class="lineClass(entry.line)"
         :style="{ top: `${entry.index * diffLineHeight}px` }"
-      >{{ entry.line }}</span>
+      >
+        <span class="virtual-diff-line-text">{{ entry.line }}</span>
+        <span v-if="$slots['line-action']" class="virtual-diff-line-action">
+          <slot name="line-action" :line="entry.line" :index="entry.index" />
+        </span>
+      </span>
     </div>
   </div>
 </template>

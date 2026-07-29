@@ -121,13 +121,17 @@ export default defineComponent({
                           :line-class="diffLineClass"
                           :reset-key="`${selectedChange?.path || ''}\u0000${selectedDiffStaged}`"
                           :label="tr('当前文件差异', 'Current file diff')"
-                        />
-                        <div v-if="diffHunks.length" class="diff-hunk-actions">
-                          <n-space v-for="(hunk, index) in diffHunks" :key="hunk.header + index" justify="space-between" align="center">
-                            <n-text code>{{ hunk.header }}</n-text>
-                            <n-button size="tiny" tertiary :loading="mutationBusy" @click="applyDiffHunk(hunk)">{{ selectedDiffStaged ? tr("取消暂存此块", "Unstage this hunk") : tr("暂存此块", "Stage this hunk") }}</n-button>
-                          </n-space>
-                        </div>
+                        >
+                          <template #line-action="{ index }">
+                            <n-button
+                              v-if="diffHunkAtLine(index)"
+                              size="tiny"
+                              tertiary
+                              :loading="mutationBusy"
+                              @click="applyDiffHunkAtLine(index)"
+                            >{{ selectedDiffStaged ? tr("取消暂存此块", "Unstage this hunk") : tr("暂存此块", "Stage this hunk") }}</n-button>
+                          </template>
+                        </RepositoryDiffViewer>
                       </template>
                       <n-empty v-else :description="selectedChange ? tr('此文件没有可显示的文本 diff', 'No text diff is available for this file') : tr('选择一个文件以查看 diff', 'Select a file to view its diff')" size="small" />
                     </div>

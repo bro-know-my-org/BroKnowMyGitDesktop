@@ -378,6 +378,7 @@ const someChangesIncluded = computed(() => {
 });
 const conflictedChanges = computed(() => snapshot.value?.status.entries.filter(isConflictedEntry) ?? []);
 const diffHunks = computed(() => splitDiffHunks(diffText.value));
+const diffHunksByLine = computed(() => new Map(diffHunks.value.map((hunk) => [hunk.lineIndex, hunk])));
 const diffLines = computed(() => splitDiffLines(diffText.value));
 const hasDiffText = computed(() => diffText.value.trim().length > 0);
 const commitDiffVisibleLineCount = ref(commitDiffInitialLineCount);
@@ -1677,6 +1678,15 @@ async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
   } finally {
     mutationBusy.value = false;
   }
+}
+
+function diffHunkAtLine(lineIndex: number): DiffHunk | undefined {
+  return diffHunksByLine.value.get(lineIndex);
+}
+
+async function applyDiffHunkAtLine(lineIndex: number): Promise<void> {
+  const hunk = diffHunkAtLine(lineIndex);
+  if (hunk) await applyDiffHunk(hunk);
 }
 
 async function loadHistory(): Promise<void> {
@@ -3776,6 +3786,7 @@ onBeforeUnmount(() => {
     someChangesIncluded,
     conflictedChanges,
     diffHunks,
+    diffHunkAtLine,
     diffLines,
     hasDiffText,
     canAmendLatestCommit,
@@ -3825,6 +3836,7 @@ onBeforeUnmount(() => {
     changeKindLabel,
     isConflictedEntry,
     splitDiffHunks,
+    applyDiffHunkAtLine,
     splitDiffLines,
     diffLineClass,
     gitOperationLabel,
