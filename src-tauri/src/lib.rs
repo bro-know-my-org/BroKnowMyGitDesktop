@@ -30,6 +30,7 @@ pub fn run() {
             commands::watch_repository_changes,
             commands::stop_repository_watcher,
             commands::set_repository_group,
+            commands::set_repository_alias,
             commands::get_file_diff,
             commands::get_file_blame,
             commands::list_reflog,

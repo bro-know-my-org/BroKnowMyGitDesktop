@@ -338,6 +338,24 @@ fn repository_group_validation_trims_and_rejects_control_characters() {
 }
 
 #[test]
+fn repository_alias_validation_trims_and_rejects_control_characters() {
+    assert_eq!(
+        normalize_repository_alias(Some("  客户端主仓  ".into())).unwrap(),
+        Some("客户端主仓".into())
+    );
+    assert_eq!(
+        normalize_repository_alias(Some("   ".into())).unwrap(),
+        None
+    );
+    assert_eq!(
+        normalize_repository_alias(Some("客户端\n主仓".into()))
+            .expect_err("line breaks are not valid repository aliases")
+            .code(),
+        "repository_alias_invalid"
+    );
+}
+
+#[test]
 fn unauthenticated_remote_url_cannot_hide_userinfo_or_tokens() {
     let error = validate_unauthenticated_remote_url(
         "git://secret-token@git.example.test/team/project.git?access_token=hidden",

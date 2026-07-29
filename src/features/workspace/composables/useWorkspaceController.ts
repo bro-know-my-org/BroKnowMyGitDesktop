@@ -228,8 +228,10 @@ const remoteModalShown = ref(false);
 const bindingDrawerShown = ref(false);
 const bindingRemote = ref<RemoteProfile | null>(null);
 const repositoryGroupModalShown = ref(false);
+const repositoryAliasModalShown = ref(false);
 const settingsModalShown = ref(false);
 const repositoryGroupTarget = ref<RepositoryRecord | null>(null);
+const repositoryAliasTarget = ref<RepositoryRecord | null>(null);
 
 const cloneForm = reactive({ url: "", destinationPath: "", endpointId: "", accountId: "none" });
 const initForm = reactive({ destinationPath: "", initialBranch: "main" });
@@ -256,6 +258,7 @@ const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
 const bindingForm = reactive({ endpointId: "", accountId: "auto" });
 const repositoryGroupForm = reactive({ name: "" });
+const repositoryAliasForm = reactive({ name: "" });
 const endpoints = ref<CodeHostEndpoint[]>([...builtinEndpoints]);
 let lastAccountStatusRefreshAt = 0;
 const accountStatusRefreshCacheMs = 60_000;
@@ -738,7 +741,9 @@ async function loadCapabilities(): Promise<void> {
 }
 
 function compareRepositoryRecords(left: RepositoryRecord, right: RepositoryRecord): number {
-  return left.name.localeCompare(right.name, appLocale.value, { sensitivity: "base" }) || left.path.localeCompare(right.path, appLocale.value);
+  const leftLabel = left.alias?.trim() || left.name;
+  const rightLabel = right.alias?.trim() || right.name;
+  return leftLabel.localeCompare(rightLabel, appLocale.value, { sensitivity: "base" }) || left.path.localeCompare(right.path, appLocale.value);
 }
 
 function replaceRepositoryRecord(repository: RepositoryRecord): void {
@@ -768,6 +773,32 @@ async function saveRepositoryGroup(): Promise<void> {
     message.success(name ? tr("仓库分组已保存。", "Repository group saved.") : tr("仓库已移到未分组。", "Repository moved to ungrouped."));
   } catch (error) {
     reportError(error, tr("保存仓库分组失败", "Could not save repository group"));
+  } finally {
+    mutationBusy.value = false;
+  }
+}
+
+function openRepositoryAliasEditor(repository: RepositoryRecord): void {
+  repositoryAliasTarget.value = repository;
+  repositoryAliasForm.name = repository.alias || "";
+  repositoryAliasModalShown.value = true;
+}
+
+async function saveRepositoryAlias(): Promise<void> {
+  const target = repositoryAliasTarget.value;
+  if (!target) return;
+  mutationBusy.value = true;
+  try {
+    const name = repositoryAliasForm.name.trim();
+    const updated = await api.setRepositoryAlias(target.path, name || null);
+    replaceRepositoryRecord(updated);
+    if (snapshot.value?.repository.path === updated.path) {
+      snapshot.value = { ...snapshot.value, repository: updated };
+    }
+    repositoryAliasModalShown.value = false;
+    message.success(name ? tr("仓库别名已保存。", "Repository alias saved.") : tr("仓库别名已移除。", "Repository alias removed."));
+  } catch (error) {
+    reportError(error, tr("保存仓库别名失败", "Could not save repository alias"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3105,8 +3136,10 @@ onBeforeUnmount(() => {
     bindingDrawerShown,
     bindingRemote,
     repositoryGroupModalShown,
+    repositoryAliasModalShown,
     settingsModalShown,
     repositoryGroupTarget,
+    repositoryAliasTarget,
     cloneForm,
     initForm,
     discoverForm,
@@ -3128,6 +3161,7 @@ onBeforeUnmount(() => {
     editedRemoteName,
     bindingForm,
     repositoryGroupForm,
+    repositoryAliasForm,
     endpoints,
     lastAccountStatusRefreshAt,
     accountStatusRefreshCacheMs,
@@ -3219,6 +3253,8 @@ onBeforeUnmount(() => {
     replaceRepositoryRecord,
     openRepositoryGroupEditor,
     saveRepositoryGroup,
+    openRepositoryAliasEditor,
+    saveRepositoryAlias,
     loadRepositories,
     loadAccounts,
     refreshAccountStatuses,

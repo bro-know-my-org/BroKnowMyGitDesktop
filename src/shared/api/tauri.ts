@@ -124,6 +124,7 @@ function browserCapabilities(endpointId: string): CodeHostCapabilities {
 const sampleRepository: RepositoryRecord = {
   path: "/Users/you/Projects/broknowmygitdesktop",
   name: "BroKnowMyGitDesktop",
+  alias: "桌面端主仓",
   group: "桌面客户端",
   host: "gitee.com",
   namespace: "broknowmyorg",
@@ -711,7 +712,7 @@ export const api = {
       const name = destinationPath.split(/[\\/]/u).filter(Boolean).pop() || "new-repository";
       browserSnapshot = copy({
         ...mockSnapshot,
-        repository: { path: destinationPath, name, group: null, host: null, namespace: null, lastOpenedAt: null },
+        repository: { path: destinationPath, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
         status: { ...mockSnapshot.status, branch: input.initialBranch?.trim() || "main", upstream: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: input.initialBranch?.trim() || "main", isCurrent: true, upstream: null }],
@@ -749,7 +750,7 @@ export const api = {
       const branch = "main";
       browserSnapshot = copy({
         ...mockSnapshot,
-        repository: { path: pathname, name, group: null, host: null, namespace: null, lastOpenedAt: null },
+        repository: { path: pathname, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
         status: { ...mockSnapshot.status, branch, upstream: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: branch, isCurrent: true, upstream: null }],
@@ -788,6 +789,7 @@ export const api = {
         browserSnapshot.repository = {
           path: worktree.path,
           name: worktree.path.split(/[\\/]/u).filter(Boolean).pop() || "worktree",
+          alias: null,
           group: null,
           host: null,
           namespace: null,
@@ -828,6 +830,18 @@ export const api = {
         throw { code: "repository_group_invalid", message: "分组名称最多 80 个字符。" } satisfies AppError;
       }
       snapshot.repository.group = nextGroup;
+      return copy(snapshot.repository);
+    });
+  },
+
+  setRepositoryAlias(repositoryPath: string, alias: string | null): Promise<RepositoryRecord> {
+    return request("set_repository_alias", { repositoryPath, alias }, () => {
+      const snapshot = requireBrowserSnapshot(repositoryPath);
+      const nextAlias = alias?.trim() || null;
+      if (nextAlias && Array.from(nextAlias).length > 80) {
+        throw { code: "repository_alias_invalid", message: "仓库别名最多 80 个字符。" } satisfies AppError;
+      }
+      snapshot.repository.alias = nextAlias;
       return copy(snapshot.repository);
     });
   },

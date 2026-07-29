@@ -220,6 +220,7 @@ impl ProfileStore {
             .iter_mut()
             .find(|existing| existing.path == repository.path)
         {
+            repository.alias = existing.alias.clone();
             repository.group = existing.group.clone();
             repository.host = existing.host.clone();
             repository.namespace = existing.namespace.clone();
@@ -240,6 +241,7 @@ impl ProfileStore {
             .iter()
             .find(|existing| existing.path == repository.path)
         {
+            repository.alias = existing.alias.clone();
             repository.group = existing.group.clone();
             repository.host = existing.host.clone();
             repository.namespace = existing.namespace.clone();
@@ -287,6 +289,21 @@ impl ProfileStore {
             .find(|existing| existing.path == repository.path)
             .expect("repository was just inserted or updated");
         existing.group = group;
+        existing.clone()
+    }
+
+    pub fn set_repository_alias(
+        &mut self,
+        repository: RepositoryRecord,
+        alias: Option<String>,
+    ) -> RepositoryRecord {
+        let repository = self.upsert_repository(repository);
+        let existing = self
+            .recent_repositories
+            .iter_mut()
+            .find(|existing| existing.path == repository.path)
+            .expect("repository was just inserted or updated");
+        existing.alias = alias;
         existing.clone()
     }
 }
@@ -1096,6 +1113,7 @@ mod tests {
         RepositoryRecord {
             path: path.into(),
             name: name.into(),
+            alias: None,
             group: None,
             host: None,
             namespace: None,
@@ -1131,6 +1149,7 @@ mod tests {
                 .expect("older persisted records remain compatible");
 
         assert_eq!(record.group, None);
+        assert_eq!(record.alias, None);
         assert_eq!(record.host, None);
         assert_eq!(record.namespace, None);
         assert_eq!(record.last_opened_at, None);
@@ -1486,9 +1505,10 @@ mod tests {
     }
 
     #[test]
-    fn repository_upsert_retains_local_grouping_metadata() {
+    fn repository_upsert_retains_local_display_metadata() {
         let mut store = ProfileStore::default();
         let mut first = repository("/work/project", "project");
+        first.alias = Some("项目主仓".into());
         first.group = Some("工作".into());
         first.host = Some("github.com".into());
         first.namespace = Some("example-org".into());
@@ -1498,6 +1518,7 @@ mod tests {
         let updated = store.upsert_repository(repository("/work/project", "renamed-project"));
 
         assert_eq!(updated.name, "renamed-project");
+        assert_eq!(updated.alias.as_deref(), Some("项目主仓"));
         assert_eq!(updated.group.as_deref(), Some("工作"));
         assert_eq!(updated.host.as_deref(), Some("github.com"));
         assert_eq!(updated.namespace.as_deref(), Some("example-org"));
@@ -1508,6 +1529,7 @@ mod tests {
     fn touching_repository_updates_usage_without_losing_manual_group() {
         let mut store = ProfileStore::default();
         let mut record = repository("/work/project", "project");
+        record.alias = Some("客户端主仓".into());
         record.group = Some("客户端".into());
         store.upsert_repository(record);
 
@@ -1518,6 +1540,7 @@ mod tests {
             456,
         );
 
+        assert_eq!(touched.alias.as_deref(), Some("客户端主仓"));
         assert_eq!(touched.group.as_deref(), Some("客户端"));
         assert_eq!(touched.host.as_deref(), Some("gitlab.com"));
         assert_eq!(touched.namespace.as_deref(), Some("team/platform"));

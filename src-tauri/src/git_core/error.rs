@@ -136,6 +136,7 @@ pub(super) fn repository_record_from_root(root: &Path) -> Result<RepositoryRecor
     Ok(RepositoryRecord {
         path: path.to_owned(),
         name,
+        alias: None,
         group: None,
         host: None,
         namespace: None,

@@ -575,18 +575,37 @@ pub(super) fn current_time_millis() -> u64 {
 pub(super) fn normalize_repository_group(
     group: Option<String>,
 ) -> Result<Option<String>, AppError> {
-    let Some(group) = group else {
+    normalize_repository_label(
+        group,
+        "repository_group_invalid",
+        "分组名称最多 80 个字符，且不能包含控制字符。",
+    )
+}
+
+pub(super) fn normalize_repository_alias(
+    alias: Option<String>,
+) -> Result<Option<String>, AppError> {
+    normalize_repository_label(
+        alias,
+        "repository_alias_invalid",
+        "仓库别名最多 80 个字符，且不能包含控制字符。",
+    )
+}
+
+fn normalize_repository_label(
+    value: Option<String>,
+    error_code: &'static str,
+    error_message: &'static str,
+) -> Result<Option<String>, AppError> {
+    let Some(value) = value else {
         return Ok(None);
     };
-    let group = group.trim();
-    if group.is_empty() {
+    let value = value.trim();
+    if value.is_empty() {
         return Ok(None);
     }
-    if group.chars().count() > 80 || group.chars().any(char::is_control) {
-        return Err(AppError::new(
-            "repository_group_invalid",
-            "分组名称最多 80 个字符，且不能包含控制字符。",
-        ));
+    if value.chars().count() > 80 || value.chars().any(char::is_control) {
+        return Err(AppError::new(error_code, error_message));
     }
-    Ok(Some(group.to_owned()))
+    Ok(Some(value.to_owned()))
 }

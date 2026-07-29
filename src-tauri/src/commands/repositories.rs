@@ -276,3 +276,20 @@ pub async fn set_repository_group(
     .await
     .map_err(|_| AppError::new("command_failed", "仓库分组后台任务未能完成。"))?
 }
+
+#[tauri::command]
+pub async fn set_repository_alias(
+    repository_path: String,
+    alias: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<RepositoryRecord, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        let repository = GitCore::new().repository_record(&repository)?;
+        let alias = normalize_repository_alias(alias)?;
+        state.mutate(|store| Ok(store.set_repository_alias(repository, alias)))
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "仓库别名后台任务未能完成。"))?
+}

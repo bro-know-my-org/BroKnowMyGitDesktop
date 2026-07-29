@@ -89,7 +89,17 @@ export default defineComponent({
     </template>
   </n-modal>
 
-<n-modal v-model:show="repositoryGroupModalShown" preset="card" :title="tr('编辑仓库分组', 'Edit repository group')" class="dialog-card" :mask-closable="!mutationBusy">
+  <n-modal v-model:show="repositoryAliasModalShown" preset="card" :title="tr('设置仓库别名', 'Set repository alias')" class="dialog-card" :mask-closable="!mutationBusy">
+    <n-form label-placement="top">
+      <n-form-item :label="tr('仓库别名', 'Repository alias')">
+        <n-input v-model:value="repositoryAliasForm.name" maxlength="80" show-count :placeholder="tr('例如：客户端主仓、发布工具', 'For example: Client main, Release tools')" @keyup.enter="saveRepositoryAlias" />
+      </n-form-item>
+    </n-form>
+    <n-text depth="3">{{ tr("别名会带有专属标记，并和真实仓库名同时显示。它仅保存在本应用，不会重命名目录或修改 Git 仓库；留空保存可移除别名。", "The alias has its own marker and is shown alongside the real repository name. It is stored only by this app and never renames the folder or changes Git; save an empty value to remove it.") }}</n-text>
+    <template #action><n-space justify="end"><n-button @click="repositoryAliasModalShown = false">{{ tr("取消", "Cancel") }}</n-button><n-button type="primary" :loading="mutationBusy" @click="saveRepositoryAlias">{{ tr("保存别名", "Save alias") }}</n-button></n-space></template>
+  </n-modal>
+
+  <n-modal v-model:show="repositoryGroupModalShown" preset="card" :title="tr('编辑仓库分组', 'Edit repository group')" class="dialog-card" :mask-closable="!mutationBusy">
     <n-form label-placement="top">
       <n-form-item :label="tr('分组名称', 'Group name')">
         <n-input v-model:value="repositoryGroupForm.name" maxlength="80" show-count :placeholder="tr('例如：工作、个人项目、客户 A', 'For example: Work, Personal, Client A')" />

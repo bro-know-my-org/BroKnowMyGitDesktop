@@ -211,6 +211,7 @@ export interface TagInfo {
 export interface RepositoryRecord {
   path: string;
   name: string;
+  alias: string | null;
   group: string | null;
   host: string | null;
   namespace: string | null;

@@ -15,6 +15,7 @@ export default defineComponent({
     const repositoryContextMenuY = ref(0);
     const repositoryContextTarget = ref<RepositoryRecord | null>(null);
     const repositoryContextMenuOptions = computed(() => [
+      { label: workspace.tr("设置仓库别名", "Set repository alias"), key: "edit-alias" },
       { label: workspace.tr("编辑仓库分组", "Edit repository group"), key: "edit-group" },
     ]);
     const applicationMenuOptions = computed(() => [
@@ -54,7 +55,10 @@ export default defineComponent({
     function selectRepositoryContextMenuAction(value: string | number): void {
       repositoryContextMenuOpen.value = false;
       const repository = repositoryContextTarget.value;
-      if (value === "edit-group" && repository) {
+      if (value === "edit-alias" && repository) {
+        repositoryPickerOpen.value = false;
+        workspace.openRepositoryAliasEditor(repository);
+      } else if (value === "edit-group" && repository) {
         repositoryPickerOpen.value = false;
         workspace.openRepositoryGroupEditor(repository);
       }
@@ -114,7 +118,12 @@ export default defineComponent({
                     :aria-expanded="repositoryPickerOpen"
                     :title="tr('切换仓库', 'Switch repository')"
                   >
-                    <span class="topbar-title">{{ snapshot?.repository.name || tr("仓库", "Repository") }}</span>
+                    <template v-if="snapshot?.repository.alias">
+                      <span class="repository-alias-mark">{{ tr("别名", "Alias") }}</span>
+                      <span class="topbar-title repository-alias-name">{{ snapshot.repository.alias }}</span>
+                      <span class="topbar-repository-canonical-name">{{ snapshot.repository.name }}</span>
+                    </template>
+                    <span v-else class="topbar-title">{{ snapshot?.repository.name || tr("仓库", "Repository") }}</span>
                     <span class="repository-switcher-caret" aria-hidden="true">▾</span>
                   </button>
                 </template>
@@ -146,11 +155,16 @@ export default defineComponent({
                                 class="sidebar-repository"
                                 :class="{ active: repository.path === activeRepositoryPath }"
                                 type="button"
-                                :title="`${repository.path} · ${tr('右键编辑分组', 'Right-click to edit group')}`"
+                                :title="`${repository.path} · ${tr('右键设置别名或编辑分组', 'Right-click to set an alias or edit the group')}`"
                                 @click="repositoryPickerOpen = false; selectRepository(repository.path)"
                                 @contextmenu="openRepositoryContextMenu($event, repository)"
                               >
-                                <span class="repository-name">{{ repository.name }}</span>
+                                <template v-if="repository.alias">
+                                  <span class="repository-alias-mark">{{ tr("别名", "Alias") }}</span>
+                                  <span class="repository-name repository-alias-name">{{ repository.alias }}</span>
+                                  <span class="repository-canonical-name">{{ repository.name }}</span>
+                                </template>
+                                <span v-else class="repository-name">{{ repository.name }}</span>
                               </button>
                             </div>
                           </div>

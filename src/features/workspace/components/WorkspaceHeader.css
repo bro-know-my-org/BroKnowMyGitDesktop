@@ -190,6 +190,46 @@
   white-space: nowrap;
 }
 
+.repository-alias-mark {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border: 1px dashed var(--app-accent-strong);
+  color: var(--app-accent-strong);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.repository-alias-name {
+  color: var(--app-accent-strong);
+  font-style: italic;
+  font-weight: 720;
+}
+
+.repository-canonical-name,
+.topbar-repository-canonical-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--app-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-canonical-name::before,
+.topbar-repository-canonical-name::before {
+  content: "· ";
+}
+
+.topbar-repository-canonical-name {
+  max-width: 140px;
+  font-size: 11px;
+}
+
 .sidebar-empty {
   display: block;
   padding: 8px;

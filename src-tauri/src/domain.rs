@@ -571,6 +571,10 @@ pub struct TagInfo {
 pub struct RepositoryRecord {
     pub path: String,
     pub name: String,
+    /// A user-defined display alias. This is visually distinguished from the
+    /// directory-derived repository name and never changes the filesystem.
+    #[serde(default)]
+    pub alias: Option<String>,
     /// A user-defined collection name. This is application metadata, never a
     /// Git setting, so moving it does not modify the repository.
     #[serde(default)]
