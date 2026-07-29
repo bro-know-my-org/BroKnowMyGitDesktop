@@ -134,21 +134,35 @@ export default defineComponent({
     </template>
   </n-modal>
 
-  <n-modal v-model:show="blameModalShown" preset="card" :title="tr('文件 Blame', 'File blame')" class="dialog-card">
+  <n-modal
+    v-model:show="blameModalShown"
+    preset="card"
+    :title="tr('文件 Blame', 'File blame')"
+    class="dialog-card"
+  >
     <n-text depth="3">{{ selectedChange?.path || '—' }}</n-text>
-    <n-spin :show="blameLoading">
-      <pre v-if="blameText" class="diff-output dialog-output">{{ blameText }}</pre>
-      <n-text v-else-if="!blameLoading" depth="3">{{ tr("此文件没有可显示的 Blame 记录。", "This file has no blame records to display.") }}</n-text>
-    </n-spin>
+    <div class="dialog-data-content">
+      <n-spin :show="blameLoading">
+        <pre v-if="blameText" class="diff-output dialog-output">{{ blameText }}</pre>
+        <n-text v-else-if="!blameLoading" depth="3">{{ tr("此文件没有可显示的 Blame 记录。", "This file has no blame records to display.") }}</n-text>
+      </n-spin>
+    </div>
     <template #action><n-space justify="end"><n-button @click="blameModalShown = false">{{ tr("关闭", "Close") }}</n-button></n-space></template>
   </n-modal>
 
-  <n-modal v-model:show="reflogModalShown" preset="card" :title="tr('Reflog（恢复记录）', 'Reflog (recovery history)')" class="dialog-card">
+  <n-modal
+    v-model:show="reflogModalShown"
+    preset="card"
+    :title="tr('Reflog（恢复记录）', 'Reflog (recovery history)')"
+    class="dialog-card"
+  >
     <n-alert type="info" :bordered="false" class="token-alert">{{ tr("Reflog 记录本地引用移动，可用于定位误删、重置或变基前的提交；恢复操作仍需在历史页谨慎执行。", "Reflog records local reference movements and helps locate commits before resets, rebases, or accidental changes. Use recovery actions from History carefully.") }}</n-alert>
-    <n-spin :show="reflogLoading">
-      <pre v-if="reflogText" class="diff-output dialog-output">{{ reflogText }}</pre>
-      <n-text v-else-if="!reflogLoading" depth="3">{{ tr("当前仓库没有可显示的 Reflog 记录。", "This repository has no reflog records to display.") }}</n-text>
-    </n-spin>
+    <div class="dialog-data-content">
+      <n-spin :show="reflogLoading">
+        <pre v-if="reflogText" class="diff-output dialog-output">{{ reflogText }}</pre>
+        <n-text v-else-if="!reflogLoading" depth="3">{{ tr("当前仓库没有可显示的 Reflog 记录。", "This repository has no reflog records to display.") }}</n-text>
+      </n-spin>
+    </div>
     <template #action><n-space justify="end"><n-button @click="reflogModalShown = false">{{ tr("关闭", "Close") }}</n-button></n-space></template>
   </n-modal>
 

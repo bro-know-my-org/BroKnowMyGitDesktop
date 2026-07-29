@@ -2,6 +2,37 @@
   width: min(600px, calc(100vw - 44px));
 }
 
+.n-modal.fade-in-scale-up-transition-enter-active,
+.n-modal.fade-in-scale-up-transition-leave-active,
+.n-modal-mask.fade-in-transition-enter-active,
+.n-modal-mask.fade-in-transition-leave-active {
+  transition: none !important;
+}
+
+.n-modal.fade-in-scale-up-transition-enter-from,
+.n-modal.fade-in-scale-up-transition-leave-to,
+.n-modal.fade-in-scale-up-transition-enter-to,
+.n-modal.fade-in-scale-up-transition-leave-from {
+  opacity: 1;
+  transform: none !important;
+}
+
+.n-modal-mask.fade-in-transition-enter-from,
+.n-modal-mask.fade-in-transition-leave-to,
+.n-modal-mask.fade-in-transition-enter-to,
+.n-modal-mask.fade-in-transition-leave-from {
+  opacity: 1;
+}
+
+.dialog-data-content {
+  min-height: 260px;
+}
+
+.dialog-data-content > .n-spin-container,
+.dialog-data-content > .n-spin-container > .n-spin-content {
+  min-height: inherit;
+}
+
 .settings-dialog-card {
   width: min(720px, calc(100vw - 44px));
 }
