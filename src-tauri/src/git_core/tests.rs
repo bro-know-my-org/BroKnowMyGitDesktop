@@ -1,8 +1,10 @@
 use super::editor::*;
 use super::environment::*;
 use super::error::*;
+use super::history::{parse_exact_history_ref, trim_incomplete_utf8_suffix};
 use super::models::*;
 use super::parser::*;
+use super::runtime::read_git_preview_pipe;
 use super::validation::*;
 
 use super::*;
@@ -902,6 +904,7 @@ fn init_publishes_new_and_existing_directories_without_leaving_staging_entries()
 #[test]
 fn parses_porcelain_v2_status_with_rename_and_untracked_path() {
     let raw = concat!(
+        "# branch.oid 0123456789abcdef0123456789abcdef01234567\n",
         "# branch.head main\n",
         "# branch.upstream origin/main\n",
         "# branch.ab +2 -3\n",
@@ -913,6 +916,10 @@ fn parses_porcelain_v2_status_with_rename_and_untracked_path() {
     .as_bytes();
 
     let status = parse_status_porcelain_v2(raw).unwrap();
+    assert_eq!(
+        status.head_commit.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
     assert_eq!(status.branch.as_deref(), Some("main"));
     assert_eq!(status.upstream.as_deref(), Some("origin/main"));
     assert_eq!((status.ahead, status.behind), (2, 3));
@@ -1782,6 +1789,61 @@ fn parses_commit_history_and_stash_output() {
 }
 
 #[test]
+fn selects_the_exact_history_ref_from_prefix_matches() {
+    let fields = parse_exact_history_ref(
+        b"refs/heads/topic\0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0refs/remotes/origin/topic\nrefs/heads/topic/child\0bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0\n",
+        "refs/heads/topic",
+        3,
+    )
+    .unwrap();
+    assert_eq!(fields[0], "refs/heads/topic");
+    assert_eq!(fields[1], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+}
+
+#[test]
+fn trims_an_incomplete_utf8_suffix_after_an_earlier_invalid_byte() {
+    let mut bytes = vec![0xff, b' ', 0xe4, 0xb8];
+    trim_incomplete_utf8_suffix(&mut bytes);
+    assert_eq!(bytes, vec![0xff, b' ']);
+    assert_eq!(
+        String::from_utf8_lossy(&bytes).matches('\u{fffd}').count(),
+        1
+    );
+}
+
+#[test]
+fn preview_pipe_stops_at_its_limit_without_waiting_for_eof() {
+    struct OpenAfterSentinel {
+        delivered: bool,
+    }
+
+    impl std::io::Read for OpenAfterSentinel {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            assert!(
+                !self.delivered,
+                "preview reader waited for EOF after the sentinel byte"
+            );
+            self.delivered = true;
+            buffer[..5].copy_from_slice(b"12345");
+            Ok(5)
+        }
+    }
+
+    let within_limit = read_git_preview_pipe(std::io::Cursor::new(b"1234"), 5, 4).unwrap();
+    assert_eq!(within_limit.stdout, b"1234");
+    assert!(!within_limit.truncated);
+
+    let beyond_requested_limit =
+        read_git_preview_pipe(OpenAfterSentinel { delivered: false }, 5, 4).unwrap();
+    assert_eq!(beyond_requested_limit.stdout, b"12345");
+    assert!(beyond_requested_limit.truncated);
+
+    let overflow = read_git_preview_pipe(std::io::Cursor::new(b"123456"), 5, 4).unwrap();
+    assert_eq!(overflow.stdout, b"12345");
+    assert!(overflow.truncated);
+}
+
+#[test]
 fn lists_real_git_history_without_extra_format_records() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1808,6 +1870,7 @@ fn lists_real_git_history_without_extra_format_records() {
     run_git(&["commit", "-qm", "first commit"]);
     fs::write(repository.join("history.txt"), "second\n").unwrap();
     run_git(&["commit", "-am", "second commit"]);
+    run_git(&["branch", "origin/main", "HEAD"]);
 
     let commits = GitCore::new().commits(&repository, 100).unwrap();
     assert_eq!(commits.len(), 2);
@@ -1831,6 +1894,111 @@ fn lists_real_git_history_without_extra_format_records() {
         .expect("a revision expression can be a tag target");
 
     let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn commit_history_tracks_resolved_upstream_and_detached_head() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-history-position-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?} succeeds");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["checkout", "-qb", "main"]);
+    run_git(&["config", "user.email", "history@example.invalid"]);
+    run_git(&["config", "user.name", "History Test"]);
+    fs::write(repository.join("history.txt"), "first\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "first commit"]);
+    run_git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/history.git",
+    ]);
+    run_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    run_git(&["config", "branch.main.remote", "origin"]);
+    run_git(&["config", "branch.main.merge", "refs/heads/main"]);
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&["commit", "-am", "second commit"]);
+
+    let git = GitCore::new();
+    let status = git.status(&repository).unwrap();
+    let commits = git.commits(&repository, 100).unwrap();
+    assert_eq!(commits.len(), 2);
+    assert_eq!(
+        status.upstream_commit.as_deref(),
+        Some(commits[1].sha.as_str())
+    );
+    assert_eq!(commits[0].pushed, Some(false));
+    assert_eq!(commits[1].pushed, Some(true));
+
+    run_git(&["checkout", "--detach", "-q", "HEAD"]);
+    let detached_commits = git.commits(&repository, 100).unwrap();
+    assert_eq!(detached_commits.len(), 2);
+    assert!(detached_commits
+        .iter()
+        .all(|commit| commit.pushed.is_none()));
+}
+
+#[test]
+fn commit_history_is_empty_for_an_unborn_branch() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-unborn-history-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let status = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(status.success());
+
+    assert!(GitCore::new().commits(&repository, 100).unwrap().is_empty());
+}
+
+#[test]
+fn commit_history_is_empty_for_an_unborn_branch_with_a_prefix_child_ref() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-unborn-prefix-history-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {arguments:?} succeeds");
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "history@example.invalid"]);
+    run_git(&["config", "user.name", "History Test"]);
+    fs::write(repository.join("history.txt"), "child\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "child commit"]);
+    run_git(&["branch", "main/child", "HEAD"]);
+    run_git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+    assert!(GitCore::new().commits(&repository, 100).unwrap().is_empty());
 }
 
 #[test]
@@ -1873,7 +2041,7 @@ fn lists_commit_files_and_reads_one_file_patch() {
         repository.join("copied.txt"),
     )
     .unwrap();
-    fs::write(repository.join("modified.txt"), "after\n").unwrap();
+    fs::write(repository.join("modified.txt"), "after 中文\n").unwrap();
     fs::write(repository.join("added.txt"), "new\n").unwrap();
     run_git(&["add", "-A"]);
     run_git(&["commit", "-qm", "change files"]);
@@ -1917,6 +2085,25 @@ fn lists_commit_files_and_reads_one_file_patch() {
     assert!(modified_diff.contains("-before"));
     assert!(modified_diff.contains("+after"));
     assert!(!modified_diff.contains("added.txt"));
+    let multibyte_boundary = modified_diff.find('中').unwrap() + 1;
+    let modified_preview = git
+        .commit_file_diff_preview(
+            &repository,
+            "HEAD",
+            "modified.txt",
+            None,
+            multibyte_boundary,
+        )
+        .unwrap();
+    assert!(modified_preview.truncated);
+    assert!(modified_preview.text.len() <= multibyte_boundary);
+    assert!(!modified_preview.text.contains('\u{fffd}'));
+    assert_eq!(
+        git.commit_file_diff_preview(&repository, "HEAD", "modified.txt", None, usize::MAX)
+            .unwrap_err()
+            .code(),
+        "invalid_diff_limit"
+    );
     let renamed_diff = git
         .commit_file_diff(
             &repository,

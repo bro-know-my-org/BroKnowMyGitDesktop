@@ -58,6 +58,16 @@ struct GitExecutionLimits {
     timeout_message: &'static str,
 }
 
+pub(super) struct GitOutputPreview {
+    pub stdout: Vec<u8>,
+    pub truncated: bool,
+}
+
+struct GitOutputPreviewRead {
+    preview: GitOutputPreview,
+    held_pipe: Option<std::process::ChildStdout>,
+}
+
 /// Git serializes configuration writers through sibling .lock files. Retain
 /// those locks from the final safety preflight until the network child exits,
 /// so another ordinary Git client cannot add a URL rewrite after it is checked.
@@ -373,6 +383,199 @@ impl GitCore {
         }
     }
 
+    pub(super) fn run_with_output_preview(
+        &self,
+        repository: Option<&Path>,
+        arguments: &[OsString],
+        environment: &GitEnvironment,
+        maximum_stdout_bytes: usize,
+        operation: &'static str,
+    ) -> Result<GitOutputPreview, AppError> {
+        let pipe_operation = GitPipeOperationPermit::acquire()?;
+        let mut command = Command::new(&self.executable);
+        configure_git_network_process_group(&mut command);
+        command
+            .args(command_arguments(repository, arguments))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_git_environment(&mut command, environment);
+        let mut child = command.spawn().map_err(|_| {
+            AppError::with_safe_details(
+                "git_unavailable",
+                "无法启动系统 Git",
+                "请确认 Git 已安装且可从应用进程的 PATH 访问。",
+            )
+        })?;
+        let process_id = child.id();
+        let process_tree = match attach_process_tree(&child) {
+            Ok(process_tree) => process_tree,
+            Err(error) => {
+                terminate_git_network_child(&mut child, process_id, None);
+                return Err(AppError::io("配置 Git 子进程树", error));
+            }
+        };
+        if let Err(error) = resume_git_network_process(process_id) {
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+            return Err(AppError::io("启动 Git 子进程", error));
+        }
+        let stdout = child.stdout.take().ok_or_else(|| {
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+            AppError::new("git_command_failed", "无法读取 Git 命令输出。")
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+            AppError::new("git_command_failed", "无法读取 Git 命令输出。")
+        })?;
+        let retained_stdout_bytes = maximum_stdout_bytes.checked_add(1).ok_or_else(|| {
+            terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+            AppError::new("invalid_output_limit", "Git 输出读取范围无效。")
+        })?;
+        let stdout_reader = spawn_git_preview_pipe_reader(
+            stdout,
+            retained_stdout_bytes,
+            maximum_stdout_bytes,
+            Arc::clone(&pipe_operation),
+        );
+        let stderr_reader = spawn_network_git_pipe_reader(
+            stderr,
+            MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+            Arc::clone(&pipe_operation),
+        );
+        let deadline = Instant::now() + BOUNDED_GIT_COMMAND_TIMEOUT;
+        let mut stdout_ready = None;
+        let mut stderr_ready = None;
+        let status = loop {
+            if let Err(error) = poll_git_preview_pipe(&stdout_reader, &mut stdout_ready) {
+                terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                return Err(error);
+            }
+            if let Err(error) = poll_network_git_pipe(&stderr_reader, &mut stderr_ready) {
+                terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                return Err(error);
+            }
+            if stdout_ready
+                .as_ref()
+                .is_some_and(|result| result.preview.truncated)
+            {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let pipe_collection_deadline =
+                            Instant::now() + NETWORK_GIT_PIPE_COLLECTION_TIMEOUT;
+                        let stderr = match collect_network_git_pipe(
+                            stderr_reader,
+                            stderr_ready,
+                            pipe_collection_deadline,
+                            "git_command_timeout",
+                            "Git 命令超时，请缩小范围后重试。",
+                        ) {
+                            Ok(stderr) => stderr,
+                            Err(error) => {
+                                terminate_remaining_git_network_process_tree(
+                                    &process_tree,
+                                    process_id,
+                                );
+                                return Err(error);
+                            }
+                        };
+                        let GitOutputPreviewRead { preview, held_pipe } =
+                            stdout_ready.expect("truncated preview is present");
+                        drop(held_pipe);
+                        terminate_remaining_git_network_process_tree(&process_tree, process_id);
+                        if status.success() {
+                            return Ok(preview);
+                        }
+                        return Err(git_command_error(
+                            operation,
+                            &Output {
+                                status,
+                                stdout: preview.stdout,
+                                stderr,
+                            },
+                        ));
+                    }
+                    Ok(None) => {
+                        // The reader proved overflow while Git was still
+                        // running. Stop it deliberately and return the bounded
+                        // prefix; a later non-zero status would be induced by
+                        // this termination rather than an observed Git error.
+                        terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                        let _ = collect_network_git_pipe(
+                            stderr_reader,
+                            stderr_ready,
+                            deadline,
+                            "git_command_timeout",
+                            "Git 命令超时，请缩小范围后重试。",
+                        );
+                        let GitOutputPreviewRead { preview, held_pipe } =
+                            stdout_ready.expect("truncated preview is present");
+                        drop(held_pipe);
+                        return Ok(preview);
+                    }
+                    Err(error) => {
+                        terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                        return Err(AppError::io("等待 Git", error));
+                    }
+                }
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() >= deadline => {
+                    terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                    return Err(AppError::new(
+                        "git_command_timeout",
+                        "Git 命令超时，请缩小范围后重试。",
+                    ));
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(25)),
+                Err(error) => {
+                    terminate_git_network_child(&mut child, process_id, Some(&process_tree));
+                    return Err(AppError::io("等待 Git", error));
+                }
+            }
+        };
+        let pipe_collection_deadline = Instant::now() + NETWORK_GIT_PIPE_COLLECTION_TIMEOUT;
+        let preview_read = match collect_git_preview_pipe(
+            stdout_reader,
+            stdout_ready,
+            pipe_collection_deadline,
+            "git_command_timeout",
+            "Git 命令超时，请缩小范围后重试。",
+        ) {
+            Ok(preview) => preview,
+            Err(error) => {
+                terminate_remaining_git_network_process_tree(&process_tree, process_id);
+                return Err(error);
+            }
+        };
+        let stderr = match collect_network_git_pipe(
+            stderr_reader,
+            stderr_ready,
+            pipe_collection_deadline,
+            "git_command_timeout",
+            "Git 命令超时，请缩小范围后重试。",
+        ) {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                terminate_remaining_git_network_process_tree(&process_tree, process_id);
+                return Err(error);
+            }
+        };
+        let GitOutputPreviewRead { preview, held_pipe } = preview_read;
+        drop(held_pipe);
+        if status.success() {
+            return Ok(preview);
+        }
+        Err(git_command_error(
+            operation,
+            &Output {
+                status,
+                stdout: preview.stdout,
+                stderr,
+            },
+        ))
+    }
+
     pub(super) fn run_with_input(
         &self,
         repository: Option<&Path>,
@@ -672,6 +875,100 @@ fn spawn_network_git_pipe_reader(
         let _ = sender.send(read_network_git_pipe(pipe, maximum_bytes));
     });
     receiver
+}
+
+fn spawn_git_preview_pipe_reader(
+    mut pipe: std::process::ChildStdout,
+    maximum_bytes: usize,
+    truncation_threshold: usize,
+    pipe_operation: Arc<GitPipeOperationPermit>,
+) -> Receiver<std::io::Result<GitOutputPreviewRead>> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _pipe_operation = pipe_operation;
+        let result =
+            read_git_preview_pipe(&mut pipe, maximum_bytes, truncation_threshold).map(|preview| {
+                GitOutputPreviewRead {
+                    held_pipe: preview.truncated.then_some(pipe),
+                    preview,
+                }
+            });
+        let _ = sender.send(result);
+    });
+    receiver
+}
+
+pub(super) fn read_git_preview_pipe(
+    mut pipe: impl Read,
+    maximum_bytes: usize,
+    truncation_threshold: usize,
+) -> std::io::Result<GitOutputPreview> {
+    let mut stdout = Vec::with_capacity(maximum_bytes.min(64 * 1024));
+    let mut buffer = [0_u8; 8 * 1024];
+    loop {
+        let count = pipe.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(GitOutputPreview {
+                stdout,
+                truncated: false,
+            });
+        }
+        let remaining = maximum_bytes.saturating_sub(stdout.len());
+        let retained = count.min(remaining);
+        stdout.extend_from_slice(&buffer[..retained]);
+        if retained < count || stdout.len() > truncation_threshold {
+            return Ok(GitOutputPreview {
+                stdout,
+                truncated: true,
+            });
+        }
+    }
+}
+
+fn poll_git_preview_pipe(
+    reader: &Receiver<std::io::Result<GitOutputPreviewRead>>,
+    ready: &mut Option<GitOutputPreviewRead>,
+) -> Result<(), AppError> {
+    if ready.is_some() {
+        return Ok(());
+    }
+    match reader.try_recv() {
+        Ok(Ok(preview)) => {
+            *ready = Some(preview);
+            Ok(())
+        }
+        Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(AppError::new(
+            "git_command_failed",
+            "无法读取 Git 命令输出。",
+        )),
+        Err(std::sync::mpsc::TryRecvError::Empty) => Ok(()),
+    }
+}
+
+fn collect_git_preview_pipe(
+    reader: Receiver<std::io::Result<GitOutputPreviewRead>>,
+    ready: Option<GitOutputPreviewRead>,
+    deadline: Instant,
+    timeout_code: &'static str,
+    timeout_message: &'static str,
+) -> Result<GitOutputPreviewRead, AppError> {
+    if let Some(preview) = ready {
+        return Ok(preview);
+    }
+    let timeout = deadline
+        .saturating_duration_since(Instant::now())
+        .min(NETWORK_GIT_PIPE_COLLECTION_TIMEOUT);
+    if timeout.is_zero() {
+        return Err(AppError::new(timeout_code, timeout_message));
+    }
+    match reader.recv_timeout(timeout) {
+        Ok(Ok(preview)) => Ok(preview),
+        Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => Err(AppError::new(
+            "git_command_failed",
+            "无法读取 Git 命令输出。",
+        )),
+        Err(RecvTimeoutError::Timeout) => Err(AppError::new(timeout_code, timeout_message)),
+    }
 }
 
 fn spawn_git_input_writer(

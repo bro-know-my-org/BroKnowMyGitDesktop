@@ -405,8 +405,10 @@ pub struct ExternalEditorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitStatus {
+    pub head_commit: Option<String>,
     pub branch: Option<String>,
     pub upstream: Option<String>,
+    pub upstream_commit: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     pub entries: Vec<GitStatusEntry>,
@@ -480,6 +482,15 @@ pub struct CommitChangedFile {
     pub previous_path: Option<String>,
     pub status: CommitFileStatus,
     pub similarity: Option<u8>,
+}
+
+/// A bounded preview of one commit-file patch. Large patches can be requested
+/// again with a larger explicit limit after the user asks to reveal more.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitFileDiff {
+    pub text: String,
+    pub truncated: bool,
 }
 
 /// A local stash entry. The display reference can be renumbered by another

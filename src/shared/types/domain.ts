@@ -115,8 +115,10 @@ export interface ExternalEditorConfig {
 }
 
 export interface GitStatus {
+  headCommit: string | null;
   branch: string | null;
   upstream: string | null;
+  upstreamCommit: string | null;
   ahead: number;
   behind: number;
   entries: GitStatusEntry[];
@@ -186,6 +188,11 @@ export interface CommitChangedFile {
   previousPath: string | null;
   status: CommitFileStatus;
   similarity: number | null;
+}
+
+export interface CommitFileDiff {
+  text: string;
+  truncated: boolean;
 }
 
 export interface StashEntry {

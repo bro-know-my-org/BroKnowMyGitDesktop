@@ -5,6 +5,7 @@ import type {
   CloneRepositoryInput,
   CleanUntrackedPreview,
   CommitChangedFile,
+  CommitFileDiff,
   CommitSummary,
   CodeHostCapabilities,
   CodeHostEndpoint,
@@ -156,8 +157,10 @@ const mockSnapshot: RepositorySnapshot = {
   repository: sampleRepository,
   hasHead: true,
   status: {
+    headCommit: "9d7a4f0c2ea846105d1200f9cf6a4eb68d748301",
     branch: "main",
     upstream: "origin/main",
+    upstreamCommit: "55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10",
     ahead: 1,
     behind: 0,
     entries: sampleEntries,
@@ -282,7 +285,9 @@ function browserBranchCommits(branch: string | null): CommitSummary[] {
 }
 
 function browserHistoryCommits(snapshot: RepositorySnapshot): CommitSummary[] {
-  const commits = browserBranchCommits(snapshot.status.branch);
+  const commits = snapshot.status.branch
+    ? browserBranchCommits(snapshot.status.branch)
+    : browserBranchCommitsFromTip(snapshot.status.headCommit);
   const upstreamTip = snapshot.status.upstream
     ? browserRemoteBranchTips.get(snapshot.status.upstream) ?? null
     : null;
@@ -334,6 +339,8 @@ function syncBrowserBranchStatus(snapshot: RepositorySnapshot): void {
   const localCommits = new Set(browserBranchCommitsFromTip(localTip).map((commit) => commit.sha));
   const upstreamCommits = new Set(browserBranchCommitsFromTip(upstreamTip).map((commit) => commit.sha));
   snapshot.hasHead = localTip !== null;
+  snapshot.status.headCommit = localTip;
+  snapshot.status.upstreamCommit = upstreamTip;
   snapshot.status.ahead = snapshot.status.upstream
     ? [...localCommits].filter((sha) => !upstreamCommits.has(sha)).length
     : 0;
@@ -527,6 +534,27 @@ function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): Re
   return copy(browserSnapshot);
 }
 
+function boundedBrowserCommitFileDiff(text: string, maximumBytes: number): CommitFileDiff {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 64 * 1024 || maximumBytes > 4 * 1024 * 1024) {
+    throw { code: "invalid_diff_limit", message: "提交文件差异读取范围无效。" } satisfies AppError;
+  }
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length <= maximumBytes) return { text, truncated: false };
+  let end = maximumBytes;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  while (end > 0) {
+    try {
+      return { text: decoder.decode(bytes.slice(0, end)), truncated: true };
+    } catch {
+      end -= 1;
+    }
+  }
+  return {
+    text: "",
+    truncated: true,
+  };
+}
+
 function parseGitQuotedDiffPath(header: string, index: number): { path: string; end: number } | null {
   if (header[index] !== '"') return null;
   const bytes: number[] = [];
@@ -714,7 +742,7 @@ export const api = {
         ...mockSnapshot,
         repository: { path: destinationPath, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
-        status: { ...mockSnapshot.status, branch: input.initialBranch?.trim() || "main", upstream: null, ahead: 0, behind: 0, entries: [] },
+        status: { ...mockSnapshot.status, headCommit: null, branch: input.initialBranch?.trim() || "main", upstream: null, upstreamCommit: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: input.initialBranch?.trim() || "main", isCurrent: true, upstream: null }],
         remoteBranches: [],
         remotes: [],
@@ -752,7 +780,7 @@ export const api = {
         ...mockSnapshot,
         repository: { path: pathname, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
-        status: { ...mockSnapshot.status, branch, upstream: null, ahead: 0, behind: 0, entries: [] },
+        status: { ...mockSnapshot.status, headCommit: null, branch, upstream: null, upstreamCommit: null, ahead: 0, behind: 0, entries: [] },
         branches: [{ name: branch, isCurrent: true, upstream: null }],
         remoteBranches: [{ remoteName: "origin", name: branch }],
         remotes: [browserRemoteProfile("origin", input.url)],
@@ -799,6 +827,16 @@ export const api = {
         browserSnapshot.branches.forEach((branch) => {
           branch.isCurrent = branch.name === worktree.branch;
         });
+        browserSnapshot.status.upstream = browserSnapshot.branches.find((branch) => branch.isCurrent)?.upstream ?? null;
+        syncBrowserBranchStatus(browserSnapshot);
+        if (worktree.isDetached) {
+          browserSnapshot.hasHead = Boolean(worktree.head);
+          browserSnapshot.status.headCommit = worktree.head || null;
+          browserSnapshot.status.upstream = null;
+          browserSnapshot.status.upstreamCommit = null;
+          browserSnapshot.status.ahead = 0;
+          browserSnapshot.status.behind = 0;
+        }
       }
       const ownerRemote = browserSnapshot.remotes.find(
         (remote) => remote.name === "origin" && remote.parsed.host && remote.parsed.namespace,
@@ -1005,8 +1043,9 @@ export const api = {
     revision: string,
     path: string,
     previousPath: string | null = null,
-  ): Promise<string> {
-    return request("get_commit_file_diff", { repositoryPath, revision, path, previousPath }, () => {
+    maximumBytes = 512 * 1024,
+  ): Promise<CommitFileDiff> {
+    return request("get_commit_file_diff", { repositoryPath, revision, path, previousPath, maximumBytes }, () => {
       requireBrowserSnapshot(repositoryPath);
       const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
       if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
@@ -1015,31 +1054,31 @@ export const api = {
         throw { code: "commit_file_not_found", message: "所选文件不属于这个提交的改动。" } satisfies AppError;
       }
       if (previousPath) {
-        return [
+        return boundedBrowserCommitFileDiff([
           `diff --git a/${previousPath} b/${path}`,
           `similarity index 92%`,
           `rename from ${previousPath}`,
           `rename to ${path}`,
-        ].join("\n");
+        ].join("\n"), maximumBytes);
       }
       if (changedFile.status === "added") {
-        return [
+        return boundedBrowserCommitFileDiff([
           `diff --git a/${path} b/${path}`,
           "new file mode 100644",
           "--- /dev/null",
           `+++ b/${path}`,
           "@@ -0,0 +1 @@",
           "+历史记录按文件浏览",
-        ].join("\n");
+        ].join("\n"), maximumBytes);
       }
-      return [
+      return boundedBrowserCommitFileDiff([
         `diff --git a/${path} b/${path}`,
         `--- a/${path}`,
         `+++ b/${path}`,
         "@@ -1 +1,2 @@",
         ` # ${path}`,
         "+历史记录按文件浏览",
-      ].join("\n");
+      ].join("\n"), maximumBytes);
     });
   },
 

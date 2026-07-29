@@ -499,7 +499,18 @@ impl GitCore {
             &GitEnvironment::default(),
             "读取仓库状态",
         )?;
-        parse_status_porcelain_v2(&output.stdout)
+        let mut status = parse_status_porcelain_v2(&output.stdout)?;
+        if let (Some(head_commit), Some(upstream)) =
+            (status.head_commit.as_deref(), status.upstream.as_deref())
+        {
+            let branch_name = status
+                .branch
+                .as_deref()
+                .ok_or_else(|| AppError::new("git_parse_error", "无法读取当前分支。"))?;
+            status.upstream_commit =
+                self.commit_for_upstream(repository, branch_name, head_commit, upstream)?;
+        }
+        Ok(status)
     }
 
     /// Opens every unresolved conflict file in the application's explicitly

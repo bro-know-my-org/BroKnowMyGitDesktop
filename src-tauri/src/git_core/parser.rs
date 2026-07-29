@@ -3,8 +3,10 @@ use super::*;
 
 pub(super) fn parse_status_porcelain_v2(raw: &[u8]) -> Result<GitStatus, AppError> {
     let mut status = GitStatus {
+        head_commit: None,
         branch: None,
         upstream: None,
+        upstream_commit: None,
         ahead: 0,
         behind: 0,
         entries: Vec::new(),
@@ -75,7 +77,18 @@ pub(super) fn parse_status_porcelain_v2(raw: &[u8]) -> Result<GitStatus, AppErro
 pub(super) fn parse_status_header(record: &[u8], status: &mut GitStatus) -> Result<(), AppError> {
     let value = std::str::from_utf8(record).map_err(|_| status_parse_error())?;
     let value = value.strip_prefix("# ").ok_or_else(status_parse_error)?;
-    if let Some(branch) = value.strip_prefix("branch.head ") {
+    if let Some(object_id) = value.strip_prefix("branch.oid ") {
+        status.head_commit = match object_id {
+            "(initial)" => None,
+            object_id
+                if matches!(object_id.len(), 40 | 64)
+                    && object_id.bytes().all(|byte| byte.is_ascii_hexdigit()) =>
+            {
+                Some(object_id.to_owned())
+            }
+            _ => return Err(status_parse_error()),
+        };
+    } else if let Some(branch) = value.strip_prefix("branch.head ") {
         status.branch = match branch {
             "(detached)" | "(unknown)" => None,
             "" => return Err(status_parse_error()),

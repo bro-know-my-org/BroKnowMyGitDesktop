@@ -14,6 +14,7 @@ import {
   type AppError,
   type BranchInfo,
   type CommitChangedFile,
+  type CommitFileDiff,
   type CommitSummary,
   type CodeHostCapabilities,
   type CodeHostEndpoint,
@@ -59,12 +60,39 @@ interface RepositoryChangedPayload {
   requestGeneration: number;
   errorKind: string | null;
   retryable: boolean;
+  historyObjectsChanged: boolean;
+  stashesChanged: boolean;
 }
 
 interface RefreshSnapshotOptions {
   includeAuxiliary?: boolean;
   reportErrors?: boolean;
   silent?: boolean;
+}
+
+interface HistoryLoadOptions {
+  force?: boolean;
+  reportErrors?: boolean;
+  silent?: boolean;
+}
+
+interface CachedCommitFileDiff extends CommitFileDiff {
+  maximumReached: boolean;
+}
+
+interface CachedCommitFiles {
+  files: CommitChangedFile[];
+  weight: number;
+}
+
+interface CommitFileDiffRequest {
+  repositoryPath: string;
+  commit: CommitSummary;
+  file: CommitChangedFile;
+  selectionGeneration: number;
+  requestGeneration: number;
+  cacheKey: string;
+  maximumBytes: number;
 }
 
 const message = useMessage();
@@ -88,6 +116,15 @@ const {
 } = createRepositoryPresentation(tr);
 const repositoryGroupingStorageKey = "broknowmygitdesktop.repository-grouping";
 const lastRepositoryStorageKey = "broknowmygitdesktop.last-repository";
+const commitCacheLimit = 20;
+const commitSelectionDebounceMs = 75;
+const commitDiffInitialLineCount = 2_000;
+const commitDiffLineIncrement = 2_000;
+const commitDiffMaximumDisplayedLines = 10_000;
+const commitDiffPreviewBytes = 512 * 1024;
+const commitDiffMaximumBytes = 4 * 1024 * 1024;
+const commitFilesCacheMaximumWeight = 16 * 1024 * 1024;
+const commitDiffCacheMaximumWeight = 16 * 1024 * 1024;
 
 function initialRepositoryGrouping(): RepositoryGrouping {
   if (typeof window === "undefined") return "manual";
@@ -167,6 +204,14 @@ let submodulesRequestGeneration = 0;
 let lfsRequestGeneration = 0;
 let commitFilesRequestGeneration = 0;
 let commitDiffRequestGeneration = 0;
+let commitFilesDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let commitDiffDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let commitDiffRequestInFlight = false;
+let pendingCommitDiffRequest: CommitFileDiffRequest | null = null;
+const commitFilesCache = new Map<string, CachedCommitFiles>();
+let commitFilesCacheWeight = 0;
+const commitDiffCache = new Map<string, CachedCommitFileDiff>();
+let commitDiffCacheWeight = 0;
 const blameText = ref("");
 const commits = ref<CommitSummary[]>([]);
 const stashes = ref<StashEntry[]>([]);
@@ -179,6 +224,8 @@ const selectedCommit = ref<CommitSummary | null>(null);
 const commitChangedFiles = ref<CommitChangedFile[]>([]);
 const selectedCommitFile = ref<CommitChangedFile | null>(null);
 const commitDiffText = ref("");
+const commitDiffTruncated = ref(false);
+const commitDiffMaximumReached = ref(false);
 const lastError = ref<AppError | null>(null);
 const lastErrorAction = ref("");
 
@@ -192,10 +239,14 @@ const platformLoading = ref(false);
 const pullRequestsLoading = ref(false);
 const historyLoading = ref(false);
 let historyRequestGeneration = 0;
+let historyLoadedRepositoryPath: string | null = null;
+let historyLoadedSignature: string | null = null;
 const reflogLoading = ref(false);
 const commitFilesLoading = ref(false);
 const commitDiffLoading = ref(false);
 const stashesLoading = ref(false);
+let stashesRequestGeneration = 0;
+let stashesLoadedRepositoryPath: string | null = null;
 const worktreesLoading = ref(false);
 const submodulesLoading = ref(false);
 const lfsLoading = ref(false);
@@ -310,7 +361,18 @@ const conflictedChanges = computed(() => snapshot.value?.status.entries.filter(i
 const diffHunks = computed(() => splitDiffHunks(diffText.value));
 const diffLines = computed(() => splitDiffLines(diffText.value));
 const hasDiffText = computed(() => diffText.value.trim().length > 0);
-const commitDiffLines = computed(() => splitDiffLines(commitDiffText.value));
+const commitDiffVisibleLineCount = ref(commitDiffInitialLineCount);
+const commitDiffVisibleChunk = computed(() => splitVisibleDiffLines(commitDiffText.value, commitDiffVisibleLineCount.value));
+const commitDiffVisibleLines = computed(() => commitDiffVisibleChunk.value.lines);
+const commitDiffHasMoreLines = computed(() => commitDiffVisibleChunk.value.hasMore);
+const commitDiffLineLimitReached = computed(() =>
+  commitDiffHasMoreLines.value && commitDiffVisibleLineCount.value >= commitDiffMaximumDisplayedLines,
+);
+const commitDiffCanExpand = computed(() =>
+  (!commitDiffLineLimitReached.value && commitDiffHasMoreLines.value) ||
+  (commitDiffTruncated.value && !commitDiffMaximumReached.value),
+);
+const commitDiffLimitedAtMaximum = computed(() => commitDiffTruncated.value && commitDiffMaximumReached.value);
 const canAmendLatestCommit = computed(() => snapshot.value?.hasHead ?? false);
 const isUnbornRepository = computed(() => Boolean(snapshot.value && !snapshot.value.hasHead));
 const commitActionLabel = computed(() => {
@@ -699,13 +761,117 @@ function clearDiffSelection(): void {
   diffLoading.value = false;
 }
 
+function commitFilesCacheKey(repositoryPath: string, revision: string): string {
+  return `${repositoryPath}\u0000${revision}`;
+}
+
+function commitDiffCacheKey(
+  repositoryPath: string,
+  revision: string,
+  path: string,
+  previousPath: string | null,
+): string {
+  return `${repositoryPath}\u0000${revision}\u0000${previousPath ?? ""}\u0000${path}`;
+}
+
+function readLruCache<T>(cache: Map<string, T>, key: string): T | undefined {
+  const value = cache.get(key);
+  if (value === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, value);
+  return value;
+}
+
+function writeCommitDiffCache(key: string, value: CachedCommitFileDiff): void {
+  const previous = commitDiffCache.get(key);
+  if (previous) commitDiffCacheWeight -= previous.text.length * 2;
+  commitDiffCache.delete(key);
+  const weight = value.text.length * 2;
+  if (weight > commitDiffCacheMaximumWeight) return;
+  commitDiffCache.set(key, value);
+  commitDiffCacheWeight += weight;
+  while (commitDiffCache.size > commitCacheLimit || commitDiffCacheWeight > commitDiffCacheMaximumWeight) {
+    const oldestKey = commitDiffCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = commitDiffCache.get(oldestKey);
+    if (oldest) commitDiffCacheWeight -= oldest.text.length * 2;
+    commitDiffCache.delete(oldestKey);
+  }
+}
+
+function writeCommitFilesCache(key: string, files: CommitChangedFile[]): void {
+  const previous = commitFilesCache.get(key);
+  if (previous) commitFilesCacheWeight -= previous.weight;
+  commitFilesCache.delete(key);
+  const weight = files.reduce(
+    (total, file) => total + 64 + (file.path.length + (file.previousPath?.length ?? 0)) * 2,
+    0,
+  );
+  if (weight > commitFilesCacheMaximumWeight) return;
+  commitFilesCache.set(key, { files, weight });
+  commitFilesCacheWeight += weight;
+  while (commitFilesCache.size > commitCacheLimit || commitFilesCacheWeight > commitFilesCacheMaximumWeight) {
+    const oldestKey = commitFilesCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = commitFilesCache.get(oldestKey);
+    if (oldest) commitFilesCacheWeight -= oldest.weight;
+    commitFilesCache.delete(oldestKey);
+  }
+}
+
+function resetCommitDiffPresentation(): void {
+  commitDiffVisibleLineCount.value = commitDiffInitialLineCount;
+  commitDiffTruncated.value = false;
+  commitDiffMaximumReached.value = false;
+}
+
+function splitVisibleDiffLines(diff: string, maximumLines: number): { lines: string[]; hasMore: boolean } {
+  const lines: string[] = [];
+  let start = 0;
+  while (start < diff.length && lines.length < maximumLines) {
+    const newline = diff.indexOf("\n", start);
+    if (newline === -1) {
+      lines.push(diff.slice(start));
+      return { lines, hasMore: false };
+    }
+    lines.push(diff.slice(start, newline));
+    start = newline + 1;
+  }
+  return { lines, hasMore: start < diff.length };
+}
+
+function showMoreCommitDiffLines(): void {
+  if (
+    commitDiffLineLimitReached.value &&
+    commitDiffTruncated.value &&
+    !commitDiffMaximumReached.value
+  ) {
+    loadFullCommitFileDiff();
+    return;
+  }
+  if (commitDiffHasMoreLines.value) {
+    commitDiffVisibleLineCount.value = Math.min(
+      commitDiffVisibleLineCount.value + commitDiffLineIncrement,
+      commitDiffMaximumDisplayedLines,
+    );
+    return;
+  }
+  if (commitDiffTruncated.value && !commitDiffMaximumReached.value) loadFullCommitFileDiff();
+}
+
 function clearCommitSelection(): void {
+  if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
+  if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
+  commitFilesDebounceTimer = null;
+  commitDiffDebounceTimer = null;
+  pendingCommitDiffRequest = null;
   commitFilesRequestGeneration += 1;
   commitDiffRequestGeneration += 1;
   selectedCommit.value = null;
   commitChangedFiles.value = [];
   selectedCommitFile.value = null;
   commitDiffText.value = "";
+  resetCommitDiffPresentation();
   commitFilesLoading.value = false;
   commitDiffLoading.value = false;
 }
@@ -880,6 +1046,8 @@ function installRepositoryWatcher(repositoryPath: string): void {
             requestGeneration,
             errorKind: isAppError(error) ? error.code : "installation_failed",
             retryable: !isAppError(error) || error.code !== "repository_watch_failed_permanent",
+            historyObjectsChanged: false,
+            stashesChanged: false,
           },
         });
       }
@@ -893,14 +1061,18 @@ async function selectRepository(repositoryPath: string): Promise<void> {
   repositoryWatcherUnavailable = false;
   snapshotApplicationGeneration += 1;
   snapshotRefreshRequestGeneration += 1;
-  historyRequestGeneration += 1;
+  invalidateCommitHistoryCache();
+  invalidateStashesCache();
   worktreesRequestGeneration += 1;
   submodulesRequestGeneration += 1;
   lfsRequestGeneration += 1;
+  if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
+  if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
+  commitFilesDebounceTimer = null;
+  commitDiffDebounceTimer = null;
+  pendingCommitDiffRequest = null;
   commitFilesRequestGeneration += 1;
   commitDiffRequestGeneration += 1;
-  historyLoading.value = false;
-  stashesLoading.value = false;
   commitFilesLoading.value = false;
   commitDiffLoading.value = false;
   worktreesLoading.value = false;
@@ -958,7 +1130,21 @@ async function selectRepository(repositoryPath: string): Promise<void> {
 }
 
 async function refreshSnapshot(): Promise<void> {
+  const repositoryPath = activeRepositoryPath.value;
+  const previousApplicationGeneration = snapshotApplicationGeneration;
+  const previousHistorySignature = historySnapshotSignature(snapshot.value);
   await refreshSnapshotWithOptions();
+  if (
+    !repositoryPath ||
+    activeRepositoryPath.value !== repositoryPath ||
+    snapshotApplicationGeneration === previousApplicationGeneration
+  ) return;
+  invalidateStashesCache();
+  if (historySnapshotSignature(snapshot.value) !== previousHistorySignature) {
+    invalidateCommitHistoryCache();
+    invalidateCommitDetailCaches();
+  }
+  if (activeTab.value === "history") await loadHistoryWithOptions({ force: true });
 }
 
 async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}): Promise<void> {
@@ -1023,6 +1209,40 @@ function applicationCanAutoRefresh(): boolean {
   return controllerMounted && windowFocused && (typeof document === "undefined" || !document.hidden);
 }
 
+function historySnapshotSignature(repositorySnapshot: RepositorySnapshot | null): string {
+  if (!repositorySnapshot) return "";
+  return JSON.stringify([
+    repositorySnapshot.status.headCommit,
+    repositorySnapshot.status.branch,
+    repositorySnapshot.status.upstream,
+    repositorySnapshot.status.upstreamCommit,
+    repositorySnapshot.status.ahead,
+    repositorySnapshot.status.behind,
+    repositorySnapshot.tags.map((tag) => [tag.name, tag.target]),
+  ]);
+}
+
+function invalidateCommitHistoryCache(): void {
+  historyRequestGeneration += 1;
+  historyLoadedRepositoryPath = null;
+  historyLoadedSignature = null;
+  historyLoading.value = false;
+}
+
+function invalidateStashesCache(): void {
+  stashesRequestGeneration += 1;
+  stashesLoadedRepositoryPath = null;
+  stashesLoading.value = false;
+}
+
+function invalidateCommitDetailCaches(): void {
+  commitFilesCache.clear();
+  commitFilesCacheWeight = 0;
+  commitDiffCache.clear();
+  commitDiffCacheWeight = 0;
+  clearCommitSelection();
+}
+
 function scheduleAutomaticRefresh(delay = automaticRefreshDebounceMs): void {
   automaticRefreshDirty = true;
   if (!applicationCanAutoRefresh() || section.value !== "repositories" || !activeRepositoryPath.value) return;
@@ -1042,16 +1262,30 @@ async function runAutomaticRefresh(): Promise<void> {
 
   automaticRefreshDirty = false;
   automaticRefreshInFlight = true;
-  const tab = activeTab.value;
+  const includeAuxiliary = activeTab.value === "branches";
+  const repositoryPath = activeRepositoryPath.value;
+  const previousHistorySignature = historySnapshotSignature(snapshot.value);
   try {
-    await Promise.all([
-      refreshSnapshotWithOptions({
-        includeAuxiliary: tab === "branches",
-        reportErrors: false,
-        silent: true,
-      }),
-      tab === "history" ? loadHistoryWithOptions(false) : Promise.resolve(),
-    ]);
+    await refreshSnapshotWithOptions({
+      includeAuxiliary,
+      reportErrors: false,
+      silent: true,
+    });
+    if (activeRepositoryPath.value !== repositoryPath) return;
+    const historyChanged = historySnapshotSignature(snapshot.value) !== previousHistorySignature;
+    if (historyChanged) invalidateCommitHistoryCache();
+    if (activeTab.value === "history" && activeRepositoryPath.value === repositoryPath) {
+      await Promise.all([
+        loadCommitHistoryWithOptions({
+          force: repositoryWatcherUnavailable,
+          reportErrors: false,
+        }),
+        loadStashesWithOptions({
+          force: repositoryWatcherUnavailable,
+          reportErrors: false,
+        }),
+      ]);
+    }
   } finally {
     automaticRefreshInFlight = false;
     if (automaticRefreshDirty) scheduleAutomaticRefresh();
@@ -1063,6 +1297,11 @@ function handleRepositoryChanged(event: { payload: RepositoryChangedPayload }): 
     event.payload.repositoryPath !== activeRepositoryPath.value ||
     event.payload.requestGeneration !== repositoryWatchRequestGeneration
   ) return;
+  if (event.payload.historyObjectsChanged) {
+    invalidateCommitHistoryCache();
+    invalidateCommitDetailCaches();
+  }
+  if (event.payload.stashesChanged) invalidateStashesCache();
   scheduleAutomaticRefresh();
 }
 
@@ -1297,35 +1536,83 @@ async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
 }
 
 async function loadHistory(): Promise<void> {
-  await loadHistoryWithOptions(true);
+  await loadHistoryWithOptions({ force: true });
 }
 
-async function loadHistoryWithOptions(reportErrors: boolean): Promise<void> {
+async function loadHistoryWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
+  await Promise.all([
+    loadCommitHistoryWithOptions(options),
+    loadStashesWithOptions(options),
+  ]);
+}
+
+async function loadCommitHistoryWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) return;
+  const {
+    force = false,
+    reportErrors = true,
+    silent = false,
+  } = options;
+  const requestHistorySignature = historySnapshotSignature(snapshot.value);
+  if (
+    !force &&
+    historyLoadedRepositoryPath === repositoryPath &&
+    historyLoadedSignature === requestHistorySignature
+  ) return;
+  if (force) {
+    historyLoadedRepositoryPath = null;
+    historyLoadedSignature = null;
+  }
+  if (!force && historyLoading.value) return;
   const requestGeneration = ++historyRequestGeneration;
-  historyLoading.value = true;
-  stashesLoading.value = true;
+  if (!silent) historyLoading.value = true;
   try {
-    const [nextCommits, nextStashes] = await Promise.all([
-      api.listCommits(repositoryPath),
-      api.listStashes(repositoryPath),
-    ]);
-    if (activeRepositoryPath.value !== repositoryPath || requestGeneration !== historyRequestGeneration) return;
+    const nextCommits = await api.listCommits(repositoryPath);
+    if (
+      activeRepositoryPath.value !== repositoryPath ||
+      requestGeneration !== historyRequestGeneration ||
+      historySnapshotSignature(snapshot.value) !== requestHistorySignature
+    ) return;
     commits.value = nextCommits;
-    stashes.value = nextStashes;
+    historyLoadedRepositoryPath = repositoryPath;
+    historyLoadedSignature = requestHistorySignature;
     if (selectedCommit.value && !nextCommits.some((commit) => commit.sha === selectedCommit.value?.sha)) {
       clearCommitSelection();
     }
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取历史记录失败", "Could not load repository history"));
+      if (reportErrors) reportError(error, tr("读取提交历史失败", "Could not load commit history"));
     }
   } finally {
-    if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
-      historyLoading.value = false;
-      stashesLoading.value = false;
+    if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) historyLoading.value = false;
+  }
+}
+
+async function loadStashesWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
+  const repositoryPath = activeRepositoryPath.value;
+  if (!repositoryPath) return;
+  const {
+    force = false,
+    reportErrors = true,
+    silent = false,
+  } = options;
+  if (!force && stashesLoadedRepositoryPath === repositoryPath) return;
+  if (force) stashesLoadedRepositoryPath = null;
+  if (!force && stashesLoading.value) return;
+  const requestGeneration = ++stashesRequestGeneration;
+  if (!silent) stashesLoading.value = true;
+  try {
+    const nextStashes = await api.listStashes(repositoryPath);
+    if (activeRepositoryPath.value !== repositoryPath || requestGeneration !== stashesRequestGeneration) return;
+    stashes.value = nextStashes;
+    stashesLoadedRepositoryPath = repositoryPath;
+  } catch (error) {
+    if (activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration) {
+      if (reportErrors) reportError(error, tr("读取暂存栈失败", "Could not load stashes"));
     }
+  } finally {
+    if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration) stashesLoading.value = false;
   }
 }
 
@@ -1424,18 +1711,45 @@ async function loadExternalEditor(): Promise<void> {
   }
 }
 
-async function loadCommitFiles(commit: CommitSummary): Promise<void> {
+function loadCommitFiles(commit: CommitSummary): void {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) return;
   const selectionGeneration = repositorySelectionGeneration;
   const requestGeneration = ++commitFilesRequestGeneration;
+  if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
+  if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
+  commitFilesDebounceTimer = null;
+  commitDiffDebounceTimer = null;
   commitDiffRequestGeneration += 1;
   selectedCommit.value = commit;
   commitChangedFiles.value = [];
   selectedCommitFile.value = null;
   commitDiffText.value = "";
-  commitFilesLoading.value = true;
+  resetCommitDiffPresentation();
   commitDiffLoading.value = false;
+  const cacheKey = commitFilesCacheKey(repositoryPath, commit.sha);
+  const cachedFiles = readLruCache(commitFilesCache, cacheKey);
+  if (cachedFiles) {
+    commitChangedFiles.value = cachedFiles.files;
+    const firstFile = cachedFiles.files[0];
+    if (firstFile) loadCommitFileDiff(firstFile, commit, repositoryPath);
+    commitFilesLoading.value = false;
+    return;
+  }
+  commitFilesLoading.value = true;
+  commitFilesDebounceTimer = setTimeout(() => {
+    commitFilesDebounceTimer = null;
+    void fetchCommitFiles(repositoryPath, commit, selectionGeneration, requestGeneration, cacheKey);
+  }, commitSelectionDebounceMs);
+}
+
+async function fetchCommitFiles(
+  repositoryPath: string,
+  commit: CommitSummary,
+  selectionGeneration: number,
+  requestGeneration: number,
+  cacheKey: string,
+): Promise<void> {
   try {
     const nextFiles = await api.listCommitChangedFiles(repositoryPath, commit.sha);
     if (
@@ -1443,9 +1757,10 @@ async function loadCommitFiles(commit: CommitSummary): Promise<void> {
       selectedCommit.value?.sha === commit.sha &&
       requestGeneration === commitFilesRequestGeneration
     ) {
+      writeCommitFilesCache(cacheKey, nextFiles);
       commitChangedFiles.value = nextFiles;
       const firstFile = nextFiles[0];
-      if (firstFile) void loadCommitFileDiff(firstFile, commit, repositoryPath);
+      if (firstFile) loadCommitFileDiff(firstFile, commit, repositoryPath);
     }
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
@@ -1458,25 +1773,120 @@ async function loadCommitFiles(commit: CommitSummary): Promise<void> {
   }
 }
 
-async function loadCommitFileDiff(
+function loadCommitFileDiff(
   file: CommitChangedFile,
   commit = selectedCommit.value,
   repositoryPath = activeRepositoryPath.value,
-): Promise<void> {
+): void {
   if (!repositoryPath || !commit || activeRepositoryPath.value !== repositoryPath) return;
   const selectionGeneration = repositorySelectionGeneration;
   const requestGeneration = ++commitDiffRequestGeneration;
+  pendingCommitDiffRequest = null;
+  if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
+  commitDiffDebounceTimer = null;
   selectedCommitFile.value = file;
   commitDiffText.value = "";
+  resetCommitDiffPresentation();
+  const cacheKey = commitDiffCacheKey(repositoryPath, commit.sha, file.path, file.previousPath);
+  const cachedDiff = readLruCache(commitDiffCache, cacheKey);
+  if (cachedDiff !== undefined) {
+    commitDiffText.value = cachedDiff.text;
+    commitDiffTruncated.value = cachedDiff.truncated;
+    commitDiffMaximumReached.value = cachedDiff.maximumReached;
+    commitDiffLoading.value = false;
+    return;
+  }
   commitDiffLoading.value = true;
+  commitDiffDebounceTimer = setTimeout(() => {
+    commitDiffDebounceTimer = null;
+    queueCommitFileDiff({
+      repositoryPath,
+      commit,
+      file,
+      selectionGeneration,
+      requestGeneration,
+      cacheKey,
+      maximumBytes: commitDiffPreviewBytes,
+    });
+  }, commitSelectionDebounceMs);
+}
+
+function loadFullCommitFileDiff(): void {
+  const repositoryPath = activeRepositoryPath.value;
+  const commit = selectedCommit.value;
+  const file = selectedCommitFile.value;
+  if (!repositoryPath || !commit || !file || !commitDiffTruncated.value || commitDiffLoading.value) return;
+  const selectionGeneration = repositorySelectionGeneration;
+  const requestGeneration = ++commitDiffRequestGeneration;
+  commitDiffLoading.value = true;
+  queueCommitFileDiff({
+    repositoryPath,
+    commit,
+    file,
+    selectionGeneration,
+    requestGeneration,
+    cacheKey: commitDiffCacheKey(repositoryPath, commit.sha, file.path, file.previousPath),
+    maximumBytes: commitDiffMaximumBytes,
+  });
+}
+
+function queueCommitFileDiff(request: CommitFileDiffRequest): void {
+  pendingCommitDiffRequest = request;
+  if (!commitDiffRequestInFlight) void drainCommitFileDiffRequests();
+}
+
+async function drainCommitFileDiffRequests(): Promise<void> {
+  if (commitDiffRequestInFlight) return;
+  commitDiffRequestInFlight = true;
   try {
-    const nextDiff = await api.getCommitFileDiff(repositoryPath, commit.sha, file.path, file.previousPath);
+    while (controllerMounted && pendingCommitDiffRequest) {
+      const request = pendingCommitDiffRequest;
+      pendingCommitDiffRequest = null;
+      await fetchCommitFileDiff(
+        request.repositoryPath,
+        request.commit,
+        request.file,
+        request.selectionGeneration,
+        request.requestGeneration,
+        request.cacheKey,
+        request.maximumBytes,
+      );
+    }
+  } finally {
+    commitDiffRequestInFlight = false;
+  }
+}
+
+async function fetchCommitFileDiff(
+  repositoryPath: string,
+  commit: CommitSummary,
+  file: CommitChangedFile,
+  selectionGeneration: number,
+  requestGeneration: number,
+  cacheKey: string,
+  maximumBytes: number,
+): Promise<void> {
+  try {
+    const nextDiff = await api.getCommitFileDiff(
+      repositoryPath,
+      commit.sha,
+      file.path,
+      file.previousPath,
+      maximumBytes,
+    );
     if (
       repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
       selectedCommit.value?.sha === commit.sha &&
       selectedCommitFile.value?.path === file.path &&
       requestGeneration === commitDiffRequestGeneration
-    ) commitDiffText.value = nextDiff;
+    ) {
+      const maximumReached = maximumBytes === commitDiffMaximumBytes && nextDiff.truncated;
+      writeCommitDiffCache(cacheKey, { ...nextDiff, maximumReached });
+      resetCommitDiffPresentation();
+      commitDiffText.value = nextDiff.text;
+      commitDiffTruncated.value = nextDiff.truncated;
+      commitDiffMaximumReached.value = maximumReached;
+    }
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
       reportError(error, tr("读取提交文件改动失败", "Could not load the file diff"));
@@ -2395,7 +2805,7 @@ async function createTag(): Promise<void> {
     tagModalShown.value = false;
     tagRepositoryPath.value = null;
     if (activeRepositoryPath.value === repositoryPath) {
-      await Promise.all([refreshSnapshot(), loadHistory()]);
+      await refreshSnapshot();
       message.success(tr("标签已创建。", "Tag created."));
     }
   } catch (error) {
@@ -2535,11 +2945,7 @@ async function runNetworkAction(
             : tr("推送", "Push");
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
       message.success(tr("{action} 已完成。", "{action} completed.", { action: actionLabel }));
-      if (activeTab.value === "history") {
-        await Promise.all([refreshSnapshot(), loadHistory()]);
-      } else {
-        await refreshSnapshot();
-      }
+      await refreshSnapshot();
     }
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
@@ -2932,7 +3338,7 @@ watch(selectedRemoteName, () => {
 });
 
 watch(activeTab, (tab) => {
-  if (tab === "history") void loadHistory();
+  if (tab === "history") void loadHistoryWithOptions();
 });
 
 watch(
@@ -3038,6 +3444,13 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   controllerMounted = false;
+  if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
+  if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
+  commitFilesDebounceTimer = null;
+  commitDiffDebounceTimer = null;
+  pendingCommitDiffRequest = null;
+  commitFilesRequestGeneration += 1;
+  commitDiffRequestGeneration += 1;
   const stopWatcherGeneration = ++repositoryWatchRequestGeneration;
   void api.stopRepositoryWatcher(stopWatcherGeneration).catch(() => undefined);
   if (automaticRefreshTimer) clearTimeout(automaticRefreshTimer);
@@ -3092,6 +3505,11 @@ onBeforeUnmount(() => {
     commitChangedFiles,
     selectedCommitFile,
     commitDiffText,
+    commitDiffVisibleLines,
+    commitDiffHasMoreLines,
+    commitDiffCanExpand,
+    commitDiffLimitedAtMaximum,
+    commitDiffLineLimitReached,
     lastError,
     lastErrorAction,
     repositoriesLoading,
@@ -3180,7 +3598,6 @@ onBeforeUnmount(() => {
     diffHunks,
     diffLines,
     hasDiffText,
-    commitDiffLines,
     canAmendLatestCommit,
     isUnbornRepository,
     commitActionLabel,
@@ -3276,6 +3693,7 @@ onBeforeUnmount(() => {
     loadExternalEditor,
     loadCommitFiles,
     loadCommitFileDiff,
+    showMoreCommitDiffLines,
     setChangeIncluded,
     stageAll,
     unstageAll,

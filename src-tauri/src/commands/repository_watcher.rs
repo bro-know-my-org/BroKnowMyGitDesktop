@@ -31,6 +31,8 @@ struct RepositoryChangedPayload {
     request_generation: u64,
     error_kind: Option<&'static str>,
     retryable: bool,
+    history_objects_changed: bool,
+    stashes_changed: bool,
 }
 
 static REPOSITORY_WATCHER_STATE: OnceLock<Mutex<RepositoryWatcherState>> = OnceLock::new();
@@ -145,6 +147,17 @@ pub fn watch_repository_changes(
         }
     };
     drop(previous_watcher);
+    let git_directory = linked_git_directory(&repository);
+    let common_directory = git_directory.as_deref().and_then(common_git_directory);
+    let mut event_git_directories = Vec::new();
+    if let Some(path) = git_directory.as_ref() {
+        event_git_directories.push(path.clone());
+    }
+    if let Some(path) = common_directory.as_ref() {
+        if !event_git_directories.contains(path) {
+            event_git_directories.push(path.clone());
+        }
+    }
     let event_repository_path = repository_path.clone();
     let event_app = app.clone();
     let last_event_emitted_at = Arc::new(Mutex::new(Instant::now() - EVENT_EMIT_THROTTLE));
@@ -169,6 +182,8 @@ pub fn watch_repository_changes(
                             request_generation,
                             error_kind: Some(error_kind),
                             retryable,
+                            history_objects_changed: false,
+                            stashes_changed: false,
                         },
                     );
                     return;
@@ -177,10 +192,30 @@ pub fn watch_repository_changes(
             if matches!(event.kind, EventKind::Access(_)) {
                 return;
             }
+            let git_relative_paths = event.paths.iter().filter_map(|path| {
+                event_git_directories
+                    .iter()
+                    .find_map(|directory| path.strip_prefix(directory).ok())
+            });
+            let mut history_objects_changed = false;
+            let mut stashes_changed = false;
+            for path in git_relative_paths {
+                history_objects_changed |= path == Path::new("shallow")
+                    || path == Path::new("info/grafts")
+                    || path == Path::new("objects/info/alternates")
+                    || path == Path::new("packed-refs")
+                    || path.starts_with(Path::new("refs/replace"));
+                stashes_changed |= path == Path::new("packed-refs")
+                    || path == Path::new("refs/stash")
+                    || path == Path::new("logs/refs/stash");
+            }
             let Ok(mut last_emitted_at) = last_event_emitted_at.lock() else {
                 return;
             };
-            if last_emitted_at.elapsed() < EVENT_EMIT_THROTTLE {
+            if !history_objects_changed
+                && !stashes_changed
+                && last_emitted_at.elapsed() < EVENT_EMIT_THROTTLE
+            {
                 return;
             }
             *last_emitted_at = Instant::now();
@@ -191,6 +226,8 @@ pub fn watch_repository_changes(
                     request_generation,
                     error_kind: None,
                     retryable: false,
+                    history_objects_changed,
+                    stashes_changed,
                 },
             );
         },
@@ -202,7 +239,7 @@ pub fn watch_repository_changes(
         .watch(&repository, RecursiveMode::Recursive)
         .map_err(|error| watcher_installation_error(error, "无法监听当前仓库的文件变动。"))?;
 
-    if let Some(git_directory) = linked_git_directory(&repository) {
+    if let Some(git_directory) = git_directory {
         if !git_directory.starts_with(&repository) {
             watcher
                 .watch(&git_directory, RecursiveMode::Recursive)
@@ -210,7 +247,7 @@ pub fn watch_repository_changes(
                     watcher_installation_error(error, "无法监听当前仓库的 Git 状态变动。")
                 })?;
         }
-        if let Some(common_directory) = common_git_directory(&git_directory) {
+        if let Some(common_directory) = common_directory {
             if common_directory != git_directory && !common_directory.starts_with(&repository) {
                 watcher
                     .watch(&common_directory, RecursiveMode::Recursive)
@@ -240,6 +277,8 @@ pub fn watch_repository_changes(
                 request_generation,
                 error_kind: None,
                 retryable: false,
+                history_objects_changed: false,
+                stashes_changed: false,
             },
         );
     }

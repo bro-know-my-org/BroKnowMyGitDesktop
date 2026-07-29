@@ -1,40 +1,77 @@
 use super::support::*;
 use super::*;
-use crate::domain::CommitChangedFile;
+use crate::domain::{CommitChangedFile, CommitFileDiff};
+
+const DEFAULT_COMMIT_FILE_DIFF_BYTES: usize = 512 * 1024;
+const MIN_COMMIT_FILE_DIFF_BYTES: usize = 64 * 1024;
+const MAX_COMMIT_FILE_DIFF_BYTES: usize = 4 * 1024 * 1024;
 
 #[tauri::command]
-pub fn list_commits(
+pub async fn list_commits(
     repository_path: String,
     limit: Option<usize>,
 ) -> Result<Vec<CommitSummary>, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().commits(&repository, limit.unwrap_or(100))
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().commits(&repository, limit.unwrap_or(100))
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "提交历史后台任务未能完成。"))?
 }
 
 #[tauri::command]
-pub fn get_commit_diff(repository_path: String, revision: String) -> Result<String, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().commit_diff(&repository, &revision)
+pub async fn get_commit_diff(
+    repository_path: String,
+    revision: String,
+) -> Result<String, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().commit_diff(&repository, &revision)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "提交差异后台任务未能完成。"))?
 }
 
 #[tauri::command]
-pub fn list_commit_changed_files(
+pub async fn list_commit_changed_files(
     repository_path: String,
     revision: String,
 ) -> Result<Vec<CommitChangedFile>, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().commit_changed_files(&repository, &revision)
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().commit_changed_files(&repository, &revision)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "提交文件后台任务未能完成。"))?
 }
 
 #[tauri::command]
-pub fn get_commit_file_diff(
+pub async fn get_commit_file_diff(
     repository_path: String,
     revision: String,
     path: String,
     previous_path: Option<String>,
-) -> Result<String, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().commit_file_diff(&repository, &revision, &path, previous_path.as_deref())
+    maximum_bytes: Option<usize>,
+) -> Result<CommitFileDiff, AppError> {
+    let maximum_bytes = maximum_bytes.unwrap_or(DEFAULT_COMMIT_FILE_DIFF_BYTES);
+    if !(MIN_COMMIT_FILE_DIFF_BYTES..=MAX_COMMIT_FILE_DIFF_BYTES).contains(&maximum_bytes) {
+        return Err(AppError::new(
+            "invalid_diff_limit",
+            "提交文件差异读取范围无效。",
+        ));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().commit_file_diff_preview(
+            &repository,
+            &revision,
+            &path,
+            previous_path.as_deref(),
+            maximum_bytes,
+        )
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "提交文件差异后台任务未能完成。"))?
 }
 
 #[tauri::command]

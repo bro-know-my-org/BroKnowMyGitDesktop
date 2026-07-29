@@ -204,9 +204,13 @@ pub fn abort_git_operation(
 }
 
 #[tauri::command]
-pub fn list_stashes(repository_path: String) -> Result<Vec<StashEntry>, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().stashes(&repository)
+pub async fn list_stashes(repository_path: String) -> Result<Vec<StashEntry>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().stashes(&repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "暂存栈后台任务未能完成。"))?
 }
 
 #[tauri::command]

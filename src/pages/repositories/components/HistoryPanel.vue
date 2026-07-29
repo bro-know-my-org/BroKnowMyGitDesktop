@@ -232,7 +232,20 @@ export default defineComponent({
                         </header>
                         <div class="history-diff-content">
                           <n-spin v-if="commitDiffLoading" size="small" class="history-diff-loading" />
-                          <pre v-else-if="commitDiffText" class="diff-output"><span v-for="(line, index) in commitDiffLines" :key="index" class="diff-line" :class="diffLineClass(line)">{{ line }}</span></pre>
+                          <template v-else-if="commitDiffText">
+                            <pre class="diff-output"><span v-for="(line, index) in commitDiffVisibleLines" :key="index" class="diff-line" :class="diffLineClass(line)">{{ line }}</span></pre>
+                            <div v-if="commitDiffCanExpand" class="history-diff-more">
+                              <n-button size="small" tertiary @click="showMoreCommitDiffLines">
+                                {{ commitDiffHasMoreLines && !commitDiffLineLimitReached ? tr("再显示 2000 行", "Show 2,000 more lines") : tr("最多加载 4 MiB", "Load up to 4 MiB") }}
+                              </n-button>
+                            </div>
+                            <div v-else-if="commitDiffLineLimitReached" class="history-diff-limit">
+                              {{ tr("diff 行数过多，仅显示前 10000 行。", "The diff has too many lines; only the first 10,000 are shown.") }}
+                            </div>
+                            <div v-else-if="commitDiffLimitedAtMaximum" class="history-diff-limit">
+                              {{ tr("diff 超过 4 MiB，仅显示已加载部分。", "The diff exceeds 4 MiB; only the loaded portion is shown.") }}
+                            </div>
+                          </template>
                           <n-empty
                             v-else
                             :description="selectedCommitFile ? tr('此文件没有可显示的文本 diff。', 'No text diff is available for this file.') : tr('选择一个文件以查看 diff。', 'Select a file to view its diff.')"

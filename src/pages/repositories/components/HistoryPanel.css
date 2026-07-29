@@ -313,6 +313,26 @@
   flex: 1 0 auto;
 }
 
+.history-diff-more {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 8px;
+  border-top: 1px solid var(--app-divider);
+  background: var(--app-surface);
+}
+
+.history-diff-limit {
+  padding: 8px 12px;
+  border-top: 1px solid var(--app-divider);
+  background: var(--app-surface);
+  color: var(--app-text-tertiary);
+  font-size: 11px;
+  text-align: center;
+}
+
 .history-files-pane .n-empty,
 .history-diff-content .n-empty,
 .history-diff-loading {

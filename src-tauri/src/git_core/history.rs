@@ -4,13 +4,70 @@ use super::models::*;
 use super::parser::*;
 use super::validation::*;
 use super::*;
-use crate::domain::{CommitChangedFile, CommitFileStatus};
+use crate::domain::{CommitChangedFile, CommitFileDiff, CommitFileStatus};
 
 const MAX_COMMIT_HISTORY_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_COMMIT_DIFF_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_HISTORY_POSITION_OUTPUT_BYTES: usize = 16 * 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+struct HistoryPosition {
+    branch_reference: Option<String>,
+    head_commit: Option<String>,
+    upstream_commit: Option<String>,
+}
 
 fn valid_object_id(value: &str) -> bool {
     (40..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+pub(super) fn trim_incomplete_utf8_suffix(bytes: &mut Vec<u8>) {
+    let Some(mut lead_index) = bytes.len().checked_sub(1) else {
+        return;
+    };
+    while lead_index > 0 && bytes[lead_index] & 0b1100_0000 == 0b1000_0000 {
+        lead_index -= 1;
+    }
+    let expected_width = match bytes[lead_index] {
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return,
+    };
+    if bytes.len() - lead_index < expected_width {
+        bytes.truncate(lead_index);
+    }
+}
+
+pub(super) fn parse_exact_history_ref(
+    raw: &[u8],
+    expected_reference: &str,
+    expected_fields: usize,
+) -> Result<Vec<String>, AppError> {
+    let mut exact = None;
+    for record in raw
+        .split(|byte| *byte == b'\n')
+        .filter(|record| !record.is_empty())
+    {
+        let fields = record
+            .split(|byte| *byte == 0)
+            .map(|field| {
+                std::str::from_utf8(field)
+                    .map(str::to_owned)
+                    .map_err(|_| AppError::new("git_parse_error", "无法读取历史引用。"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if fields.len() != expected_fields {
+            return Err(AppError::new("git_parse_error", "无法读取历史引用。"));
+        }
+        if fields.first().map(String::as_str) != Some(expected_reference) {
+            continue;
+        }
+        if exact.replace(fields).is_some() {
+            return Err(AppError::new("git_parse_error", "无法读取历史引用。"));
+        }
+    }
+    exact.ok_or_else(|| AppError::new("repository_changed", "仓库引用正在变化，请稍后重试。"))
 }
 
 fn parse_commit_changed_files(raw: &[u8]) -> Result<Vec<CommitChangedFile>, AppError> {
@@ -88,6 +145,213 @@ fn parse_commit_changed_files(raw: &[u8]) -> Result<Vec<CommitChangedFile>, AppE
 }
 
 impl GitCore {
+    pub(super) fn commit_for_upstream(
+        &self,
+        repository: &Path,
+        branch_name: &str,
+        expected_head_commit: &str,
+        expected_upstream: &str,
+    ) -> Result<Option<String>, AppError> {
+        let branch_reference = format!("refs/heads/{branch_name}");
+        let read_branch_snapshot = || -> Result<Vec<String>, AppError> {
+            let output = self.run_with_output_limit(
+                Some(repository),
+                &[
+                    OsString::from("for-each-ref"),
+                    OsString::from("--sort=refname"),
+                    OsString::from("--count=1"),
+                    OsString::from(
+                        "--format=%(refname)%00%(objectname)%00%(upstream:short)%00%(upstream)",
+                    ),
+                    OsString::from(&branch_reference),
+                ],
+                &GitEnvironment::default(),
+                MAX_HISTORY_POSITION_OUTPUT_BYTES,
+                "读取上游配置",
+            )?;
+            parse_exact_history_ref(&output.stdout, &branch_reference, 4)
+        };
+        let head_matches_branch = || -> Result<bool, AppError> {
+            let output = self.execute(
+                Some(repository),
+                &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
+                &GitEnvironment::default(),
+            )?;
+            Ok(output.status.success() && output_text(&output.stdout).trim() == branch_reference)
+        };
+        let fields = read_branch_snapshot()?;
+        if !head_matches_branch()?
+            || fields[1] != expected_head_commit
+            || fields[2] != expected_upstream
+        {
+            return Err(AppError::new(
+                "repository_changed",
+                "仓库引用正在变化，请稍后重试。",
+            ));
+        }
+        if fields[3].is_empty() {
+            return Ok(None);
+        }
+        let upstream_expression = format!("{}^{{commit}}", fields[3]);
+        let resolve_upstream = || -> Result<Option<String>, AppError> {
+            let upstream = self.execute(
+                Some(repository),
+                &[
+                    OsString::from("rev-parse"),
+                    OsString::from("--verify"),
+                    OsString::from("--quiet"),
+                    OsString::from("--end-of-options"),
+                    OsString::from(&upstream_expression),
+                ],
+                &GitEnvironment::default(),
+            )?;
+            if upstream.status.code() == Some(1) {
+                return Ok(None);
+            }
+            if !upstream.status.success() {
+                return Err(git_command_error("读取上游分支", &upstream));
+            }
+            Ok(Some(output_text(&upstream.stdout).trim().to_owned()))
+        };
+        let Some(object_id) = resolve_upstream()? else {
+            return Ok(None);
+        };
+        if !valid_object_id(&object_id) {
+            return Err(AppError::new("git_parse_error", "无法读取上游提交。"));
+        }
+        if !head_matches_branch()?
+            || read_branch_snapshot()? != fields
+            || resolve_upstream()?.as_deref() != Some(&object_id)
+        {
+            return Err(AppError::new(
+                "repository_changed",
+                "仓库引用正在变化，请稍后重试。",
+            ));
+        }
+        Ok(Some(object_id))
+    }
+
+    fn unborn_history_position(
+        &self,
+        repository: &Path,
+        branch_reference: String,
+    ) -> Result<HistoryPosition, AppError> {
+        let current_symbolic_head = self.execute(
+            Some(repository),
+            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
+            &GitEnvironment::default(),
+        )?;
+        if !current_symbolic_head.status.success()
+            || output_text(&current_symbolic_head.stdout).trim() != branch_reference
+            || !self.has_unborn_head(repository)?
+        {
+            return Err(AppError::new(
+                "repository_changed",
+                "仓库引用正在变化，请稍后重试。",
+            ));
+        }
+        Ok(HistoryPosition {
+            branch_reference: Some(branch_reference),
+            head_commit: None,
+            upstream_commit: None,
+        })
+    }
+
+    /// Reads only the current branch and its configured upstream. Avoid
+    /// enumerating the whole ref namespace: branch count must not determine
+    /// whether a small history request fits its output budget.
+    fn history_position(&self, repository: &Path) -> Result<HistoryPosition, AppError> {
+        let symbolic_head = self.execute(
+            Some(repository),
+            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
+            &GitEnvironment::default(),
+        )?;
+        if symbolic_head.status.success() {
+            let branch_reference = output_text(&symbolic_head.stdout).trim().to_owned();
+            if !branch_reference.starts_with("refs/heads/") {
+                return Err(AppError::new("git_parse_error", "无法读取当前分支。"));
+            }
+            let branch_output = self.run_with_output_limit(
+                Some(repository),
+                &[
+                    OsString::from("for-each-ref"),
+                    OsString::from("--sort=refname"),
+                    OsString::from("--count=1"),
+                    OsString::from("--format=%(refname)%00%(objectname)%00%(upstream)"),
+                    OsString::from(&branch_reference),
+                ],
+                &GitEnvironment::default(),
+                MAX_HISTORY_POSITION_OUTPUT_BYTES,
+                "读取当前分支引用",
+            )?;
+            if branch_output.stdout.is_empty() {
+                return self.unborn_history_position(repository, branch_reference);
+            }
+            let fields = match parse_exact_history_ref(&branch_output.stdout, &branch_reference, 3)
+            {
+                Ok(fields) => fields,
+                Err(error) if error.code() == "repository_changed" => {
+                    return self.unborn_history_position(repository, branch_reference);
+                }
+                Err(error) => return Err(error),
+            };
+            let head_commit = fields[1].clone();
+            if !valid_object_id(&head_commit) {
+                return Err(AppError::new("git_parse_error", "无法读取当前提交。"));
+            }
+            let upstream_reference = &fields[2];
+            let upstream_commit = if upstream_reference.is_empty() {
+                None
+            } else {
+                let upstream_expression = format!("{upstream_reference}^{{commit}}");
+                let upstream_output = self.execute(
+                    Some(repository),
+                    &[
+                        OsString::from("rev-parse"),
+                        OsString::from("--verify"),
+                        OsString::from("--quiet"),
+                        OsString::from(upstream_expression),
+                    ],
+                    &GitEnvironment::default(),
+                )?;
+                if upstream_output.status.code() == Some(1) {
+                    None
+                } else if !upstream_output.status.success() {
+                    return Err(git_command_error("读取上游分支", &upstream_output));
+                } else {
+                    let object_id = output_text(&upstream_output.stdout).trim().to_owned();
+                    if !valid_object_id(&object_id) {
+                        return Err(AppError::new("git_parse_error", "无法读取上游提交。"));
+                    }
+                    Some(object_id)
+                }
+            };
+            return Ok(HistoryPosition {
+                branch_reference: Some(branch_reference),
+                head_commit: Some(head_commit),
+                upstream_commit,
+            });
+        }
+        if symbolic_head.status.code() != Some(1) {
+            return Err(git_command_error("读取当前分支", &symbolic_head));
+        }
+        let detached_head = self.run(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", "HEAD"]),
+            &GitEnvironment::default(),
+            "读取当前提交",
+        )?;
+        let head_commit = output_text(&detached_head.stdout).trim().to_owned();
+        if !valid_object_id(&head_commit) {
+            return Err(AppError::new("git_parse_error", "无法读取当前提交。"));
+        }
+        Ok(HistoryPosition {
+            branch_reference: None,
+            head_commit: Some(head_commit),
+            upstream_commit: None,
+        })
+    }
+
     fn resolve_commit(&self, repository: &Path, revision: &str) -> Result<String, AppError> {
         validate_revision(revision, "提交引用")?;
         let commit_expression = format!("{revision}^{{commit}}");
@@ -204,72 +468,8 @@ impl GitCore {
             // parser explicitly removes that separator before reading a SHA.
             OsString::from(format!("--format=format:{format}")),
         ];
-        // Capture the symbolic branch before resolving its tip. Using that
-        // immutable branch ref for both HEAD and upstream lookup keeps the
-        // pair coherent even if another Git client checks out a branch while
-        // this history request is running. Detached HEAD has no upstream.
-        let symbolic_head = self.execute(
-            Some(repository),
-            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
-            &GitEnvironment::default(),
-        )?;
-        let branch_reference = if symbolic_head.status.success() {
-            let reference = output_text(&symbolic_head.stdout).trim().to_owned();
-            if reference.is_empty() {
-                return Err(AppError::new("git_parse_error", "无法读取当前分支。"));
-            }
-            Some(reference)
-        } else if symbolic_head.status.code() == Some(1) {
-            None
-        } else {
-            return Err(git_command_error("读取当前分支", &symbolic_head));
-        };
-        let history_tip = branch_reference.as_deref().unwrap_or("HEAD");
-        let head = self.execute(
-            Some(repository),
-            &[
-                OsString::from("rev-parse"),
-                OsString::from("--verify"),
-                OsString::from("--quiet"),
-                OsString::from(history_tip),
-            ],
-            &GitEnvironment::default(),
-        )?;
-        if head.status.code() == Some(1) {
-            let current_symbolic_head = self.execute(
-                Some(repository),
-                &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
-                &GitEnvironment::default(),
-            )?;
-            let still_on_captured_branch = current_symbolic_head.status.success()
-                && output_text(&current_symbolic_head.stdout).trim() == history_tip;
-            if still_on_captured_branch && self.has_unborn_head(repository)? {
-                return Ok(Vec::new());
-            }
-            if branch_reference.is_some() && retries_remaining > 0 {
-                return self.commits_with_consistency_retry(
-                    repository,
-                    limit,
-                    retries_remaining - 1,
-                );
-            }
-            if branch_reference.is_some() {
-                return Err(AppError::new(
-                    "repository_changed",
-                    "仓库引用正在变化，请稍后重试。",
-                ));
-            }
-        }
-        if !head.status.success() {
-            return Err(git_command_error("读取提交历史", &head));
-        }
-        let head_commit = output_text(&head.stdout).trim().to_owned();
-        if head_commit.is_empty() {
-            return Err(AppError::new("git_parse_error", "无法读取当前提交。"));
-        }
-        let upstream_commit = match self.upstream_commit_id(repository, branch_reference.as_deref())
-        {
-            Ok(commit) => commit,
+        let position = match self.history_position(repository) {
+            Ok(position) => position,
             Err(error) if error.code() == "repository_changed" && retries_remaining > 0 => {
                 return self.commits_with_consistency_retry(
                     repository,
@@ -279,7 +479,34 @@ impl GitCore {
             }
             Err(error) => return Err(error),
         };
-        arguments.push(OsString::from(&head_commit));
+        let Some(head_commit) = position.head_commit.as_deref() else {
+            let verified_position = match self.history_position(repository) {
+                Ok(position) => position,
+                Err(error) if error.code() == "repository_changed" && retries_remaining > 0 => {
+                    return self.commits_with_consistency_retry(
+                        repository,
+                        limit,
+                        retries_remaining - 1,
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+            if verified_position == position {
+                return Ok(Vec::new());
+            }
+            if retries_remaining > 0 {
+                return self.commits_with_consistency_retry(
+                    repository,
+                    limit,
+                    retries_remaining - 1,
+                );
+            }
+            return Err(AppError::new(
+                "repository_changed",
+                "仓库引用正在变化，请稍后重试。",
+            ));
+        };
+        arguments.push(OsString::from(head_commit));
         let output = self.run_with_output_limit(
             Some(repository),
             &arguments,
@@ -318,69 +545,31 @@ impl GitCore {
         let local_only_commits = self.local_only_commit_ids(
             repository,
             limit,
-            &head_commit,
-            upstream_commit.as_deref(),
+            head_commit,
+            position.upstream_commit.as_deref(),
         )?;
         for commit in &mut commits {
             commit.pushed = local_only_commits
                 .as_ref()
                 .map(|local_only| !local_only.contains(&commit.sha));
         }
-        let verified_head = self.execute(
-            Some(repository),
-            &[
-                OsString::from("rev-parse"),
-                OsString::from("--verify"),
-                OsString::from("--quiet"),
-                OsString::from(history_tip),
-            ],
-            &GitEnvironment::default(),
-        )?;
-        let verified_head_commit = if verified_head.status.success() {
-            output_text(&verified_head.stdout).trim().to_owned()
-        } else if verified_head.status.code() == Some(1) {
-            String::new()
-        } else {
-            return Err(git_command_error("读取提交历史", &verified_head));
+        let verified_position = match self.history_position(repository) {
+            Ok(position) => position,
+            Err(error) if error.code() == "repository_changed" && retries_remaining > 0 => {
+                return self.commits_with_consistency_retry(
+                    repository,
+                    limit,
+                    retries_remaining - 1,
+                );
+            }
+            Err(error) => return Err(error),
         };
-        let verified_symbolic_head = self.execute(
-            Some(repository),
-            &os_arguments(&["symbolic-ref", "--quiet", "HEAD"]),
-            &GitEnvironment::default(),
-        )?;
-        let verified_branch_reference = if verified_symbolic_head.status.success() {
-            Some(
-                output_text(&verified_symbolic_head.stdout)
-                    .trim()
-                    .to_owned(),
-            )
-        } else if verified_symbolic_head.status.code() == Some(1) {
-            None
-        } else {
-            return Err(git_command_error("读取当前分支", &verified_symbolic_head));
-        };
-        let verified_upstream =
-            match self.upstream_commit_id(repository, branch_reference.as_deref()) {
-                Ok(commit) => commit,
-                Err(error) if error.code() == "repository_changed" && retries_remaining > 0 => {
-                    return self.commits_with_consistency_retry(
-                        repository,
-                        limit,
-                        retries_remaining - 1,
-                    );
-                }
-                Err(error) => return Err(error),
-            };
         let verified_tags = match self.tags(repository) {
             Ok(tags) => Some(tags),
             Err(error) if error.code() == "git_output_too_large" => None,
             Err(error) => return Err(error),
         };
-        if verified_branch_reference == branch_reference
-            && verified_head_commit == head_commit
-            && verified_upstream == upstream_commit
-            && verified_tags == tags_snapshot
-        {
+        if verified_position == position && verified_tags == tags_snapshot {
             return Ok(commits);
         }
         if retries_remaining > 0 {
@@ -390,81 +579,6 @@ impl GitCore {
             "repository_changed",
             "仓库引用正在变化，请稍后重试。",
         ))
-    }
-
-    /// Returns commits reachable from the current branch but not its upstream.
-    /// A missing upstream is represented separately so the UI does not claim
-    /// that every commit is unpushed when Git has no comparison target.
-    fn upstream_commit_id(
-        &self,
-        repository: &Path,
-        branch_reference: Option<&str>,
-    ) -> Result<Option<String>, AppError> {
-        let Some(branch_reference) = branch_reference else {
-            return Ok(None);
-        };
-        let configured_upstream = self.execute(
-            Some(repository),
-            &[
-                OsString::from("for-each-ref"),
-                OsString::from("--format=%(refname)%00%(upstream)"),
-                OsString::from(branch_reference),
-            ],
-            &GitEnvironment::default(),
-        )?;
-        if !configured_upstream.status.success() {
-            return Err(git_command_error("读取上游配置", &configured_upstream));
-        }
-        let mut upstream_reference = None;
-        for record in configured_upstream
-            .stdout
-            .split(|byte| *byte == b'\n')
-            .filter(|record| !record.is_empty())
-        {
-            let Some(separator) = record.iter().position(|byte| *byte == b'\0') else {
-                return Err(AppError::new("git_parse_error", "无法读取上游配置。"));
-            };
-            let refname = std::str::from_utf8(&record[..separator])
-                .map_err(|_| AppError::new("git_parse_error", "无法读取上游配置。"))?;
-            if refname != branch_reference {
-                continue;
-            }
-            if upstream_reference.is_some() {
-                return Err(AppError::new("git_parse_error", "无法读取上游配置。"));
-            }
-            upstream_reference = Some(
-                std::str::from_utf8(&record[separator + 1..])
-                    .map_err(|_| AppError::new("git_parse_error", "无法读取上游配置。"))?
-                    .to_owned(),
-            );
-        }
-        let upstream_reference = upstream_reference
-            .ok_or_else(|| AppError::new("repository_changed", "仓库引用正在变化，请稍后重试。"))?;
-        if upstream_reference.is_empty() {
-            return Ok(None);
-        }
-        let upstream_expression = format!("{upstream_reference}^{{commit}}");
-        let upstream = self.execute(
-            Some(repository),
-            &[
-                OsString::from("rev-parse"),
-                OsString::from("--verify"),
-                OsString::from("--quiet"),
-                OsString::from(upstream_expression),
-            ],
-            &GitEnvironment::default(),
-        )?;
-        if upstream.status.code() == Some(1) {
-            return Ok(None);
-        }
-        if !upstream.status.success() {
-            return Err(git_command_error("读取上游分支", &upstream));
-        }
-        let commit = output_text(&upstream.stdout).trim().to_owned();
-        if commit.is_empty() {
-            return Err(AppError::new("git_parse_error", "无法读取上游提交。"));
-        }
-        Ok(Some(commit))
     }
 
     fn local_only_commit_ids(
@@ -589,13 +703,14 @@ impl GitCore {
     /// Reads the display-only patch for one file in a commit. Renames include
     /// the previous path to preserve similarity headers; copies keep the patch
     /// scoped to the new path so a modified source file is not rendered too.
-    pub fn commit_file_diff(
+    fn commit_file_diff_with_output_limit(
         &self,
         repository: &Path,
         revision: &str,
         path: &str,
         previous_path: Option<&str>,
-    ) -> Result<String, AppError> {
+        maximum_bytes: usize,
+    ) -> Result<CommitFileDiff, AppError> {
         validate_worktree_relative_path(path)?;
         if let Some(previous_path) = previous_path {
             validate_worktree_relative_path(previous_path)?;
@@ -683,14 +798,76 @@ impl GitCore {
             arguments.push(literal_pathspec(previous_path));
         }
         arguments.push(literal_pathspec(path));
-        let output = self.run_with_output_limit(
+        maximum_bytes
+            .checked_add(1)
+            .ok_or_else(|| AppError::new("invalid_diff_limit", "提交文件差异读取范围无效。"))?;
+        let mut preview = self.run_with_output_preview(
             Some(repository),
             &arguments,
             &GitEnvironment::default(),
-            MAX_COMMIT_DIFF_OUTPUT_BYTES,
+            maximum_bytes,
             "读取提交文件改动",
         )?;
-        commit_diff_output_text(output.stdout)
+        let mut truncated = preview.truncated || preview.stdout.len() > maximum_bytes;
+        preview.stdout.truncate(maximum_bytes);
+        if truncated {
+            trim_incomplete_utf8_suffix(&mut preview.stdout);
+        }
+        let mut text = String::from_utf8_lossy(&preview.stdout).into_owned();
+        if truncated {
+            let mut end = text.len();
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            if let Some(newline) = text[..end]
+                .rfind('\n')
+                .filter(|newline| *newline >= end / 2)
+            {
+                end = newline;
+            }
+            text.truncate(end);
+        }
+        Ok(CommitFileDiff { text, truncated })
+    }
+
+    pub fn commit_file_diff(
+        &self,
+        repository: &Path,
+        revision: &str,
+        path: &str,
+        previous_path: Option<&str>,
+    ) -> Result<String, AppError> {
+        let preview = self.commit_file_diff_with_output_limit(
+            repository,
+            revision,
+            path,
+            previous_path,
+            MAX_COMMIT_DIFF_OUTPUT_BYTES,
+        )?;
+        if preview.truncated {
+            return Err(AppError::new(
+                "git_output_too_large",
+                "Git 命令输出过大，已停止该操作。",
+            ));
+        }
+        Ok(preview.text)
+    }
+
+    pub fn commit_file_diff_preview(
+        &self,
+        repository: &Path,
+        revision: &str,
+        path: &str,
+        previous_path: Option<&str>,
+        maximum_bytes: usize,
+    ) -> Result<CommitFileDiff, AppError> {
+        self.commit_file_diff_with_output_limit(
+            repository,
+            revision,
+            path,
+            previous_path,
+            maximum_bytes,
+        )
     }
 
     /// Lists local branches and their configured upstreams.
