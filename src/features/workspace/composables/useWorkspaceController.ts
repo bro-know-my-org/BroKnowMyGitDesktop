@@ -1,4 +1,4 @@
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { NButton, useDialog, useMessage } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -68,6 +68,15 @@ interface RefreshSnapshotOptions {
   includeAuxiliary?: boolean;
   reportErrors?: boolean;
   silent?: boolean;
+}
+
+interface RepositoryViewportSnapshot {
+  element: HTMLElement;
+  scrollTop: number;
+  scrollLeft: number;
+  interactionGeneration: number;
+  repositoryPath: string | null;
+  tab: RepositoryTab;
 }
 
 interface HistoryLoadOptions {
@@ -332,6 +341,7 @@ let repositoryWatcherRetryAttempt = 0;
 let repositoryWatcherUnavailable = false;
 let automaticRefreshDirty = false;
 let automaticRefreshInFlight = false;
+let repositoryViewportInteractionGeneration = 0;
 let windowFocused = typeof document === "undefined" || document.hasFocus();
 let controllerMounted = false;
 let stopRepositoryChangeListener: UnlistenFn | null = null;
@@ -735,6 +745,12 @@ function handleDevtoolsShortcut(event: KeyboardEvent): void {
   void toggleDevtools().catch(() => undefined);
 }
 
+function handleRepositoryViewportKeydown(event: KeyboardEvent): void {
+  if (["ArrowDown", "ArrowUp", "End", "Home", "PageDown", "PageUp", " "].includes(event.key)) {
+    markRepositoryViewportInteraction();
+  }
+}
+
 function repositorySelectionIsCurrent(repositoryPath: string, generation: number): boolean {
   return activeRepositoryPath.value === repositoryPath && repositorySelectionGeneration === generation;
 }
@@ -753,7 +769,18 @@ function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshReques
   snapshotApplicationGeneration += 1;
   if (invalidateRefreshRequests) snapshotRefreshRequestGeneration += 1;
   const selectedPath = selectedChange.value?.path;
-  snapshot.value = nextSnapshot;
+  const previousSnapshot = snapshot.value;
+  snapshot.value = previousSnapshot
+    ? {
+        ...nextSnapshot,
+        branches: reuseEqualArray(previousSnapshot.branches, nextSnapshot.branches, branchesAreEqual),
+        remoteBranches: reuseEqualArray(previousSnapshot.remoteBranches, nextSnapshot.remoteBranches, remoteBranchesAreEqual),
+        remotes: reuseEqualArray(previousSnapshot.remotes, nextSnapshot.remotes, remotesAreEqual),
+        tags: reuseEqualArray(previousSnapshot.tags, nextSnapshot.tags, (left, right) =>
+          left.name === right.name && left.target === right.target),
+        bindings: reuseEqualArray(previousSnapshot.bindings, nextSnapshot.bindings, bindingsAreEqual),
+      }
+    : nextSnapshot;
   replaceRepositoryRecord(nextSnapshot.repository);
   if (!nextSnapshot.remotes.some((remote) => remote.name === selectedRemoteName.value)) {
     selectedRemoteName.value = nextSnapshot.remotes[0]?.name || "";
@@ -767,6 +794,67 @@ function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshReques
     }
   }
   return true;
+}
+
+function reuseEqualArray<T>(currentValue: T[], nextValue: T[], itemsAreEqual: (left: T, right: T) => boolean): T[] {
+  return currentValue.length === nextValue.length &&
+    currentValue.every((item, index) => itemsAreEqual(item, nextValue[index]))
+    ? currentValue
+    : nextValue;
+}
+
+function branchesAreEqual(left: BranchInfo, right: BranchInfo): boolean {
+  return left.name === right.name && left.isCurrent === right.isCurrent && left.upstream === right.upstream;
+}
+
+function remoteBranchesAreEqual(left: RemoteBranchInfo, right: RemoteBranchInfo): boolean {
+  return left.remoteName === right.remoteName && left.name === right.name;
+}
+
+function remotesAreEqual(left: RemoteProfile, right: RemoteProfile): boolean {
+  return left.name === right.name &&
+    left.fetchUrl === right.fetchUrl &&
+    left.pushUrl === right.pushUrl &&
+    left.endpointId === right.endpointId &&
+    left.codeHostKind === right.codeHostKind &&
+    left.parsed.transport === right.parsed.transport &&
+    left.parsed.host === right.parsed.host &&
+    left.parsed.port === right.parsed.port &&
+    left.parsed.namespace === right.parsed.namespace &&
+    left.parsed.repository === right.parsed.repository;
+}
+
+function bindingsAreEqual(left: RemoteBinding, right: RemoteBinding): boolean {
+  return left.repositoryPath === right.repositoryPath &&
+    left.remoteName === right.remoteName &&
+    left.endpointId === right.endpointId &&
+    left.accountSelection.mode === right.accountSelection.mode &&
+    (left.accountSelection.mode === "auto" || (
+      right.accountSelection.mode === "profile" &&
+      left.accountSelection.accountProfileId === right.accountSelection.accountProfileId
+    ));
+}
+
+function worktreesAreEqual(left: WorktreeInfo, right: WorktreeInfo): boolean {
+  return left.path === right.path &&
+    left.head === right.head &&
+    left.branch === right.branch &&
+    left.isMain === right.isMain &&
+    left.isDetached === right.isDetached &&
+    left.isLocked === right.isLocked &&
+    left.isPrunable === right.isPrunable;
+}
+
+function submodulesAreEqual(left: SubmoduleInfo, right: SubmoduleInfo): boolean {
+  return left.path === right.path && left.commit === right.commit && left.status === right.status;
+}
+
+function lfsStatusesAreEqual(left: LfsStatus, right: LfsStatus): boolean {
+  return left.available === right.available &&
+    left.initialized === right.initialized &&
+    left.version === right.version &&
+    left.files.length === right.files.length &&
+    left.files.every((file, index) => file === right.files[index]);
 }
 
 function clearDiffSelection(): void {
@@ -1197,9 +1285,9 @@ async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}):
       refreshGeneration === snapshotRefreshRequestGeneration
     ) {
       await Promise.all([
-        loadWorktrees(reportErrors),
-        loadSubmodules(reportErrors),
-        loadLfsStatus(reportErrors),
+        loadWorktrees(reportErrors, !silent),
+        loadSubmodules(reportErrors, !silent),
+        loadLfsStatus(reportErrors, !silent),
       ]);
     }
   } catch (error) {
@@ -1224,6 +1312,37 @@ async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}):
 
 function applicationCanAutoRefresh(): boolean {
   return controllerMounted && windowFocused && (typeof document === "undefined" || !document.hidden);
+}
+
+function markRepositoryViewportInteraction(): void {
+  repositoryViewportInteractionGeneration += 1;
+}
+
+function captureRepositoryViewport(): RepositoryViewportSnapshot | null {
+  if (typeof document === "undefined") return null;
+  const element = document.querySelector<HTMLElement>(".content-area > .n-layout-scroll-container");
+  if (!element) return null;
+  return {
+    element,
+    scrollTop: element.scrollTop,
+    scrollLeft: element.scrollLeft,
+    interactionGeneration: repositoryViewportInteractionGeneration,
+    repositoryPath: activeRepositoryPath.value,
+    tab: activeTab.value,
+  };
+}
+
+async function restoreRepositoryViewport(viewport: RepositoryViewportSnapshot | null): Promise<void> {
+  if (!viewport) return;
+  await nextTick();
+  if (
+    repositoryViewportInteractionGeneration !== viewport.interactionGeneration ||
+    activeRepositoryPath.value !== viewport.repositoryPath ||
+    activeTab.value !== viewport.tab ||
+    !viewport.element.isConnected
+  ) return;
+  viewport.element.scrollTop = viewport.scrollTop;
+  viewport.element.scrollLeft = viewport.scrollLeft;
 }
 
 function historySnapshotSignature(repositorySnapshot: RepositorySnapshot | null): string {
@@ -1285,6 +1404,7 @@ async function runAutomaticRefresh(): Promise<void> {
 
   automaticRefreshDirty = false;
   automaticRefreshInFlight = true;
+  const viewport = captureRepositoryViewport();
   const includeAuxiliary = activeTab.value === "branches";
   const repositoryPath = activeRepositoryPath.value;
   const previousHistorySignature = historySnapshotSignature(snapshot.value);
@@ -1310,6 +1430,7 @@ async function runAutomaticRefresh(): Promise<void> {
       ]);
     }
   } finally {
+    await restoreRepositoryViewport(viewport);
     automaticRefreshInFlight = false;
     if (automaticRefreshDirty) scheduleAutomaticRefresh();
   }
@@ -1654,7 +1775,7 @@ async function openReflog(): Promise<void> {
   }
 }
 
-async function loadWorktrees(reportErrors = true): Promise<void> {
+async function loadWorktrees(reportErrors = true, showLoading = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     worktrees.value = [];
@@ -1662,23 +1783,28 @@ async function loadWorktrees(reportErrors = true): Promise<void> {
   }
   const selectionGeneration = repositorySelectionGeneration;
   const requestGeneration = ++worktreesRequestGeneration;
-  worktreesLoading.value = true;
+  const shouldClearLoading = showLoading || worktreesLoading.value;
+  if (showLoading) worktreesLoading.value = true;
   try {
     const nextWorktrees = await api.listWorktrees(repositoryPath);
     if (
       repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
       requestGeneration === worktreesRequestGeneration
-    ) worktrees.value = nextWorktrees;
+    ) worktrees.value = reuseEqualArray(worktrees.value, nextWorktrees, worktreesAreEqual);
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) {
       if (reportErrors) reportError(error, tr("读取工作树失败", "Could not load worktrees"));
     }
   } finally {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) worktreesLoading.value = false;
+    if (
+      shouldClearLoading &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === worktreesRequestGeneration
+    ) worktreesLoading.value = false;
   }
 }
 
-async function loadSubmodules(reportErrors = true): Promise<void> {
+async function loadSubmodules(reportErrors = true, showLoading = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     submodules.value = [];
@@ -1686,23 +1812,28 @@ async function loadSubmodules(reportErrors = true): Promise<void> {
   }
   const selectionGeneration = repositorySelectionGeneration;
   const requestGeneration = ++submodulesRequestGeneration;
-  submodulesLoading.value = true;
+  const shouldClearLoading = showLoading || submodulesLoading.value;
+  if (showLoading) submodulesLoading.value = true;
   try {
     const nextSubmodules = await api.listSubmodules(repositoryPath);
     if (
       repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
       requestGeneration === submodulesRequestGeneration
-    ) submodules.value = nextSubmodules;
+    ) submodules.value = reuseEqualArray(submodules.value, nextSubmodules, submodulesAreEqual);
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) {
       if (reportErrors) reportError(error, tr("读取子模块失败", "Could not load submodules"));
     }
   } finally {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) submodulesLoading.value = false;
+    if (
+      shouldClearLoading &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === submodulesRequestGeneration
+    ) submodulesLoading.value = false;
   }
 }
 
-async function loadLfsStatus(reportErrors = true): Promise<void> {
+async function loadLfsStatus(reportErrors = true, showLoading = true): Promise<void> {
   const repositoryPath = activeRepositoryPath.value;
   if (!repositoryPath) {
     lfsStatus.value = null;
@@ -1710,19 +1841,26 @@ async function loadLfsStatus(reportErrors = true): Promise<void> {
   }
   const selectionGeneration = repositorySelectionGeneration;
   const requestGeneration = ++lfsRequestGeneration;
-  lfsLoading.value = true;
+  const shouldClearLoading = showLoading || lfsLoading.value;
+  if (showLoading) lfsLoading.value = true;
   try {
     const nextLfsStatus = await api.getLfsStatus(repositoryPath);
     if (
       repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
       requestGeneration === lfsRequestGeneration
-    ) lfsStatus.value = nextLfsStatus;
+    ) lfsStatus.value = lfsStatus.value
+      ? (lfsStatusesAreEqual(lfsStatus.value, nextLfsStatus) ? lfsStatus.value : nextLfsStatus)
+      : nextLfsStatus;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) {
       if (reportErrors) reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
     }
   } finally {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) lfsLoading.value = false;
+    if (
+      shouldClearLoading &&
+      repositorySelectionIsCurrent(repositoryPath, selectionGeneration) &&
+      requestGeneration === lfsRequestGeneration
+    ) lfsLoading.value = false;
   }
 }
 
@@ -3441,6 +3579,9 @@ watch(repositoryGrouping, (grouping) => {
 onMounted(async () => {
   controllerMounted = true;
   if (!browserDemo) window.addEventListener("keydown", handleDevtoolsShortcut);
+  window.addEventListener("keydown", handleRepositoryViewportKeydown);
+  window.addEventListener("pointerdown", markRepositoryViewportInteraction, { passive: true });
+  window.addEventListener("wheel", markRepositoryViewportInteraction, { passive: true });
   window.addEventListener("focus", handleWindowFocus);
   window.addEventListener("blur", handleWindowBlur);
   document.addEventListener("visibilitychange", handleVisibilityChange);
@@ -3500,6 +3641,9 @@ onBeforeUnmount(() => {
   stopRepositoryWatchErrorListener = null;
   stopWindowFocusListener = null;
   window.removeEventListener("keydown", handleDevtoolsShortcut);
+  window.removeEventListener("keydown", handleRepositoryViewportKeydown);
+  window.removeEventListener("pointerdown", markRepositoryViewportInteraction);
+  window.removeEventListener("wheel", markRepositoryViewportInteraction);
   window.removeEventListener("focus", handleWindowFocus);
   window.removeEventListener("blur", handleWindowBlur);
   document.removeEventListener("visibilitychange", handleVisibilityChange);
