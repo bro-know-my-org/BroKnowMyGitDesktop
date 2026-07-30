@@ -1,0 +1,20 @@
+{
+  "common.authentication.method.ghCli": "GitHub CLI (gh)",
+  "common.authentication.method.glabCli": "GitLab CLI (glab)",
+  "common.authentication.method.unknown": "未知认证方式",
+  "common.authentication.method.personalAccessToken": "个人访问令牌 (PAT)",
+  "common.authentication.method.sshAgent": "SSH agent",
+  "common.authentication.method.systemGitCredentialHelper": "系统 Git credential helper",
+  "common.authentication.status.available": "可用",
+  "common.authentication.status.needsReauthentication": "需要重新认证",
+  "common.authentication.status.unavailable": "不可用",
+  "common.authentication.status.unknown": "未检测",
+  "common.authentication.status.valid": "有效",
+  "common.endpoint.kind.forgejo": "Forgejo",
+  "common.endpoint.kind.genericGit": "通用 Git 服务",
+  "common.endpoint.kind.gitHub": "GitHub",
+  "common.endpoint.kind.gitLab": "GitLab",
+  "common.endpoint.kind.gitea": "Gitea",
+  "common.endpoint.kind.gitee": "Gitee",
+  "common.endpoint.kind.unknown": "未识别平台"
+}

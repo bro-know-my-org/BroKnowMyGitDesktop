@@ -1,4 +1,4 @@
-import type { tr as translate } from "../../../shared/i18n";
+import { t } from "../../../shared/i18n";
 import type { AccountProfile, GitOperationKind, GitStatusEntry, SubmoduleInfo } from "../../../shared/types/domain";
 
 export interface DiffHunk {
@@ -7,9 +7,7 @@ export interface DiffHunk {
   patch: string;
 }
 
-type Translate = typeof translate;
-
-export function createRepositoryPresentation(tr: Translate) {
+export function createRepositoryPresentation() {
   function authenticationTagType(status: AccountProfile["status"]): "default" | "success" | "warning" | "error" {
     if (status === "valid" || status === "available") return "success";
     if (status === "needsReauthentication") return "warning";
@@ -18,10 +16,10 @@ export function createRepositoryPresentation(tr: Translate) {
   }
 
   function changeStatusLabel(entry: GitStatusEntry): string {
-    if (!entry.indexStatus && entry.worktreeStatus === "?") return tr("未跟踪", "Untracked");
-    if (isConflictedEntry(entry)) return tr("有冲突", "Conflicted");
-    if (entry.indexStatus && entry.worktreeStatus) return tr("部分已暂存", "Partially staged");
-    if (entry.indexStatus) return tr("已暂存 · {status}", "Staged · {status}", { status: changeKindLabel(entry.indexStatus) });
+    if (!entry.indexStatus && entry.worktreeStatus === "?") return t("repository.presentation.untracked");
+    if (isConflictedEntry(entry)) return t("repository.presentation.conflicted");
+    if (entry.indexStatus && entry.worktreeStatus) return t("repository.presentation.partiallyStaged");
+    if (entry.indexStatus) return t("repository.presentation.stagedStatus", { status: changeKindLabel(entry.indexStatus) });
     if (entry.worktreeStatus === "M") return "";
     return changeKindLabel(entry.worktreeStatus);
   }
@@ -43,29 +41,29 @@ export function createRepositoryPresentation(tr: Translate) {
 
   function changeIncludeLabel(entry: GitStatusEntry): string {
     if (isChangePartiallyIncluded(entry)) {
-      return tr("将 {path} 的所有改动加入下一次提交", "Include all changes in {path} in the next commit", { path: entry.path });
+      return t("repository.presentation.includeAllChangesPathNextCommit", { path: entry.path });
     }
     return isChangeFullyIncluded(entry)
-      ? tr("从下一次提交中移除 {path}", "Remove {path} from the next commit", { path: entry.path })
-      : tr("将 {path} 加入下一次提交", "Include {path} in the next commit", { path: entry.path });
+      ? t("repository.presentation.removePathNextCommit", { path: entry.path })
+      : t("repository.presentation.includePathNextCommit", { path: entry.path });
   }
 
   function changeKindLabel(status: string): string {
     switch (status) {
       case "A":
-        return tr("新增", "Added");
+        return t("repository.history.added");
       case "M":
-        return tr("已修改", "Modified");
+        return t("repository.presentation.modified");
       case "D":
-        return tr("已删除", "Deleted");
+        return t("repository.presentation.deleted");
       case "R":
-        return tr("已重命名", "Renamed");
+        return t("repository.presentation.renamed");
       case "C":
-        return tr("已复制", "Copied");
+        return t("repository.presentation.copied");
       case "U":
-        return tr("未合并", "Unmerged");
+        return t("repository.history.unmerged");
       default:
-        return tr("有改动", "Changed");
+        return t("repository.presentation.changed");
     }
   }
 
@@ -109,26 +107,26 @@ export function createRepositoryPresentation(tr: Translate) {
   function gitOperationLabel(kind: GitOperationKind): string {
     switch (kind) {
       case "merge":
-        return tr("合并", "Merge");
+        return t("repository.presentation.merge");
       case "rebase":
-        return tr("变基", "Rebase");
+        return t("repository.presentation.rebase");
       case "cherryPick":
-        return tr("拣选提交", "Cherry-pick");
+        return t("repository.branches.cherryPick");
       case "revert":
-        return tr("还原提交", "Revert");
+        return t("repository.presentation.revert");
     }
   }
 
   function submoduleStatusLabel(status: SubmoduleInfo["status"]): string {
     switch (status) {
       case "initialized":
-        return tr("已就绪", "Ready");
+        return t("repository.presentation.ready");
       case "uninitialized":
-        return tr("未初始化", "Uninitialized");
+        return t("repository.presentation.uninitialized");
       case "needsUpdate":
-        return tr("需要更新", "Needs update");
+        return t("repository.presentation.needsUpdate");
       case "conflicted":
-        return tr("冲突", "Conflicted");
+        return t("repository.presentation.submoduleConflicted");
     }
   }
 

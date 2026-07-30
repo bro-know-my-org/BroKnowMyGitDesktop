@@ -1,0 +1,20 @@
+{
+  "common.authentication.method.ghCli": "GitHub CLI (gh)",
+  "common.authentication.method.glabCli": "GitLab CLI (glab)",
+  "common.authentication.method.unknown": "Unknown authentication method",
+  "common.authentication.method.personalAccessToken": "Personal access token (PAT)",
+  "common.authentication.method.sshAgent": "SSH agent",
+  "common.authentication.method.systemGitCredentialHelper": "System Git credential helper",
+  "common.authentication.status.available": "Available",
+  "common.authentication.status.needsReauthentication": "Reauthentication required",
+  "common.authentication.status.unavailable": "Unavailable",
+  "common.authentication.status.unknown": "Unchecked",
+  "common.authentication.status.valid": "Valid",
+  "common.endpoint.kind.forgejo": "Forgejo",
+  "common.endpoint.kind.genericGit": "Generic Git service",
+  "common.endpoint.kind.gitHub": "GitHub",
+  "common.endpoint.kind.gitLab": "GitLab",
+  "common.endpoint.kind.gitea": "Gitea",
+  "common.endpoint.kind.gitee": "Gitee",
+  "common.endpoint.kind.unknown": "Unrecognized service"
+}

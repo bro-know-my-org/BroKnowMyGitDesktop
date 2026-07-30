@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { localizedErrorDetails, localizedErrorMessage, t, type MessageKey } from "../i18n";
 import { measureCommand, performanceProfilingEnabled } from "../performance";
 import type {
   AccountProfile,
@@ -34,6 +35,44 @@ import type {
   SubmoduleInfo,
   WorktreeInfo,
 } from "../types/domain";
+
+const demoMarkers = {
+  repositoryAlias: "__bkm_demo_repository_alias__",
+  repositoryGroup: "__bkm_demo_repository_group__",
+  commitMultiAccount: "__bkm_demo_commit_multi_account__",
+  commitInitial: "__bkm_demo_commit_initial__",
+  updatedNow: "__bkm_demo_updated_now__",
+  accountPersonal: "__bkm_demo_account_personal__",
+  accountGitHubCli: "__bkm_demo_account_github_cli__",
+  accountWork: "__bkm_demo_account_work__",
+} as const;
+
+type DemoCommitSummaryDescriptor =
+  | { kind: "message"; key: MessageKey }
+  | { kind: "cherryPick"; sourceSha: string }
+  | { kind: "cherryPickRevision"; revision: string }
+  | { kind: "revert"; sourceSha: string };
+
+interface DemoStashMessageDescriptor {
+  branch: string;
+  message: string;
+  messageKey?: MessageKey;
+}
+
+let browserRepositoryAliasKey: MessageKey | null = "demo.repository.alias";
+let browserRepositoryGroupKey: MessageKey | null = "demo.repository.group";
+const browserCommitSummaryDescriptors = new Map<string, DemoCommitSummaryDescriptor>([
+  ["9d7a4f0c2ea846105d1200f9cf6a4eb68d748301", { kind: "message", key: "demo.commit.multiAccount" }],
+  ["55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10", { kind: "message", key: "demo.commit.initial" }],
+]);
+const browserAccountDisplayNameKeys = new Map<string, MessageKey>([
+  ["gitee-personal", "demo.account.personal"],
+  ["github-cli", "demo.account.githubCli"],
+  ["gitlab-cli", "demo.account.work"],
+]);
+const browserPullRequestTitleKeys = new Map<number, MessageKey>([[12, "demo.commit.multiAccount"]]);
+const browserPullRequestUpdatedAtKeys = new Map<number, MessageKey>([[12, "demo.pullRequest.updatedNow"]]);
+const browserStashMessageDescriptors = new Map<string, DemoStashMessageDescriptor>();
 
 export const builtinEndpoints: CodeHostEndpoint[] = [
   {
@@ -127,8 +166,8 @@ function browserCapabilities(endpointId: string): CodeHostCapabilities {
 const sampleRepository: RepositoryRecord = {
   path: "/Users/you/Projects/broknowmygitdesktop",
   name: "BroKnowMyGitDesktop",
-  alias: "桌面端主仓",
-  group: "桌面客户端",
+  alias: demoMarkers.repositoryAlias,
+  group: demoMarkers.repositoryGroup,
   host: "gitee.com",
   namespace: "broknowmyorg",
   lastOpenedAt: Date.now() - 1000 * 60 * 18,
@@ -224,7 +263,7 @@ const mockSnapshot: RepositorySnapshot = {
   operation: null,
 };
 
-let browserSnapshot = copy(mockSnapshot);
+let browserSnapshot = rawCopy(mockSnapshot);
 let browserCommits: CommitSummary[] = [
   {
     sha: "9d7a4f0c2ea846105d1200f9cf6a4eb68d748301",
@@ -236,7 +275,7 @@ let browserCommits: CommitSummary[] = [
     authorName: "BroKnowMy",
     authorEmail: "broknowmy@example.test",
     authoredAt: "2026-07-19T10:20:30+08:00",
-    summary: "完善多账号远程绑定",
+    summary: demoMarkers.commitMultiAccount,
   },
   {
     sha: "55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10",
@@ -248,7 +287,7 @@ let browserCommits: CommitSummary[] = [
     authorName: "BroKnowMy",
     authorEmail: "broknowmy@example.test",
     authoredAt: "2026-07-18T09:00:00+08:00",
-    summary: "初始化桌面客户端",
+    summary: demoMarkers.commitInitial,
   },
 ];
 let browserBranchTips = new Map<string, string | null>([
@@ -392,25 +431,45 @@ function renumberBrowserStashes(): void {
   }));
 }
 
-function stashBrowserChanges(snapshot: RepositorySnapshot, message: string): void {
-  if (!snapshot.status.entries.length) return;
+function isBrowserUntrackedEntry(entry: GitStatusEntry): boolean {
+  return !entry.indexStatus && entry.worktreeStatus === "?";
+}
+
+function stashBrowserChanges(
+  snapshot: RepositorySnapshot,
+  message: string,
+  messageKey?: MessageKey,
+  includeUntracked = true,
+): void {
+  const entries = includeUntracked
+    ? snapshot.status.entries
+    : snapshot.status.entries.filter((entry) => !isBrowserUntrackedEntry(entry));
+  if (!entries.length) return;
+  const commitId = `browser-stash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  browserStashMessageDescriptors.set(commitId, {
+    branch: snapshot.status.branch || "HEAD",
+    message,
+    ...(messageKey ? { messageKey } : {}),
+  });
   browserStashes = [{
     reference: "",
-    commitId: `browser-stash-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    message: `On ${snapshot.status.branch || "HEAD"}: ${message}`,
-    entries: copy(snapshot.status.entries),
+    commitId,
+    message,
+    entries: copy(entries),
   }, ...browserStashes];
   renumberBrowserStashes();
-  snapshot.status.entries = [];
+  snapshot.status.entries = includeUntracked
+    ? []
+    : snapshot.status.entries.filter(isBrowserUntrackedEntry);
 }
 let browserPullRequests: PullRequestSummary[] = [
   {
     number: 12,
-    title: "完善多账号远程绑定",
+    title: demoMarkers.commitMultiAccount,
     author: "broknowmy",
     state: "OPEN",
     webUrl: "https://github.com/broknowmyorg/broknowmygitdesktop/pull/12",
-    updatedAt: "刚刚",
+    updatedAt: demoMarkers.updatedNow,
   },
 ];
 let browserAccounts: AccountProfile[] = [
@@ -418,7 +477,7 @@ let browserAccounts: AccountProfile[] = [
     id: "gitee-personal",
     endpointId: "gitee.com",
     login: "broknowmy",
-    displayName: "BroKnowMy · 个人",
+    displayName: demoMarkers.accountPersonal,
     authMethod: "personalAccessToken",
     secretRef: { service: "io.github.broknowmyorg.broknowmygitdesktop", account: "gitee-personal" },
     status: "valid",
@@ -428,7 +487,7 @@ let browserAccounts: AccountProfile[] = [
     id: "github-cli",
     endpointId: "github.com",
     login: "broknowmy",
-    displayName: "GitHub CLI 导入账号",
+    displayName: demoMarkers.accountGitHubCli,
     authMethod: "ghCli",
     secretRef: null,
     status: "available",
@@ -438,7 +497,7 @@ let browserAccounts: AccountProfile[] = [
     id: "gitlab-cli",
     endpointId: "gitlab.com",
     login: "broknowmy-work",
-    displayName: "工作账号",
+    displayName: demoMarkers.accountWork,
     authMethod: "glabCli",
     secretRef: null,
     status: "needsReauthentication",
@@ -447,9 +506,10 @@ let browserAccounts: AccountProfile[] = [
 ];
 
 function browserGitHubPublishOwnersFor(account: AccountProfile): GitHubPublishOwner[] {
+  const localizedAccount = localizeBrowserAccount(account);
   const personalOwner: GitHubPublishOwner = {
     login: account.login,
-    name: account.displayName,
+    name: localizedAccount.displayName,
     kind: "user",
     canCreateRepositories: true,
   };
@@ -458,16 +518,89 @@ function browserGitHubPublishOwnersFor(account: AccountProfile): GitHubPublishOw
     personalOwner,
     {
       login: "broknowmyorg",
-      name: "BroKnowMy Organization",
+      name: t("demo.account.organization"),
       kind: "organization",
       canCreateRepositories: true,
     },
   ];
 }
-let browserEndpoints = copy(builtinEndpoints);
+let browserEndpoints = rawCopy(builtinEndpoints);
+
+function rawCopy<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
 
 function copy<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return rawCopy(value);
+}
+
+function localizeBrowserRepository(record: RepositoryRecord): RepositoryRecord {
+  const localized = rawCopy(record);
+  if (browserRepositoryAliasKey && record.alias === demoMarkers.repositoryAlias) {
+    localized.alias = t(browserRepositoryAliasKey);
+  }
+  if (browserRepositoryGroupKey && record.group === demoMarkers.repositoryGroup) {
+    localized.group = t(browserRepositoryGroupKey);
+  }
+  return localized;
+}
+
+function localizeBrowserSnapshot(snapshot: RepositorySnapshot): RepositorySnapshot {
+  const localized = rawCopy(snapshot);
+  localized.repository = localizeBrowserRepository(snapshot.repository);
+  return localized;
+}
+
+function localizeBrowserCommitSummary(commit: CommitSummary, visited = new Set<string>()): string {
+  const descriptor = browserCommitSummaryDescriptors.get(commit.sha);
+  if (!descriptor || visited.has(commit.sha)) return commit.summary;
+  if (descriptor.kind === "message") return t(descriptor.key);
+  if (descriptor.kind === "cherryPickRevision") {
+    return t("demo.commit.cherryPickRevision", { revision: descriptor.revision });
+  }
+  visited.add(commit.sha);
+  const source = browserCommits.find((candidate) => candidate.sha === descriptor.sourceSha);
+  const summary = source ? localizeBrowserCommitSummary(source, visited) : descriptor.sourceSha;
+  return descriptor.kind === "cherryPick"
+    ? t("demo.commit.cherryPick", { summary })
+    : t("demo.commit.revert", { summary });
+}
+
+function localizeBrowserCommits(commits: CommitSummary[]): CommitSummary[] {
+  return rawCopy(commits).map((commit) => ({ ...commit, summary: localizeBrowserCommitSummary(commit) }));
+}
+
+function localizeBrowserAccount(account: AccountProfile): AccountProfile {
+  const localized = rawCopy(account);
+  const key = browserAccountDisplayNameKeys.get(account.id);
+  if (key) localized.displayName = t(key);
+  return localized;
+}
+
+function localizeBrowserAccounts(accounts: AccountProfile[]): AccountProfile[] {
+  return accounts.map(localizeBrowserAccount);
+}
+
+function localizeBrowserPullRequest(pullRequest: PullRequestSummary): PullRequestSummary {
+  const localized = rawCopy(pullRequest);
+  const titleKey = browserPullRequestTitleKeys.get(pullRequest.number);
+  const updatedAtKey = browserPullRequestUpdatedAtKeys.get(pullRequest.number);
+  if (titleKey) localized.title = t(titleKey);
+  if (updatedAtKey) localized.updatedAt = t(updatedAtKey);
+  return localized;
+}
+
+function localizeBrowserPullRequests(pullRequests: PullRequestSummary[]): PullRequestSummary[] {
+  return pullRequests.map(localizeBrowserPullRequest);
+}
+
+function localizeBrowserStashes(stashes: StashEntry[]): StashEntry[] {
+  return rawCopy(stashes).map((stash) => {
+    const descriptor = browserStashMessageDescriptors.get(stash.commitId);
+    if (!descriptor) return stash;
+    const message = descriptor.messageKey ? t(descriptor.messageKey) : descriptor.message;
+    return { ...stash, message: t("demo.stash.onBranch", { branch: descriptor.branch, message }) };
+  });
 }
 
 function isTauriRuntime(): boolean {
@@ -488,43 +621,52 @@ function isEmptyBrowserDemo(): boolean {
   return import.meta.env.VITE_UI_EMPTY_STATE === "true";
 }
 
-function redact(value: string): string {
-  return value
-    .replace(/(https?:\/\/)[^\s/@]+@/giu, "$1")
-    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/giu, "$1[已隐藏]")
-    .replace(/((?:token|password|authorization)\s*[:=]\s*)[^\s,;]+/giu, "$1[已隐藏]")
-    .replace(/([?&](?:access_token|private_token|client_secret)=)[^&#\s]+/giu, "$1[已隐藏]");
+function browserError(code: string): AppError {
+  return {
+    code,
+    message: localizedErrorMessage(code),
+  };
 }
 
 function asAppError(error: unknown): AppError {
   if (typeof error === "object" && error !== null && "message" in error) {
     const candidate = error as Partial<AppError>;
+    const code = typeof candidate.code === "string" ? candidate.code : "command_failed";
+    const details = candidate.details ? localizedErrorDetails(code) : "";
     return {
-      code: typeof candidate.code === "string" ? candidate.code : "command_failed",
-      message: redact(String(candidate.message)),
-      details: candidate.details ? redact(String(candidate.details)) : null,
+      code,
+      message: localizedErrorMessage(code),
+      details: details || null,
     };
   }
 
-  const raw = typeof error === "string" ? error : "操作未能完成。";
+  const raw = typeof error === "string" ? error : localizedErrorMessage("command_failed");
   try {
     const parsed = JSON.parse(raw) as Partial<AppError>;
     if (typeof parsed.message === "string") {
+      const code = typeof parsed.code === "string" ? parsed.code : "command_failed";
+      const details = parsed.details ? localizedErrorDetails(code) : "";
       return {
-        code: typeof parsed.code === "string" ? parsed.code : "command_failed",
-        message: redact(parsed.message),
-        details: parsed.details ? redact(String(parsed.details)) : null,
+        code,
+        message: localizedErrorMessage(code),
+        details: details || null,
       };
     }
   } catch {
     // Tauri also returns ordinary strings for some command failures.
   }
-  return { code: "command_failed", message: redact(raw), details: null };
+  return { code: "command_failed", message: localizedErrorMessage("command_failed"), details: null };
 }
 
 async function request<T>(command: string, args: object, browserFallback: () => T | Promise<T>): Promise<T> {
   const operation = async (): Promise<T> => {
-    if (!isTauriRuntime()) return browserFallback();
+    if (!isTauriRuntime()) {
+      try {
+        return await browserFallback();
+      } catch (error) {
+        throw asAppError(error);
+      }
+    }
     try {
       return await invoke<T>(command, args as Record<string, unknown>);
     } catch (error) {
@@ -541,12 +683,12 @@ function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): Re
   // an untracked entry at the same path, so it invalidates the preview.
   browserCleanUntrackedConfirmation = null;
   browserDiscardChangesConfirmation = null;
-  return copy(browserSnapshot);
+  return localizeBrowserSnapshot(browserSnapshot);
 }
 
 function boundedBrowserCommitFileDiff(text: string, maximumBytes: number): CommitFileDiff {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 64 * 1024 || maximumBytes > 4 * 1024 * 1024) {
-    throw { code: "invalid_diff_limit", message: "提交文件差异读取范围无效。" } satisfies AppError;
+    throw browserError("invalid_diff_limit");
   }
   const bytes = new TextEncoder().encode(text);
   if (bytes.length <= maximumBytes) return { text, truncated: false };
@@ -636,14 +778,14 @@ function parseGitDiffHeaderPaths(header: string): [string, string] | null {
 
 function requireBrowserSnapshot(repositoryPath: string): RepositorySnapshot {
   if (repositoryPath !== browserSnapshot.repository.path) {
-    throw { code: "repository_not_found", message: "找不到这个示例仓库。" } satisfies AppError;
+    throw browserError("repository_not_found");
   }
   return browserSnapshot;
 }
 
 function requireBrowserRemote(snapshot: RepositorySnapshot, remoteName: string): void {
   if (!snapshot.remotes.some((remote) => remote.name === remoteName)) {
-    throw { code: "remote_not_found", message: "找不到该 remote。" } satisfies AppError;
+    throw browserError("remote_not_found");
   }
 }
 
@@ -651,7 +793,7 @@ function requireBrowserGitHubRemote(repositoryPath: string, remoteName: string):
   const snapshot = requireBrowserSnapshot(repositoryPath);
   const remote = snapshot.remotes.find((item) => item.name === remoteName);
   if (!remote || remote.codeHostKind !== "gitHub") {
-    throw { code: "adapter_endpoint_mismatch", message: "该 remote 不支持 GitHub 平台功能。" } satisfies AppError;
+    throw browserError("adapter_endpoint_mismatch");
   }
   return remote;
 }
@@ -659,10 +801,10 @@ function requireBrowserGitHubRemote(repositoryPath: string, remoteName: string):
 function requireBrowserAccountForEndpoint(accountProfileId: string, endpointId: string): AccountProfile {
   const account = browserAccounts.find((item) => item.id === accountProfileId);
   if (!account) {
-    throw { code: "account_not_found", message: "找不到所选账号。" } satisfies AppError;
+    throw browserError("account_not_found");
   }
   if (account.endpointId !== endpointId) {
-    throw { code: "binding_endpoint_mismatch", message: "所选账号不属于该代码托管 Endpoint。" } satisfies AppError;
+    throw browserError("binding_endpoint_mismatch");
   }
   return account;
 }
@@ -736,19 +878,19 @@ function browserRemoteMatchesEndpoint(remote: RemoteProfile, endpointId: string)
 
 export const api = {
   listRepositories(refreshOwners = false): Promise<RepositoryRecord[]> {
-    return request("list_repositories", { refreshOwners }, () => (isEmptyBrowserDemo() ? [] : [copy(browserSnapshot.repository)]));
+    return request("list_repositories", { refreshOwners }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
   },
 
   discoverRepositories(rootPath: string): Promise<RepositoryRecord[]> {
-    return request("discover_repositories", { rootPath }, () => (isEmptyBrowserDemo() ? [] : [copy(browserSnapshot.repository)]));
+    return request("discover_repositories", { rootPath }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
   },
 
   initRepository(input: InitRepositoryInput): Promise<RepositoryRecord> {
     return request("init_repository", input, () => {
       const destinationPath = input.destinationPath.replace(/[\\/]$/, "");
-      if (!destinationPath) throw { code: "invalid_init_destination", message: "新仓库目录无效。" } satisfies AppError;
+      if (!destinationPath) throw browserError("invalid_init_destination");
       const name = destinationPath.split(/[\\/]/u).filter(Boolean).pop() || "new-repository";
-      browserSnapshot = copy({
+      browserSnapshot = rawCopy({
         ...mockSnapshot,
         repository: { path: destinationPath, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
@@ -777,7 +919,13 @@ export const api = {
       browserLfsStatus = { available: true, initialized: false, version: "git-lfs/3.6.1 (browser demo)", files: [] };
       browserStashes = [];
       browserPullRequests = [];
-      return copy(browserSnapshot.repository);
+      browserRepositoryAliasKey = null;
+      browserRepositoryGroupKey = null;
+      browserCommitSummaryDescriptors.clear();
+      browserPullRequestTitleKeys.clear();
+      browserPullRequestUpdatedAtKeys.clear();
+      browserStashMessageDescriptors.clear();
+      return localizeBrowserRepository(browserSnapshot.repository);
     });
   },
 
@@ -786,7 +934,7 @@ export const api = {
       const pathname = input.destinationPath.replace(/[\\/]$/, "");
       const name = pathname.split(/[\\/]/u).filter(Boolean).pop() || "cloned-repository";
       const branch = "main";
-      browserSnapshot = copy({
+      browserSnapshot = rawCopy({
         ...mockSnapshot,
         repository: { path: pathname, name, alias: null, group: null, host: null, namespace: null, lastOpenedAt: null },
         hasHead: false,
@@ -816,7 +964,13 @@ export const api = {
       browserLfsStatus = { available: true, initialized: false, version: "git-lfs/3.6.1 (browser demo)", files: [] };
       browserStashes = [];
       browserPullRequests = [];
-      return copy(browserSnapshot.repository);
+      browserRepositoryAliasKey = null;
+      browserRepositoryGroupKey = null;
+      browserCommitSummaryDescriptors.clear();
+      browserPullRequestTitleKeys.clear();
+      browserPullRequestUpdatedAtKeys.clear();
+      browserStashMessageDescriptors.clear();
+      return localizeBrowserRepository(browserSnapshot.repository);
     });
   },
 
@@ -838,6 +992,8 @@ export const api = {
           branch.isCurrent = branch.name === worktree.branch;
         });
         browserSnapshot.status.upstream = browserSnapshot.branches.find((branch) => branch.isCurrent)?.upstream ?? null;
+        browserRepositoryAliasKey = null;
+        browserRepositoryGroupKey = null;
         syncBrowserBranchStatus(browserSnapshot);
         if (worktree.isDetached) {
           browserSnapshot.hasHead = Boolean(worktree.head);
@@ -854,12 +1010,12 @@ export const api = {
       browserSnapshot.repository.host = ownerRemote?.parsed.host ?? null;
       browserSnapshot.repository.namespace = ownerRemote?.parsed.namespace ?? null;
       browserSnapshot.repository.lastOpenedAt = Date.now();
-      return copy(requireBrowserSnapshot(repositoryPath));
+      return localizeBrowserSnapshot(requireBrowserSnapshot(repositoryPath));
     });
   },
 
   refreshRepositorySnapshot(repositoryPath: string): Promise<RepositorySnapshot> {
-    return request("refresh_repository_snapshot", { repositoryPath }, () => copy(requireBrowserSnapshot(repositoryPath)));
+    return request("refresh_repository_snapshot", { repositoryPath }, () => localizeBrowserSnapshot(requireBrowserSnapshot(repositoryPath)));
   },
 
   watchRepositoryChanges(repositoryPath: string, requestGeneration: number): Promise<void> {
@@ -875,10 +1031,11 @@ export const api = {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       const nextGroup = group?.trim() || null;
       if (nextGroup && Array.from(nextGroup).length > 80) {
-        throw { code: "repository_group_invalid", message: "分组名称最多 80 个字符。" } satisfies AppError;
+        throw browserError("repository_group_invalid");
       }
       snapshot.repository.group = nextGroup;
-      return copy(snapshot.repository);
+      browserRepositoryGroupKey = null;
+      return localizeBrowserRepository(snapshot.repository);
     });
   },
 
@@ -887,10 +1044,11 @@ export const api = {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       const nextAlias = alias?.trim() || null;
       if (nextAlias && Array.from(nextAlias).length > 80) {
-        throw { code: "repository_alias_invalid", message: "仓库别名最多 80 个字符。" } satisfies AppError;
+        throw browserError("repository_alias_invalid");
       }
       snapshot.repository.alias = nextAlias;
-      return copy(snapshot.repository);
+      browserRepositoryAliasKey = null;
+      return localizeBrowserRepository(snapshot.repository);
     });
   },
 
@@ -904,7 +1062,7 @@ export const api = {
         `+++ b/${target}`,
         "@@ -1,3 +1,5 @@",
         " export default {",
-        "-  title: '旧的实现',",
+        `-  title: '${t("demo.diff.oldImplementation")}',`,
         "+  title: 'BroKnowMyGitDesktop',",
         "+  multiAccount: true,",
         " }",
@@ -918,7 +1076,7 @@ export const api = {
       const target = path || "README.md";
       return [
         "9d7a4f0c2ea (BroKnowMy 2026-07-19)  1) # " + target,
-        "55b91f2b0e1 (BroKnowMy 2026-07-18)  2) 示例 Blame 输出",
+        `55b91f2b0e1 (BroKnowMy 2026-07-18)  2) ${t("demo.blame.sample")}`,
       ].join("\n");
     });
   },
@@ -927,8 +1085,8 @@ export const api = {
     return request("list_reflog", { repositoryPath, limit }, () => {
       requireBrowserSnapshot(repositoryPath);
       return [
-        "9d7a4f0 HEAD@{0} commit: 完善多账号远程绑定 (BroKnowMy, 2026-07-19T10:20:30+08:00)",
-        "55b91f2 HEAD@{1} commit (initial): 初始化桌面客户端 (BroKnowMy, 2026-07-18T09:00:00+08:00)",
+        `9d7a4f0 HEAD@{0} commit: ${t("demo.commit.multiAccount")} (BroKnowMy, 2026-07-19T10:20:30+08:00)`,
+        `55b91f2 HEAD@{1} commit (initial): ${t("demo.commit.initial")} (BroKnowMy, 2026-07-18T09:00:00+08:00)`,
       ].join("\n");
     });
   },
@@ -958,10 +1116,7 @@ export const api = {
         || confirmation !== browserCleanUntrackedConfirmation?.token
         || repositoryPath !== browserCleanUntrackedConfirmation?.repositoryPath
       ) {
-        throw {
-          code: "clean_untracked_confirmation_expired",
-          message: "未跟踪文件预览已过期，请重新确认后再清理。",
-        } satisfies AppError;
+        throw browserError("clean_untracked_confirmation_expired");
       }
       const previewedPaths = browserCleanUntrackedConfirmation.paths;
       browserCleanUntrackedConfirmation = null;
@@ -987,7 +1142,7 @@ export const api = {
       const editorArguments = editor.arguments.map((argument) => argument.trim()).filter(Boolean);
       const isAbsoluteExecutable = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+|\/)/u.test(executable);
       if (!executable || !isAbsoluteExecutable || editorArguments.length > 32) {
-        throw { code: "external_editor_config_invalid", message: "外部编辑器配置无效。" } satisfies AppError;
+        throw browserError("external_editor_config_invalid");
       }
       browserExternalEditor = { executable, arguments: editorArguments };
       return copy(browserExternalEditor);
@@ -998,13 +1153,13 @@ export const api = {
     return request("open_conflicted_files_in_external_editor", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!browserExternalEditor) {
-        throw { code: "external_editor_not_configured", message: "请先配置用于解决冲突的外部编辑器。" } satisfies AppError;
+        throw browserError("external_editor_not_configured");
       }
       const conflicts = browserSnapshot.status.entries
         .filter((entry) => ["DD", "AU", "UD", "UA", "DU", "AA", "UU"].includes(entry.indexStatus + entry.worktreeStatus))
         .map((entry) => entry.path);
       if (!conflicts.length) {
-        throw { code: "no_conflicted_files", message: "当前仓库没有需要在外部编辑器中处理的冲突文件。" } satisfies AppError;
+        throw browserError("no_conflicted_files");
       }
       return conflicts;
     });
@@ -1013,7 +1168,7 @@ export const api = {
   listCommits(repositoryPath: string, limit = 100): Promise<CommitSummary[]> {
     return request("list_commits", { repositoryPath, limit }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);
-      return copy(browserHistoryCommits(snapshot).slice(0, limit));
+      return localizeBrowserCommits(browserHistoryCommits(snapshot).slice(0, limit));
     });
   },
 
@@ -1021,20 +1176,20 @@ export const api = {
     return request("get_commit_diff", { repositoryPath, revision }, () => {
       requireBrowserSnapshot(repositoryPath);
       const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
-      if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      if (!commit) throw browserError("invalid_git_revision");
       return [
         `commit ${commit.sha}`,
         `Author: ${commit.authorName} <${commit.authorEmail}>`,
         `Date:   ${commit.authoredAt}`,
         "",
-        `    ${commit.summary}`,
+        `    ${localizeBrowserCommitSummary(commit)}`,
         "",
         "diff --git a/README.md b/README.md",
         "--- a/README.md",
         "+++ b/README.md",
         "@@ -1 +1,2 @@",
         " # BroKnowMyGitDesktop",
-        "+历史记录浏览器演示",
+        `+${t("demo.diff.historyDemo")}`,
       ].join("\n");
     });
   },
@@ -1043,7 +1198,7 @@ export const api = {
     return request("list_commit_changed_files", { repositoryPath, revision }, () => {
       requireBrowserSnapshot(repositoryPath);
       const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
-      if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      if (!commit) throw browserError("invalid_git_revision");
       return copy(browserCommitChangedFiles(commit));
     });
   },
@@ -1058,10 +1213,10 @@ export const api = {
     return request("get_commit_file_diff", { repositoryPath, revision, path, previousPath, maximumBytes }, () => {
       requireBrowserSnapshot(repositoryPath);
       const commit = browserCommits.find((entry) => entry.sha === revision || entry.shortSha === revision);
-      if (!commit) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      if (!commit) throw browserError("invalid_git_revision");
       const changedFile = browserCommitChangedFiles(commit).find((file) => file.path === path);
       if (!changedFile || changedFile.previousPath !== previousPath) {
-        throw { code: "commit_file_not_found", message: "所选文件不属于这个提交的改动。" } satisfies AppError;
+        throw browserError("commit_file_not_found");
       }
       if (previousPath) {
         return boundedBrowserCommitFileDiff([
@@ -1078,7 +1233,7 @@ export const api = {
           "--- /dev/null",
           `+++ b/${path}`,
           "@@ -0,0 +1 @@",
-          "+历史记录按文件浏览",
+          `+${t("demo.diff.historyByFile")}`,
         ].join("\n"), maximumBytes);
       }
       return boundedBrowserCommitFileDiff([
@@ -1087,7 +1242,7 @@ export const api = {
         `+++ b/${path}`,
         "@@ -1 +1,2 @@",
         ` # ${path}`,
-        "+历史记录按文件浏览",
+        `+${t("demo.diff.historyByFile")}`,
       ].join("\n"), maximumBytes);
     });
   },
@@ -1124,16 +1279,16 @@ export const api = {
     return request("apply_patch", { repositoryPath, path, patch, reverse }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!patch.startsWith("diff --git ")) {
-        throw { code: "invalid_git_patch", message: "代码块补丁无效。" } satisfies AppError;
+        throw browserError("invalid_git_patch");
       }
       const diffHeaders = patch.match(/^diff --git [^\r\n]+$/gmu) ?? [];
       const headerPaths = diffHeaders.length === 1 ? parseGitDiffHeaderPaths(diffHeaders[0]) : null;
       if (!headerPaths || headerPaths[0] !== `a/${path}` || headerPaths[1] !== `b/${path}`) {
-        throw { code: "invalid_git_patch", message: "代码块补丁与当前选中的文件不匹配。" } satisfies AppError;
+        throw browserError("invalid_git_patch");
       }
       return updateMockSnapshot((snapshot) => {
         const entry = snapshot.status.entries.find((candidate) => candidate.path === path);
-        if (!entry) throw { code: "invalid_git_patch", message: "找不到补丁对应的文件。" } satisfies AppError;
+        if (!entry) throw browserError("invalid_git_patch");
         if (reverse) {
           entry.worktreeStatus = entry.worktreeStatus || entry.indexStatus || "M";
           entry.indexStatus = "";
@@ -1150,7 +1305,7 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       const selected = new Set(paths);
       const entries = browserSnapshot.status.entries.filter((entry) => selected.has(entry.path));
-      if (!entries.length) throw { code: "nothing_to_discard", message: "没有可丢弃的改动。" } satisfies AppError;
+      if (!entries.length) throw browserError("nothing_to_discard");
       const confirmation = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
       browserDiscardChangesConfirmation = {
         repositoryPath,
@@ -1174,11 +1329,11 @@ export const api = {
         || confirmation !== browserDiscardChangesConfirmation?.token
         || repositoryPath !== browserDiscardChangesConfirmation?.repositoryPath
       ) {
-        throw { code: "discard_confirmation_required", message: "请先重新确认要丢弃的改动。" } satisfies AppError;
+        throw browserError("discard_confirmation_required");
       }
       if (Date.now() - browserDiscardChangesConfirmation.issuedAt > browserDiscardConfirmationTtlMs) {
         browserDiscardChangesConfirmation = null;
-        throw { code: "discard_confirmation_expired", message: "丢弃改动确认已过期，请重新确认。" } satisfies AppError;
+        throw browserError("discard_confirmation_expired");
       }
       const selected = browserDiscardChangesConfirmation.paths;
       browserDiscardChangesConfirmation = null;
@@ -1192,18 +1347,18 @@ export const api = {
     return request("commit_changes", { repositoryPath, message, amend }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!message.trim()) {
-        throw { code: "commit_message_required", message: "请输入提交说明。" } satisfies AppError;
+        throw browserError("commit_message_required");
       }
       return updateMockSnapshot((snapshot) => {
         const stagedEntries = snapshot.status.entries.filter((entry) => Boolean(entry.indexStatus));
         if (!stagedEntries.length && !amend) {
-          throw { code: "nothing_to_commit", message: "没有已暂存的改动可提交。" } satisfies AppError;
+          throw browserError("nothing_to_commit");
         }
         const sha = createBrowserMockSha();
         const currentTip = snapshot.status.branch ? browserBranchTips.get(snapshot.status.branch) : null;
         const currentCommit = currentTip ? browserCommits.find((commit) => commit.sha === currentTip) : undefined;
         if (amend && (!snapshot.hasHead || !currentCommit)) {
-          throw { code: "no_commit_to_amend", message: "当前分支还没有可修改的提交。" } satisfies AppError;
+          throw browserError("no_commit_to_amend");
         }
         const nextCommit: CommitSummary = {
           sha,
@@ -1233,12 +1388,12 @@ export const api = {
     return request("create_branch", input, () => {
       requireBrowserSnapshot(input.repositoryPath);
       if (!input.name.trim()) {
-        throw { code: "branch_name_required", message: "请输入分支名称。" } satisfies AppError;
+        throw browserError("branch_name_required");
       }
       return updateMockSnapshot((snapshot) => {
         const name = input.name.trim();
         if (snapshot.branches.some((branch) => branch.name === name)) {
-          throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
+          throw browserError("branch_already_exists");
         }
         const sourceTip = snapshot.status.branch ? browserBranchTips.get(snapshot.status.branch) ?? null : null;
         if (input.checkout) {
@@ -1259,10 +1414,10 @@ export const api = {
     return request("checkout_branch", { repositoryPath, branch, stashLocalChanges }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!browserSnapshot.branches.some((entry) => entry.name === branch)) {
-        throw { code: "branch_not_found", message: "找不到该分支。" } satisfies AppError;
+        throw browserError("branch_not_found");
       }
       return updateMockSnapshot((snapshot) => {
-        if (stashLocalChanges) stashBrowserChanges(snapshot, "切换分支前自动暂存");
+        if (stashLocalChanges) stashBrowserChanges(snapshot, "", "demo.stash.autoBeforeSwitch");
         snapshot.branches.forEach((entry) => {
           entry.isCurrent = entry.name === branch;
         });
@@ -1283,10 +1438,10 @@ export const api = {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       requireBrowserRemote(snapshot, remoteName);
       if (!snapshot.remoteBranches.some((entry) => entry.remoteName === remoteName && entry.name === branch)) {
-        throw { code: "remote_branch_not_found", message: "找不到该远程分支；请先获取远程更新后重试。" } satisfies AppError;
+        throw browserError("remote_branch_not_found");
       }
       return updateMockSnapshot((nextSnapshot) => {
-        if (stashLocalChanges) stashBrowserChanges(nextSnapshot, "切换分支前自动暂存");
+        if (stashLocalChanges) stashBrowserChanges(nextSnapshot, "", "demo.stash.autoBeforeSwitch");
         let localBranch = nextSnapshot.branches.find((entry) => entry.name === branch);
         if (!localBranch) {
           localBranch = { name: branch, isCurrent: false, upstream: `${remoteName}/${branch}` };
@@ -1306,13 +1461,13 @@ export const api = {
   renameBranch(repositoryPath: string, oldName: string, newName: string): Promise<RepositorySnapshot> {
     return request("rename_branch", { repositoryPath, oldName, newName }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!newName.trim()) throw { code: "invalid_git_reference", message: "新分支名称无效。" } satisfies AppError;
+      if (!newName.trim()) throw browserError("invalid_git_reference");
       return updateMockSnapshot((snapshot) => {
         const branch = snapshot.branches.find((entry) => entry.name === oldName);
-        if (!branch) throw { code: "branch_not_found", message: "找不到该分支。" } satisfies AppError;
+        if (!branch) throw browserError("branch_not_found");
         const name = newName.trim();
         if (name !== oldName && snapshot.branches.some((entry) => entry.name === name)) {
-          throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
+          throw browserError("branch_already_exists");
         }
         branch.name = name;
         const tip = browserBranchTips.get(oldName) ?? null;
@@ -1328,8 +1483,8 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       return updateMockSnapshot((snapshot) => {
         const branch = snapshot.branches.find((entry) => entry.name === name);
-        if (!branch) throw { code: "branch_not_found", message: "找不到该分支。" } satisfies AppError;
-        if (branch.isCurrent) throw { code: "cannot_delete_current_branch", message: "不能删除当前分支。" } satisfies AppError;
+        if (!branch) throw browserError("branch_not_found");
+        if (branch.isCurrent) throw browserError("cannot_delete_current_branch");
         snapshot.branches = snapshot.branches.filter((entry) => entry.name !== name);
         browserBranchTips.delete(name);
       });
@@ -1358,16 +1513,16 @@ export const api = {
     return request("add_worktree", { repositoryPath, worktreePath, createBranch, commitish }, () => {
       requireBrowserSnapshot(repositoryPath);
       const target = worktreePath.trim();
-      if (!target) throw { code: "invalid_worktree_path", message: "工作树路径无效。" } satisfies AppError;
+      if (!target) throw browserError("invalid_worktree_path");
       if (!createBranch?.trim() && !commitish?.trim()) {
-        throw { code: "invalid_worktree_config", message: "请选择新分支或现有分支。" } satisfies AppError;
+        throw browserError("invalid_worktree_config");
       }
       if (browserWorktrees.some((entry) => entry.path === target)) {
-        throw { code: "git_command_failed", message: "该工作树路径已存在。" } satisfies AppError;
+        throw browserError("git_command_failed");
       }
       const newBranch = createBranch?.trim();
       if (newBranch && browserSnapshot.branches.some((entry) => entry.name === newBranch)) {
-        throw { code: "branch_already_exists", message: "该分支已存在。" } satisfies AppError;
+        throw browserError("branch_already_exists");
       }
       const currentTip = browserSnapshot.status.branch
         ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
@@ -1383,7 +1538,7 @@ export const api = {
           ?? null
         : currentTip;
       if (normalizedCommitish && !startTip) {
-        throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+        throw browserError("invalid_git_revision");
       }
       const branch = newBranch
         ?? (normalizedCommitish && browserBranchTips.has(normalizedCommitish)
@@ -1413,10 +1568,10 @@ export const api = {
     return request("remove_worktree", { repositoryPath, worktreePath, force }, () => {
       requireBrowserSnapshot(repositoryPath);
       const worktree = browserWorktrees.find((entry) => entry.path === worktreePath);
-      if (!worktree) throw { code: "worktree_not_found", message: "找不到该工作树。" } satisfies AppError;
-      if (worktree.isMain) throw { code: "cannot_remove_main_worktree", message: "不能移除主工作树。" } satisfies AppError;
+      if (!worktree) throw browserError("worktree_not_found");
+      if (worktree.isMain) throw browserError("cannot_remove_main_worktree");
       if (worktree.path === browserSnapshot.repository.path) {
-        throw { code: "cannot_remove_active_worktree", message: "不能移除当前工作树。" } satisfies AppError;
+        throw browserError("cannot_remove_active_worktree");
       }
       browserWorktrees = browserWorktrees.filter((entry) => entry.path !== worktreePath);
       return copy(browserWorktrees);
@@ -1447,7 +1602,7 @@ export const api = {
   installLfs(repositoryPath: string): Promise<LfsStatus> {
     return request("install_lfs", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!browserLfsStatus.available) throw { code: "lfs_unavailable", message: "系统未安装 Git LFS。" } satisfies AppError;
+      if (!browserLfsStatus.available) throw browserError("lfs_unavailable");
       browserLfsStatus.initialized = true;
       return copy(browserLfsStatus);
     });
@@ -1456,9 +1611,9 @@ export const api = {
   trackLfsPattern(repositoryPath: string, pattern: string): Promise<RepositorySnapshot> {
     return request("track_lfs_pattern", { repositoryPath, pattern }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!browserLfsStatus.available) throw { code: "lfs_unavailable", message: "系统未安装 Git LFS。" } satisfies AppError;
+      if (!browserLfsStatus.available) throw browserError("lfs_unavailable");
       if (!pattern.trim() || pattern.trim().startsWith("-")) {
-        throw { code: "invalid_lfs_pattern", message: "Git LFS 跟踪规则无效。" } satisfies AppError;
+        throw browserError("invalid_lfs_pattern");
       }
       return updateMockSnapshot((snapshot) => {
         if (!snapshot.status.entries.some((entry) => entry.path === ".gitattributes")) {
@@ -1471,9 +1626,9 @@ export const api = {
   startRebase(repositoryPath: string, base: string): Promise<RepositorySnapshot> {
     return request("start_rebase", { repositoryPath, base }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!base.trim()) throw { code: "invalid_git_revision", message: "请选择变基目标。" } satisfies AppError;
+      if (!base.trim()) throw browserError("invalid_git_revision");
       return updateMockSnapshot((snapshot) => {
-        if (snapshot.operation) throw { code: "git_operation_in_progress", message: "当前已有 Git 操作尚未完成。" } satisfies AppError;
+        if (snapshot.operation) throw browserError("git_operation_in_progress");
         snapshot.operation = { kind: "rebase", hasConflicts: false };
       });
     });
@@ -1483,15 +1638,18 @@ export const api = {
     return request("cherry_pick_commits", { repositoryPath, revisions }, () => {
       requireBrowserSnapshot(repositoryPath);
       const selected = revisions.map((revision) => revision.trim()).filter(Boolean);
-      if (!selected.length) throw { code: "invalid_cherry_pick", message: "请输入要拣选的提交。" } satisfies AppError;
-      if (browserSnapshot.operation) throw { code: "git_operation_in_progress", message: "当前已有 Git 操作尚未完成。" } satisfies AppError;
-      const source = browserCommits.find((commit) => commit.sha === selected[0] || commit.shortSha === selected[0]);
-      const currentTip = browserSnapshot.status.branch
+      if (!selected.length || selected.length > 100) throw browserError("invalid_cherry_pick");
+      if (browserSnapshot.operation) throw browserError("git_operation_in_progress");
+      let currentTip = browserSnapshot.status.branch
         ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
         : null;
-      const sha = createBrowserMockSha();
-      browserCommits = [
-        {
+      for (const revision of selected) {
+        const source = browserCommits.find((commit) => commit.sha === revision || commit.shortSha === revision);
+        const sha = createBrowserMockSha();
+        browserCommitSummaryDescriptors.set(sha, source
+          ? { kind: "cherryPick", sourceSha: source.sha }
+          : { kind: "cherryPickRevision", revision });
+        const commit: CommitSummary = {
           sha,
           shortSha: sha.slice(0, 7),
           parents: currentTip ? [currentTip] : [],
@@ -1501,12 +1659,13 @@ export const api = {
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
-          summary: source ? `Cherry-pick: ${source.summary}` : `Cherry-pick ${selected[0]}`,
-        },
-        ...browserCommits,
-      ];
+          summary: `Cherry-pick ${source?.shortSha ?? revision}`,
+        };
+        browserCommits = [commit, ...browserCommits];
+        currentTip = sha;
+      }
       return updateMockSnapshot((snapshot) => {
-        setBrowserCurrentBranchTip(snapshot, sha);
+        setBrowserCurrentBranchTip(snapshot, currentTip!);
         syncBrowserBranchStatus(snapshot);
       });
     });
@@ -1517,10 +1676,10 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       return updateMockSnapshot((snapshot) => {
         if (!snapshot.operation || snapshot.operation.kind !== kind) {
-          throw { code: "git_operation_not_in_progress", message: "没有可继续的 Git 操作。" } satisfies AppError;
+          throw browserError("git_operation_not_in_progress");
         }
         if (snapshot.operation.hasConflicts) {
-          throw { code: "git_merge_conflict", message: "请先解决全部冲突。" } satisfies AppError;
+          throw browserError("git_merge_conflict");
         }
         snapshot.operation = null;
       });
@@ -1532,7 +1691,7 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       return updateMockSnapshot((snapshot) => {
         if (!snapshot.operation || snapshot.operation.kind !== kind) {
-          throw { code: "git_operation_not_in_progress", message: "没有可中止的 Git 操作。" } satisfies AppError;
+          throw browserError("git_operation_not_in_progress");
         }
         snapshot.operation = null;
       });
@@ -1542,17 +1701,20 @@ export const api = {
   listStashes(repositoryPath: string): Promise<StashEntry[]> {
     return request("list_stashes", { repositoryPath }, () => {
       requireBrowserSnapshot(repositoryPath);
-      return copy(browserStashes.map(({ reference, commitId, message }) => ({ reference, commitId, message })));
+      return localizeBrowserStashes(browserStashes.map(({ reference, commitId, message }) => ({ reference, commitId, message })));
     });
   },
 
   stashChanges(repositoryPath: string, message: string | undefined, includeUntracked: boolean): Promise<RepositorySnapshot> {
     return request("stash_changes", { repositoryPath, message, includeUntracked }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!browserSnapshot.status.entries.length) throw { code: "nothing_to_stash", message: "没有可暂存的改动。" } satisfies AppError;
+      const hasStashableChanges = browserSnapshot.status.entries.some(
+        (entry) => includeUntracked || !isBrowserUntrackedEntry(entry),
+      );
+      if (!hasStashableChanges) throw browserError("nothing_to_stash");
       const suffix = message?.trim() || "WIP";
       return updateMockSnapshot((snapshot) => {
-        stashBrowserChanges(snapshot, suffix);
+        stashBrowserChanges(snapshot, suffix, undefined, includeUntracked);
       });
     });
   },
@@ -1561,11 +1723,16 @@ export const api = {
     return request("pop_stash", { repositoryPath, reference, expectedCommitId }, () => {
       requireBrowserSnapshot(repositoryPath);
       const index = browserStashes.findIndex((entry) => entry.reference === reference && entry.commitId === expectedCommitId);
-      if (index === -1) throw { code: "stash_not_found", message: "找不到该暂存栈条目。" } satisfies AppError;
+      if (index === -1) throw browserError("stash_not_found");
+      const stashedPaths = new Set(browserStashes[index].entries.map((entry) => entry.path));
+      if (browserSnapshot.status.entries.some((entry) => stashedPaths.has(entry.path))) {
+        throw browserError("git_merge_conflict");
+      }
       const [stash] = browserStashes.splice(index, 1);
+      browserStashMessageDescriptors.delete(stash.commitId);
       renumberBrowserStashes();
       return updateMockSnapshot((snapshot) => {
-        snapshot.status.entries = copy(stash.entries);
+        snapshot.status.entries = [...copy(stash.entries), ...snapshot.status.entries];
       });
     });
   },
@@ -1573,6 +1740,11 @@ export const api = {
   dropStash(repositoryPath: string, reference: string, expectedCommitId: string): Promise<void> {
     return request("drop_stash", { repositoryPath, reference, expectedCommitId }, () => {
       requireBrowserSnapshot(repositoryPath);
+      for (const stash of browserStashes) {
+        if (stash.reference === reference && stash.commitId === expectedCommitId) {
+          browserStashMessageDescriptors.delete(stash.commitId);
+        }
+      }
       browserStashes = browserStashes.filter((entry) => entry.reference !== reference || entry.commitId !== expectedCommitId);
       renumberBrowserStashes();
     });
@@ -1582,12 +1754,9 @@ export const api = {
     return request("reset_branch", { repositoryPath, target, mode }, () => {
       requireBrowserSnapshot(repositoryPath);
       if (!browserCommits.some((commit) => commit.sha === target || commit.shortSha === target)) {
-        throw { code: "invalid_git_revision", message: "找不到重置目标。" } satisfies AppError;
+        throw browserError("invalid_git_revision");
       }
-      throw {
-        code: "browser_demo_unsupported",
-        message: `浏览器演示不执行 ${mode} reset，以免伪造仓库状态。`,
-      } satisfies AppError;
+      throw browserError("browser_demo_unsupported");
     });
   },
 
@@ -1596,12 +1765,12 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       const branchCommits = browserBranchCommits(browserSnapshot.status.branch);
       if (!Number.isInteger(count) || count < 2 || count > 1000 || branchCommits.length <= count) {
-        throw { code: "invalid_squash_count", message: "没有足够的提交可压缩。" } satisfies AppError;
+        throw browserError("invalid_squash_count");
       }
       if (browserSnapshot.status.entries.length) {
-        throw { code: "working_tree_not_clean", message: "请先处理当前改动。" } satisfies AppError;
+        throw browserError("working_tree_not_clean");
       }
-      if (!message.trim()) throw { code: "commit_message_required", message: "请输入提交说明。" } satisfies AppError;
+      if (!message.trim()) throw browserError("commit_message_required");
       const sha = createBrowserMockSha();
       browserCommits = [
         {
@@ -1629,11 +1798,12 @@ export const api = {
     return request("revert_commit", { repositoryPath, revision }, () => {
       requireBrowserSnapshot(repositoryPath);
       const target = browserCommits.find((commit) => commit.sha === revision || commit.shortSha === revision);
-      if (!target) throw { code: "invalid_git_revision", message: "找不到该提交。" } satisfies AppError;
+      if (!target) throw browserError("invalid_git_revision");
       const currentTip = browserSnapshot.status.branch
         ? browserBranchTips.get(browserSnapshot.status.branch) ?? null
         : null;
       const sha = createBrowserMockSha();
+      browserCommitSummaryDescriptors.set(sha, { kind: "revert", sourceSha: target.sha });
       browserCommits = [
         {
           sha,
@@ -1645,7 +1815,7 @@ export const api = {
           authorName: "BroKnowMy",
           authorEmail: "broknowmy@example.test",
           authoredAt: new Date().toISOString(),
-          summary: `Revert \"${target.summary}\"`,
+          summary: `Revert ${target.shortSha}`,
         },
         ...browserCommits,
       ];
@@ -1659,7 +1829,7 @@ export const api = {
   createTag(repositoryPath: string, name: string, target?: string, message?: string): Promise<void> {
     return request("create_tag", { repositoryPath, name, target, message }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!name.trim()) throw { code: "invalid_git_reference", message: "标签名称无效。" } satisfies AppError;
+      if (!name.trim()) throw browserError("invalid_git_reference");
       updateMockSnapshot((snapshot) => {
         if (!snapshot.tags.some((tag) => tag.name === name.trim())) {
           const normalizedTarget = target?.trim();
@@ -1674,7 +1844,7 @@ export const api = {
               ?? normalizedTarget;
           const commit = browserCommits.find((entry) => entry.sha === targetTip || entry.shortSha === targetTip);
           if (!commit) {
-            throw { code: "invalid_git_revision", message: "找不到该标签目标。" } satisfies AppError;
+            throw browserError("invalid_git_revision");
           }
           snapshot.tags.unshift({ name: name.trim(), target: commit.sha });
           if (!commit.tags.includes(name.trim())) commit.tags.push(name.trim());
@@ -1696,10 +1866,10 @@ export const api = {
   addRemote(repositoryPath: string, name: string, url: string): Promise<void> {
     return request("add_remote", { repositoryPath, name, url }, () => {
       requireBrowserSnapshot(repositoryPath);
-      if (!name.trim() || !url.trim()) throw { code: "invalid_remote_url", message: "远程仓库信息无效。" } satisfies AppError;
+      if (!name.trim() || !url.trim()) throw browserError("invalid_remote_url");
       updateMockSnapshot((snapshot) => {
         if (snapshot.remotes.some((remote) => remote.name === name.trim())) {
-          throw { code: "remote_exists", message: "该 remote 已存在。" } satisfies AppError;
+          throw browserError("remote_exists");
         }
         snapshot.remotes.push(browserRemoteProfile(name.trim(), url.trim()));
       });
@@ -1711,7 +1881,7 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       updateMockSnapshot((snapshot) => {
         const remote = snapshot.remotes.find((item) => item.name === name);
-        if (!remote) throw { code: "remote_not_found", message: "找不到该 remote。" } satisfies AppError;
+        if (!remote) throw browserError("remote_not_found");
         const next = browserRemoteProfile(remote.name, kind === "fetch" ? url.trim() : remote.fetchUrl, kind === "push" ? url.trim() : remote.pushUrl);
         Object.assign(remote, next);
         const bindingIndex = snapshot.bindings.findIndex((binding) => binding.remoteName === name);
@@ -1727,9 +1897,9 @@ export const api = {
       requireBrowserSnapshot(repositoryPath);
       updateMockSnapshot((snapshot) => {
         const remote = snapshot.remotes.find((item) => item.name === oldName);
-        if (!remote) throw { code: "remote_not_found", message: "找不到该 remote。" } satisfies AppError;
+        if (!remote) throw browserError("remote_not_found");
         if (snapshot.remotes.some((item) => item.name === newName && item !== remote)) {
-          throw { code: "remote_exists", message: "该 remote 已存在。" } satisfies AppError;
+          throw browserError("remote_exists");
         }
         const renamedReferences = snapshot.remoteBranches
           .filter((branch) => branch.remoteName === oldName)
@@ -1795,7 +1965,7 @@ export const api = {
           );
         }
       });
-      return { summary: `已从 ${remoteName} 获取最新引用（浏览器演示）。` };
+      return { summary: t("demo.network.fetch", { remote: remoteName }) };
     });
   },
 
@@ -1803,7 +1973,7 @@ export const api = {
     return request("pull_remote", { repositoryPath, remoteName }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       requireBrowserRemote(snapshot, remoteName);
-      return { summary: `已从 ${remoteName} 拉取变更（浏览器演示）。` };
+      return { summary: t("demo.network.pull", { remote: remoteName }) };
     });
   },
 
@@ -1813,11 +1983,11 @@ export const api = {
       requireBrowserRemote(snapshot, remoteName);
       updateMockSnapshot((snapshot) => {
         if (!snapshot.hasHead) {
-          throw { code: "no_commit_to_push", message: "当前分支没有可推送的提交。" } satisfies AppError;
+          throw browserError("no_commit_to_push");
         }
         const branch = snapshot.status.branch;
         if (!branch) {
-          throw { code: "detached_head", message: "游离 HEAD 无法建立分支上游。" } satisfies AppError;
+          throw browserError("detached_head");
         }
         const isUpstreamRemote = snapshot.status.upstream?.startsWith(`${remoteName}/`) ?? false;
         const establishesUpstream = !snapshot.status.upstream;
@@ -1836,22 +2006,22 @@ export const api = {
         }
         if (establishesUpstream || isUpstreamRemote) syncBrowserBranchStatus(snapshot);
       });
-      return { summary: `已推送到 ${remoteName}（浏览器演示）。` };
+      return { summary: t("demo.network.push", { remote: remoteName }) };
     });
   },
 
   listAccounts(): Promise<AccountProfile[]> {
-    return request("list_accounts", {}, () => copy(browserAccounts));
+    return request("list_accounts", {}, () => localizeBrowserAccounts(browserAccounts));
   },
 
   refreshAccountStatuses(): Promise<AccountProfile[]> {
-    return request("refresh_account_statuses", {}, () => copy(browserAccounts));
+    return request("refresh_account_statuses", {}, () => localizeBrowserAccounts(browserAccounts));
   },
 
   savePatAccount(input: SavePatAccountInput): Promise<AccountProfile> {
     return request("save_pat_account", input, () => {
       if (!input.token.trim()) {
-        throw { code: "token_required", message: "请输入个人访问令牌。" } satisfies AppError;
+        throw browserError("token_required");
       }
       const account: AccountProfile = {
         id: `${input.endpointId}-${input.login}-${Date.now()}`,
@@ -1864,14 +2034,14 @@ export const api = {
         isDefaultCandidate: false,
       };
       browserAccounts = [...browserAccounts, account];
-      return copy(account);
+      return localizeBrowserAccount(account);
     });
   },
 
   saveAccountProfile(input: SaveAccountProfileInput): Promise<AccountProfile> {
     return request("save_account_profile", input, () => {
       if (!input.login.trim()) {
-        throw { code: "invalid_account", message: "账号资料无效。" } satisfies AppError;
+        throw browserError("invalid_account");
       }
       const account: AccountProfile = {
         id: `${input.endpointId}-${input.authMethod}-${input.login}-${Date.now()}`,
@@ -1884,20 +2054,21 @@ export const api = {
         isDefaultCandidate: false,
       };
       browserAccounts = [...browserAccounts, account];
-      return copy(account);
+      return localizeBrowserAccount(account);
     });
   },
 
   removeAccount(accountProfileId: string): Promise<void> {
     return request("remove_account", { accountProfileId }, () => {
       browserAccounts = browserAccounts.filter((account) => account.id !== accountProfileId);
+      browserAccountDisplayNameKeys.delete(accountProfileId);
     });
   },
 
   importCliAccounts(endpointId: string): Promise<AccountProfile[]> {
     return request("import_cli_accounts", { endpointId }, () => {
       const existing = browserAccounts.filter((account) => account.endpointId === endpointId && (account.authMethod === "ghCli" || account.authMethod === "glabCli"));
-      return copy(existing);
+      return localizeBrowserAccounts(existing);
     });
   },
 
@@ -1905,12 +2076,12 @@ export const api = {
     return request("set_default_account", { accountProfileId, isDefaultCandidate }, () => {
       const selected = browserAccounts.find((account) => account.id === accountProfileId);
       if (!selected) {
-        throw { code: "account_not_found", message: "找不到这个账号。" } satisfies AppError;
+        throw browserError("account_not_found");
       }
       browserAccounts = browserAccounts.map((account) =>
         account.endpointId === selected.endpointId ? { ...account, isDefaultCandidate: account.id === accountProfileId && isDefaultCandidate } : account,
       );
-      return copy(browserAccounts);
+      return localizeBrowserAccounts(browserAccounts);
     });
   },
 
@@ -1926,19 +2097,19 @@ export const api = {
       const snapshot = requireBrowserSnapshot(binding.repositoryPath);
       const endpoint = browserEndpoints.find((item) => item.id === binding.endpointId);
       if (!endpoint) {
-        throw { code: "endpoint_not_found", message: "找不到该代码托管 Endpoint。" } satisfies AppError;
+        throw browserError("endpoint_not_found");
       }
       const remote = snapshot.remotes.find((item) => item.name === binding.remoteName);
       if (!remote) {
-        throw { code: "remote_not_found", message: "找不到该 remote。" } satisfies AppError;
+        throw browserError("remote_not_found");
       }
       if (!browserRemoteMatchesEndpoint(remote, endpoint.id)) {
-        throw { code: "endpoint_association_required", message: "该 remote 与所选代码托管 Endpoint 不匹配。" } satisfies AppError;
+        throw browserError("endpoint_association_required");
       }
       if (binding.accountSelection.mode === "profile") {
         const account = requireBrowserAccountForEndpoint(binding.accountSelection.accountProfileId, endpoint.id);
         if (account.authMethod !== "personalAccessToken") {
-          throw { code: "authentication_method_mismatch", message: "指定账号绑定仅支持应用管理的 PAT。" } satisfies AppError;
+          throw browserError("authentication_method_mismatch");
         }
       }
       updateMockSnapshot((snapshot) => {
@@ -1965,7 +2136,7 @@ export const api = {
     return request("save_custom_endpoint", { endpoint }, () => {
       const id = endpoint.id.trim().toLowerCase();
       if (!id || endpoint.isBuiltin || builtinEndpoints.some((item) => item.id.toLowerCase() === id)) {
-        throw { code: "invalid_endpoint", message: "自托管 Endpoint 信息无效。" } satisfies AppError;
+        throw browserError("invalid_endpoint");
       }
       const next = copy({ ...endpoint, id, isBuiltin: false });
       const index = browserEndpoints.findIndex((item) => item.id === next.id);
@@ -1980,7 +2151,7 @@ export const api = {
       requireBrowserGitHubRemote(repositoryPath, remoteName);
       return {
         fullName: "broknowmyorg/broknowmygitdesktop",
-        description: "一个轻量、多账号的代码托管桌面客户端。",
+        description: t("demo.repository.description"),
         defaultBranch: "main",
         webUrl: "https://github.com/broknowmyorg/broknowmygitdesktop",
         isPrivate: false,
@@ -1992,11 +2163,11 @@ export const api = {
     return request("list_github_publish_owners", { endpointId, accountProfileId }, () => {
       const endpoint = browserEndpoints.find((item) => item.id === endpointId);
       if (!endpoint || endpoint.kind !== "gitHub") {
-        throw { code: "adapter_endpoint_mismatch", message: "只有 GitHub Endpoint 支持查询发布所有者。" } satisfies AppError;
+        throw browserError("adapter_endpoint_mismatch");
       }
       const account = requireBrowserAccountForEndpoint(accountProfileId, endpointId);
       if (account.authMethod !== "ghCli") {
-        throw { code: "github_publish_auth_unsupported", message: "查询 GitHub 发布所有者需要匹配的 gh CLI 账号。" } satisfies AppError;
+        throw browserError("github_publish_auth_unsupported");
       }
       return copy(browserGitHubPublishOwnersFor(account));
     });
@@ -2005,7 +2176,7 @@ export const api = {
   listPullRequests(repositoryPath: string, remoteName: string): Promise<PullRequestSummary[]> {
     return request("list_pull_requests", { repositoryPath, remoteName }, () => {
       requireBrowserGitHubRemote(repositoryPath, remoteName);
-      return copy(browserPullRequests);
+      return localizeBrowserPullRequests(browserPullRequests);
     });
   },
 
@@ -2016,9 +2187,9 @@ export const api = {
   ): Promise<PullRequestSummary> {
     return request("create_pull_request", { repositoryPath, remoteName, input }, () => {
       requireBrowserGitHubRemote(repositoryPath, remoteName);
-      if (!input.title.trim()) throw { code: "invalid_pull_request_title", message: "请输入 Pull Request 标题。" } satisfies AppError;
+      if (!input.title.trim()) throw browserError("invalid_pull_request_title");
       if (!input.head.trim() || !input.base.trim()) {
-        throw { code: "invalid_pull_request_branch", message: "请选择源分支和目标分支。" } satisfies AppError;
+        throw browserError("invalid_pull_request_branch");
       }
       const number = (browserPullRequests[0]?.number ?? 0) + 1;
       const pullRequest: PullRequestSummary = {
@@ -2027,10 +2198,11 @@ export const api = {
         author: "broknowmy",
         state: input.draft ? "DRAFT" : "OPEN",
         webUrl: "https://github.com/broknowmyorg/broknowmygitdesktop/pull/" + number,
-        updatedAt: "刚刚",
+        updatedAt: demoMarkers.updatedNow,
       };
+      browserPullRequestUpdatedAtKeys.set(number, "demo.pullRequest.updatedNow");
       browserPullRequests = [pullRequest, ...browserPullRequests];
-      return copy(pullRequest);
+      return localizeBrowserPullRequest(pullRequest);
     });
   },
 
@@ -2056,33 +2228,33 @@ export const api = {
           || repositoryName === ".."
           || !/^[A-Za-z0-9._-]+$/u.test(repositoryName)
         ) {
-          throw { code: "invalid_repository_name", message: "GitHub 仓库名称无效。" } satisfies AppError;
+          throw browserError("invalid_repository_name");
         }
         if (browserSnapshot.remotes.length) {
-          throw { code: "repository_already_has_remote", message: "当前仓库已有 remote。" } satisfies AppError;
+          throw browserError("repository_already_has_remote");
         }
         if (!browserSnapshot.hasHead) {
-          throw { code: "nothing_to_publish", message: "请先创建本地提交。" } satisfies AppError;
+          throw browserError("nothing_to_publish");
         }
         const endpoint = browserEndpoints.find((entry) => entry.id === endpointId);
         if (!endpoint || endpoint.kind !== "gitHub") {
-          throw { code: "adapter_endpoint_mismatch", message: "请选择 GitHub Endpoint。" } satisfies AppError;
+          throw browserError("adapter_endpoint_mismatch");
         }
         const account = browserAccounts.find((entry) => entry.id === accountProfileId);
         if (!account) {
-          throw { code: "account_not_found", message: "找不到发布所选的账号。" } satisfies AppError;
+          throw browserError("account_not_found");
         }
         if (account.endpointId !== endpoint.id || account.authMethod !== "ghCli") {
-          throw { code: "github_publish_auth_unsupported", message: "发布 GitHub 仓库需要匹配的 gh CLI 账号。" } satisfies AppError;
+          throw browserError("github_publish_auth_unsupported");
         }
         if (account.status !== "available" && account.status !== "valid") {
-          throw { code: "cli_auth_unavailable", message: "当前 gh 登录与所选账号不匹配或已失效。" } satisfies AppError;
+          throw browserError("cli_auth_unavailable");
         }
         const owner = browserGitHubPublishOwnersFor(account).find(
           (entry) => entry.login.toLowerCase() === ownerLogin.toLowerCase() && entry.canCreateRepositories,
         );
         if (!owner) {
-          throw { code: "github_organization_publish_forbidden", message: "所选所有者不允许当前账号创建仓库。" } satisfies AppError;
+          throw browserError("github_organization_publish_forbidden");
         }
         return updateMockSnapshot((snapshot) => {
           const remote = browserRemoteProfile("origin", "https://" + endpoint.gitHost + "/" + owner.login + "/" + repositoryName + ".git");

@@ -3,13 +3,10 @@ import { NButton, useDialog, useMessage } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
-import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
+import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, localizedErrorDetails, localizedErrorMessage, setAppLocale, t, type AppLocale } from "../../../shared/i18n";
 import { completeStartupPerformance, markPerformance, measurePerformance } from "../../../shared/performance";
 import { colorMode, resetThemeColor, setColorMode, setThemeColor, themeColor, type ColorMode } from "../../../shared/theme";
 import {
-  authenticationMethodLabel,
-  authenticationStatusLabel,
-  endpointKindLabel,
   type AccountProfile,
   type AuthenticationMethod,
   type AppError,
@@ -124,7 +121,7 @@ const {
   gitOperationLabel,
   submoduleStatusLabel,
   submoduleStatusTagType,
-} = createRepositoryPresentation(tr);
+} = createRepositoryPresentation();
 const repositoryGroupingStorageKey = "broknowmygitdesktop.repository-grouping";
 const lastRepositoryStorageKey = "broknowmygitdesktop.last-repository";
 const commitCacheLimit = 20;
@@ -190,14 +187,14 @@ const localeOptions = [
   { label: "English", value: "en-US" },
 ];
 const colorModeOptions = computed(() => [
-  { label: tr("跟随系统", "Follow system"), key: "system" },
-  { label: tr("浅色", "Light"), key: "light" },
-  { label: tr("深色", "Dark"), key: "dark" },
+  { label: t("workspace.controller.followSystem"), key: "system" },
+  { label: t("workspace.controller.light"), key: "light" },
+  { label: t("workspace.controller.dark"), key: "dark" },
 ]);
 const repositoryActionOptions = computed(() => [
-  { label: tr("扫描文件夹", "Scan folder"), key: "discover" },
-  { label: tr("新建本地仓库", "New local repository"), key: "init" },
-  { label: tr("Clone 仓库", "Clone repository"), key: "clone" },
+  { label: t("workspace.controller.scanFolder"), key: "discover" },
+  { label: t("workspace.controller.newLocalRepository"), key: "init" },
+  { label: t("workspace.controller.cloneRepository"), key: "clone" },
 ]);
 
 const section = ref<AppSection>("repositories");
@@ -360,6 +357,7 @@ let automaticRefreshInFlight = false;
 let repositoryViewportInteractionGeneration = 0;
 let windowFocused = typeof document === "undefined" || document.hasFocus();
 let controllerMounted = false;
+let browserDemoLocaleRefreshGeneration = 0;
 let stopRepositoryChangeListener: UnlistenFn | null = null;
 let stopRepositoryWatchErrorListener: UnlistenFn | null = null;
 let stopWindowFocusListener: UnlistenFn | null = null;
@@ -412,25 +410,25 @@ const commitDiffLimitedAtMaximum = computed(() => commitDiffTruncated.value && c
 const canAmendLatestCommit = computed(() => snapshot.value?.hasHead ?? false);
 const isUnbornRepository = computed(() => Boolean(snapshot.value && !snapshot.value.hasHead));
 const commitActionLabel = computed(() => {
-  if (amendLastCommit.value) return tr("修改最近一次提交", "Amend last commit");
-  if (!stagedCount.value) return tr("选择要提交的文件", "Select files to commit");
-  return tr(
-    "提交 {count} 个文件到 {branch}",
-    stagedCount.value === 1 ? "Commit 1 file to {branch}" : "Commit {count} files to {branch}",
+  if (amendLastCommit.value) return t("workspace.controller.amendLastCommit");
+  if (!stagedCount.value) return t("workspace.controller.selectFilesToCommit");
+  return t(
+    stagedCount.value === 1
+      ? "workspace.controller.commitOneFileToBranch"
+      : "workspace.controller.commitFilesToBranch",
     { count: stagedCount.value, branch: currentBranch.value },
   );
 });
 const commitSelectionSummary = computed(() => {
   if (amendLastCommit.value) {
-    return tr(
-      "会用此说明重写最近一次提交，并包含当前已加入的 {count} 个文件。",
-      "This rewrites the latest commit and includes the {count} file(s) currently selected.",
+    return t("workspace.controller.thisRewritesTheLatestCommitAndIncludesTheCountFileSCurrentlySelected",
       { count: stagedCount.value },
     );
   }
-  return tr(
-    "已选择 {count} 个文件；Git hooks 将照常运行。",
-    stagedCount.value === 1 ? "1 file selected; Git hooks run as usual." : "{count} files selected; Git hooks run as usual.",
+  return t(
+    stagedCount.value === 1
+      ? "workspace.controller.oneFileSelectedGitHooksRunAsUsual"
+      : "workspace.controller.filesSelectedGitHooksRunAsUsual",
     { count: stagedCount.value },
   );
 });
@@ -464,16 +462,16 @@ const publishAccounts = computed(() =>
 );
 const publishAccountOptions = computed(() =>
   publishAccounts.value.map((account) => ({
-    label: (account.displayName || account.login) + " · " + authenticationStatusLabel(account.status, appLocale.value),
+    label: (account.displayName || account.login) + " · " + authenticationStatusLabel(account.status),
     value: account.id,
   })),
 );
 const publishOwnerOptions = computed(() =>
   publishOwners.value.map((owner) => ({
     label: (owner.name
-      ? `${owner.name} (${owner.login}) · ${owner.kind === "organization" ? tr("组织", "Organization") : tr("个人", "Personal")}`
-      : `${owner.login} · ${owner.kind === "organization" ? tr("组织", "Organization") : tr("个人", "Personal")}`)
-      + (owner.canCreateRepositories ? "" : tr(" · 无创建权限", " · No create permission")),
+      ? `${owner.name} (${owner.login}) · ${owner.kind === "organization" ? t("workspace.controller.organization") : t("workspace.controller.personal")}`
+      : `${owner.login} · ${owner.kind === "organization" ? t("workspace.controller.organization") : t("workspace.controller.personal")}`)
+      + (owner.canCreateRepositories ? "" : t("workspace.controller.noCreatePermission")),
     value: owner.login,
     disabled: !owner.canCreateRepositories,
   })),
@@ -486,8 +484,8 @@ const canPublishToSelectedOwner = computed(() =>
 const accountFormCapabilities = computed(() => capabilityForEndpoint(accountForm.endpointId));
 const accountUsesPat = computed(() => accountForm.authMethod === "personalAccessToken");
 const accountMethodOptions = computed(() => [
-  { label: tr("个人访问令牌 (PAT)", "Personal access token (PAT)"), value: "personalAccessToken", disabled: !accountFormCapabilities.value.patKeychain },
-  { label: "SSH agent", value: "sshAgent" },
+  { label: t("workspace.controller.personalAccessTokenPat"), value: "personalAccessToken", disabled: !accountFormCapabilities.value.patKeychain },
+  { label: t("common.authentication.method.sshAgent"), value: "sshAgent" },
 ]);
 function supportsGitRemoteCredentials(account: AccountProfile): boolean {
   // A saved binding is an explicit account-selection promise. Only the
@@ -504,9 +502,9 @@ const bindingAccounts = computed(() => accounts.value.filter(
   (account) => account.endpointId === bindingForm.endpointId && supportsGitRemoteCredentials(account),
 ));
 const bindingAccountOptions = computed(() => [
-  { label: tr("自动选择（唯一 PAT 候选；否则系统 Git）", "Auto-select (one PAT candidate; otherwise system Git)"), value: "auto" },
+  { label: t("workspace.controller.autoSelectOnePatCandidateOtherwiseSystemGit"), value: "auto" },
   ...bindingAccounts.value.map((account) => ({
-    label: `${account.displayName || account.login} · ${authenticationStatusLabel(account.status, appLocale.value)}`,
+    label: `${account.displayName || account.login} · ${authenticationStatusLabel(account.status)}`,
     value: account.id,
     disabled: account.status === "needsReauthentication" || account.status === "unavailable",
   })),
@@ -515,7 +513,7 @@ const bindingEndpointOptions = computed(() => {
   const options = endpoints.value.map((endpoint) => ({ label: endpoint.displayName, value: endpoint.id }));
   const remoteEndpointId = bindingRemote.value?.endpointId;
   if (remoteEndpointId && !options.some((option) => option.value === remoteEndpointId)) {
-    options.push({ label: `${remoteEndpointId} (${tr("手动关联", "manually associated")})`, value: remoteEndpointId });
+    options.push({ label: `${remoteEndpointId} (${t("workspace.controller.manuallyAssociated")})`, value: remoteEndpointId });
   }
   return options;
 });
@@ -523,12 +521,12 @@ const cloneAccounts = computed(() => accounts.value.filter(
   (account) => account.endpointId === cloneForm.endpointId && supportsCloneCredentials(account),
 ));
 const cloneAccountOptions = computed(() => [
-  { label: tr("使用系统 Git / 不指定账号", "Use system Git / no app account"), value: "none" },
+  { label: t("workspace.controller.useSystemGitNoAppAccount"), value: "none" },
   ...(cloneForm.endpointId
     ? [
-        { label: tr("自动选择（仅唯一可用候选时）", "Auto-select (only one usable candidate)"), value: "auto", disabled: !cloneAccounts.value.some((account) => account.status === "valid" || account.status === "available") },
+        { label: t("workspace.controller.autoSelectOnlyOneUsableCandidate"), value: "auto", disabled: !cloneAccounts.value.some((account) => account.status === "valid" || account.status === "available") },
         ...cloneAccounts.value.map((account) => ({
-          label: `${account.displayName || account.login} · ${authenticationStatusLabel(account.status, appLocale.value)}`,
+          label: `${account.displayName || account.login} · ${authenticationStatusLabel(account.status)}`,
           value: account.id,
           disabled: account.status === "needsReauthentication" || account.status === "unavailable",
         })),
@@ -537,22 +535,22 @@ const cloneAccountOptions = computed(() => [
 ]);
 const tagTargetOptions = computed(() => {
   const options = [
-    { label: tr("当前 HEAD", "Current HEAD"), value: "" },
+    { label: t("workspace.controller.currentHead"), value: "" },
     ...(snapshot.value?.branches.map((branch) => ({ label: branch.name, value: branch.name })) ?? []),
   ];
   const target = tagForm.target.trim();
   if (target && !options.some((option) => option.value === target)) {
     options.push({
-      label: tr("提交 {sha}", "Commit {sha}", { sha: target.slice(0, 12) }),
+      label: t("workspace.controller.commitSha", { sha: target.slice(0, 12) }),
       value: target,
     });
   }
   return options;
 });
 const repositoryGroupingOptions = computed(() => [
-  { label: tr("手动分组", "Manual groups"), value: "manual" },
-  { label: tr("远端组织 / 用户", "Remote owner"), value: "owner" },
-  { label: tr("最近使用", "Recently used"), value: "recent" },
+  { label: t("workspace.controller.manualGroups"), value: "manual" },
+  { label: t("workspace.controller.remoteOwner"), value: "owner" },
+  { label: t("workspace.controller.recentlyUsed"), value: "recent" },
 ]);
 const repositoryGroups = computed<RepositorySidebarGroup[]>(() => {
   const sorted = [...repositories.value].sort(compareRepositoryRecords);
@@ -573,7 +571,7 @@ const repositoryGroups = computed<RepositorySidebarGroup[]>(() => {
     }
     const namedGroups = [...groups.values()].sort((left, right) => left.label.localeCompare(right.label, appLocale.value));
     return ungrouped.length
-      ? [...namedGroups, { key: "manual:ungrouped", label: tr("未分组", "Ungrouped"), repositories: ungrouped }]
+      ? [...namedGroups, { key: "manual:ungrouped", label: t("workspace.controller.ungrouped"), repositories: ungrouped }]
       : namedGroups;
   }
 
@@ -594,7 +592,7 @@ const repositoryGroups = computed<RepositorySidebarGroup[]>(() => {
     }
     const ownerGroups = [...groups.values()].sort((left, right) => left.label.localeCompare(right.label, appLocale.value));
     return unknown.length
-      ? [...ownerGroups, { key: "owner:unknown", label: tr("未识别所有者", "Unrecognized owner"), repositories: unknown }]
+      ? [...ownerGroups, { key: "owner:unknown", label: t("workspace.controller.unrecognizedOwner"), repositories: unknown }]
       : ownerGroups;
   }
 
@@ -604,10 +602,10 @@ const repositoryGroups = computed<RepositorySidebarGroup[]>(() => {
   const todayStart = today.getTime();
   const weekStart = now - 7 * 24 * 60 * 60 * 1000;
   const buckets: RepositorySidebarGroup[] = [
-    { key: "recent:today", label: tr("今天", "Today"), repositories: [] },
-    { key: "recent:week", label: tr("最近 7 天", "Last 7 days"), repositories: [] },
-    { key: "recent:older", label: tr("更早", "Earlier"), repositories: [] },
-    { key: "recent:never", label: tr("尚未打开", "Not opened yet"), repositories: [] },
+    { key: "recent:today", label: t("workspace.controller.today"), repositories: [] },
+    { key: "recent:week", label: t("workspace.controller.last7Days"), repositories: [] },
+    { key: "recent:older", label: t("workspace.controller.earlier"), repositories: [] },
+    { key: "recent:never", label: t("workspace.controller.notOpenedYet"), repositories: [] },
   ];
   for (const repository of sorted) {
     const openedAt = repository.lastOpenedAt;
@@ -632,8 +630,7 @@ const {
   pullRequestColumns,
   stashColumns,
 } = useWorkspaceTables({
-  tr,
-  appLocale,
+  t,
   snapshot,
   checkoutBranch,
   checkoutRemoteBranch,
@@ -701,34 +698,35 @@ function getBinding(remoteName: string): RemoteBinding | null {
 
 function remoteBindingLabel(remote: RemoteProfile): string {
   const binding = getBinding(remote.name);
-  if (!binding) return tr("自动选择", "Auto-select");
+  if (!binding) return t("workspace.controller.autoSelect");
   const selection = binding.accountSelection;
-  if (selection.mode === "auto") return tr("自动选择", "Auto-select");
+  if (selection.mode === "auto") return t("workspace.controller.autoSelect");
   const account = accounts.value.find((item) => item.id === selection.accountProfileId);
   return account
-    ? `${account.displayName || account.login} · ${authenticationMethodLabel(account.authMethod, appLocale.value)}`
-    : tr("已绑定的账号不可用", "The bound account is unavailable");
+    ? `${account.displayName || account.login} · ${authenticationMethodLabel(account.authMethod)}`
+    : t("workspace.controller.theBoundAccountIsUnavailable");
 }
 
 function remoteAuthenticationLabel(remote: RemoteProfile): string {
   const binding = getBinding(remote.name);
   const selection = binding?.accountSelection;
-  if (!selection || selection.mode === "auto") return tr("Auto：操作前解析可用账号", "Auto: resolve a usable account before the operation");
+  if (!selection || selection.mode === "auto") return t("workspace.controller.autoResolveAUsableAccountBeforeTheOperation");
   const account = accounts.value.find((item) => item.id === selection.accountProfileId);
-  if (!account) return tr("绑定账号已移除", "The bound account was removed");
-  return `${authenticationMethodLabel(account.authMethod, appLocale.value)} · ${authenticationStatusLabel(account.status, appLocale.value)}`;
+  if (!account) return t("workspace.controller.theBoundAccountWasRemoved");
+  return `${authenticationMethodLabel(account.authMethod)} · ${authenticationStatusLabel(account.status)}`;
 }
 
 function reportError(error: unknown, action: string): void {
   const appError: AppError = isAppError(error)
     ? error
-    : { code: "unexpected_error", message: tr("发生未预期错误。", "An unexpected error occurred."), details: null };
-  appError.message = localizedErrorMessage(appError.code, appError.message);
+    : { code: "unexpected_error", message: t("workspace.controller.anUnexpectedErrorOccurred"), details: null };
+  appError.message = localizedErrorMessage(appError.code);
+  appError.details = localizedErrorDetails(appError.code) || null;
   lastError.value = appError;
   lastErrorAction.value = action;
-  message.error(tr("{action}：{message}", "{action}: {message}", { action, message: appError.message }));
+  message.error(t("workspace.controller.actionMessage", { action, message: appError.message }));
   if (appError.code === "account_selection_required" && activeRemote.value) {
-    message.warning(tr("此 remote 有多个或没有可用账号，请明确选择一个账号后重试。", "This remote has multiple or no usable accounts. Select one explicitly and retry."));
+    message.warning(t("workspace.controller.thisRemoteHasMultipleOrNoUsableAccountsSelectOneExplicitlyAndRetry"));
     openBindingDrawer(activeRemote.value);
   }
 }
@@ -740,6 +738,100 @@ function clearLastError(): void {
 
 function updateAppLocale(value: string | number): void {
   if (value === "zh-CN" || value === "en-US") setAppLocale(value as AppLocale);
+}
+
+async function refreshBrowserDemoLocalizedData(): Promise<void> {
+  if (!browserDemo || !controllerMounted) return;
+  const refreshGeneration = ++browserDemoLocaleRefreshGeneration;
+  const repositoryPath = activeRepositoryPath.value;
+  const selectedPath = selectedChange.value?.path;
+  const selectedCommitSha = selectedCommit.value?.sha;
+  const selectedCommitFilePath = selectedCommitFile.value?.path;
+  const selectedCommitFilePreviousPath = selectedCommitFile.value?.previousPath;
+  const refreshRepositoryInfo = Boolean(repositoryInfo.value) || activeTab.value === "overview";
+  const refreshPullRequests = Boolean(pullRequests.value.length) || activeTab.value === "overview";
+  const refreshBlame = blameModalShown.value && Boolean(selectedPath);
+  const refreshReflog = reflogModalShown.value;
+  const refreshIsCurrent = () => refreshGeneration === browserDemoLocaleRefreshGeneration
+    && controllerMounted
+    && activeRepositoryPath.value === repositoryPath;
+  clearLastError();
+
+  try {
+    const [localizedRepositories, localizedAccounts] = await Promise.all([
+      api.listRepositories(false),
+      api.listAccounts(),
+    ]);
+    if (refreshGeneration !== browserDemoLocaleRefreshGeneration || !controllerMounted) return;
+    repositories.value = localizedRepositories;
+    accounts.value = localizedAccounts;
+    if (!repositoryPath || !refreshIsCurrent()) return;
+
+    await refreshSnapshotWithOptions({ includeAuxiliary: false, reportErrors: false, silent: true });
+    if (!refreshIsCurrent()) return;
+
+    if (selectedPath) {
+      const entry = snapshot.value?.status.entries.find((candidate) => candidate.path === selectedPath);
+      if (entry && selectedChange.value?.path === selectedPath) {
+        await loadDiff(entry, repositoryPath, false);
+      }
+      if (!refreshIsCurrent()) return;
+    }
+
+    const historyWasLoaded = activeTab.value === "history"
+      || historyLoadedRepositoryPath === repositoryPath
+      || stashesLoadedRepositoryPath === repositoryPath;
+    if (historyWasLoaded) {
+      await loadHistoryWithOptions({ force: true, reportErrors: false, silent: true });
+    }
+    if (!refreshIsCurrent()) return;
+
+    if (
+      selectedCommitSha &&
+      selectedCommit.value?.sha === selectedCommitSha &&
+      selectedCommitFile.value?.path === selectedCommitFilePath &&
+      selectedCommitFile.value?.previousPath === selectedCommitFilePreviousPath
+    ) {
+      const localizedCommit = commits.value.find((commit) => commit.sha === selectedCommitSha);
+      if (localizedCommit) {
+        selectedCommit.value = localizedCommit;
+        const localizedFile = commitChangedFiles.value.find((file) =>
+          file.path === selectedCommitFilePath && file.previousPath === selectedCommitFilePreviousPath);
+        if (localizedFile) {
+          commitDiffCache.clear();
+          commitDiffCacheWeight = 0;
+          loadCommitFileDiff(localizedFile, localizedCommit, repositoryPath);
+        }
+      }
+    }
+
+    const remoteName = activeRemote.value?.name;
+    if (remoteName && refreshRepositoryInfo && activeCapabilities.value.repositoryInfo) {
+      const localizedRepositoryInfo = await api.getCodeHostRepositoryInfo(repositoryPath, remoteName);
+      if (!refreshIsCurrent() || activeRemote.value?.name !== remoteName) return;
+      repositoryInfo.value = localizedRepositoryInfo;
+    }
+    if (remoteName && refreshPullRequests && activeCapabilities.value.pullRequestsRead) {
+      const localizedPullRequests = await api.listPullRequests(repositoryPath, remoteName);
+      if (!refreshIsCurrent() || activeRemote.value?.name !== remoteName) return;
+      pullRequests.value = localizedPullRequests;
+    }
+    if (refreshBlame && selectedPath) {
+      const localizedBlame = await api.getFileBlame(repositoryPath, selectedPath);
+      if (!refreshIsCurrent() || !blameModalShown.value || selectedChange.value?.path !== selectedPath) return;
+      blameText.value = localizedBlame;
+    }
+    if (refreshReflog) {
+      const localizedReflog = await api.listReflog(repositoryPath);
+      if (!refreshIsCurrent() || !reflogModalShown.value) return;
+      reflogText.value = localizedReflog;
+    }
+    if (publishModalShown.value && refreshIsCurrent()) await loadPublishOwners();
+  } catch (error) {
+    if (refreshGeneration === browserDemoLocaleRefreshGeneration && controllerMounted) {
+      reportError(error, t("workspace.controller.couldNotRefreshLocalizedDemoData"));
+    }
+  }
 }
 
 function updateColorMode(value: string | number): void {
@@ -1059,9 +1151,9 @@ async function saveRepositoryGroup(): Promise<void> {
       snapshot.value = { ...snapshot.value, repository: updated };
     }
     repositoryGroupModalShown.value = false;
-    message.success(name ? tr("仓库分组已保存。", "Repository group saved.") : tr("仓库已移到未分组。", "Repository moved to ungrouped."));
+    message.success(name ? t("workspace.controller.repositoryGroupSaved") : t("workspace.controller.repositoryMovedToUngrouped"));
   } catch (error) {
-    reportError(error, tr("保存仓库分组失败", "Could not save repository group"));
+    reportError(error, t("workspace.controller.couldNotSaveRepositoryGroup"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1085,9 +1177,9 @@ async function saveRepositoryAlias(): Promise<void> {
       snapshot.value = { ...snapshot.value, repository: updated };
     }
     repositoryAliasModalShown.value = false;
-    message.success(name ? tr("仓库别名已保存。", "Repository alias saved.") : tr("仓库别名已移除。", "Repository alias removed."));
+    message.success(name ? t("workspace.controller.repositoryAliasSaved") : t("workspace.controller.repositoryAliasRemoved"));
   } catch (error) {
-    reportError(error, tr("保存仓库别名失败", "Could not save repository alias"));
+    reportError(error, t("workspace.controller.couldNotSaveRepositoryAlias"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1109,7 +1201,7 @@ async function loadRepositories(refreshOwners = repositoryGrouping.value === "ow
         try {
           repositories.value = await api.listRepositories(shouldRefreshOwners);
         } catch (error) {
-          reportError(error, tr("读取仓库列表失败", "Could not load repositories"));
+          reportError(error, t("workspace.controller.couldNotLoadRepositories"));
           if (!repositoriesReloadPending) break;
         }
         shouldRefreshOwners = repositoriesRefreshOwnersPending;
@@ -1127,7 +1219,7 @@ async function loadAccounts(): Promise<void> {
   try {
     accounts.value = await api.listAccounts();
   } catch (error) {
-    reportError(error, tr("读取账号失败", "Could not load accounts"));
+    reportError(error, t("workspace.controller.couldNotLoadAccounts"));
   } finally {
     accountsLoading.value = false;
   }
@@ -1141,7 +1233,7 @@ async function refreshAccountStatuses(force = false): Promise<void> {
     accounts.value = await api.refreshAccountStatuses();
     lastAccountStatusRefreshAt = Date.now();
   } catch (error) {
-    if (force) reportError(error, tr("刷新账号认证状态失败", "Could not refresh account authentication status"));
+    if (force) reportError(error, t("workspace.controller.couldNotRefreshAccountAuthenticationStatus"));
   } finally {
     accountStatusRefreshing.value = false;
   }
@@ -1156,7 +1248,7 @@ async function loadEndpoints(): Promise<void> {
   try {
     endpoints.value = await api.listEndpoints();
   } catch (error) {
-    reportError(error, tr("读取代码托管 Endpoint 失败", "Could not load Git service endpoints"));
+    reportError(error, t("workspace.controller.couldNotLoadGitServiceEndpoints"));
   }
 }
 
@@ -1306,7 +1398,7 @@ async function selectRepository(
     }
   } catch (error) {
     if (reportOpenError && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      reportError(error, tr("打开仓库失败", "Could not open repository"));
+      reportError(error, t("workspace.controller.couldNotOpenRepository"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
@@ -1379,7 +1471,7 @@ async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}):
       applicationGeneration === snapshotApplicationGeneration &&
       refreshGeneration === snapshotRefreshRequestGeneration
     ) {
-      reportError(error, tr("刷新仓库失败", "Could not refresh repository"));
+      reportError(error, t("workspace.controller.couldNotRefreshRepository"));
     }
   } finally {
     if (
@@ -1618,7 +1710,7 @@ async function reconcileSnapshotAfterMutationError(repositoryPath: string): Prom
 
 async function discoverRepositories(): Promise<void> {
   if (!discoverForm.rootPath.trim()) {
-    message.warning(tr("请输入要扫描的文件夹路径。", "Enter the folder path to scan."));
+    message.warning(t("workspace.controller.enterTheFolderPathToScan"));
     return;
   }
   mutationBusy.value = true;
@@ -1628,9 +1720,9 @@ async function discoverRepositories(): Promise<void> {
     repositories.value = [...repositories.value, ...found.filter((repository) => !paths.has(repository.path))];
     discoverModalShown.value = false;
     discoverForm.rootPath = "";
-    message.success(found.length ? tr("发现 {count} 个仓库。", "Found {count} repositories.", { count: found.length }) : tr("没有发现 Git 仓库。", "No Git repositories found."));
+    message.success(found.length ? t("workspace.controller.foundCountRepositories", { count: found.length }) : t("workspace.controller.noGitRepositoriesFound"));
   } catch (error) {
-    reportError(error, tr("扫描仓库失败", "Could not scan repositories"));
+    reportError(error, t("workspace.controller.couldNotScanRepositories"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1638,11 +1730,11 @@ async function discoverRepositories(): Promise<void> {
 
 async function cloneRepository(): Promise<void> {
   if (!cloneForm.url.trim() || !cloneForm.destinationPath.trim()) {
-    message.warning(tr("请输入远程地址和目标目录。", "Enter a remote URL and destination folder."));
+    message.warning(t("workspace.controller.enterARemoteUrlAndDestinationFolder"));
     return;
   }
   if (cloneForm.accountId !== "none" && !cloneForm.endpointId) {
-    message.warning(tr("选择应用账号时，请同时选择对应的 CodeHost Endpoint。", "When choosing an app account, also choose its Git service endpoint."));
+    message.warning(t("workspace.controller.whenChoosingAnAppAccountAlsoChooseItsGitServiceEndpoint"));
     return;
   }
   mutationBusy.value = true;
@@ -1667,10 +1759,10 @@ async function cloneRepository(): Promise<void> {
     cloneForm.destinationPath = "";
     cloneForm.endpointId = "";
     cloneForm.accountId = "none";
-    message.success(tr("仓库已 clone，正在打开。", "Repository cloned. Opening it now."));
+    message.success(t("workspace.controller.repositoryClonedOpeningItNow"));
     await selectRepository(repository.path);
   } catch (error) {
-    reportError(error, tr("Clone 失败", "Clone failed"));
+    reportError(error, t("workspace.controller.cloneFailed"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1678,7 +1770,7 @@ async function cloneRepository(): Promise<void> {
 
 async function initRepository(): Promise<void> {
   if (!initForm.destinationPath.trim()) {
-    message.warning(tr("请输入新仓库目录。", "Enter a destination folder for the new repository."));
+    message.warning(t("workspace.controller.enterADestinationFolderForTheNewRepository"));
     return;
   }
   mutationBusy.value = true;
@@ -1691,10 +1783,10 @@ async function initRepository(): Promise<void> {
     initModalShown.value = false;
     initForm.destinationPath = "";
     initForm.initialBranch = "main";
-    message.success(tr("本地 Git 仓库已创建，正在打开。", "Local Git repository created. Opening it now."));
+    message.success(t("workspace.controller.localGitRepositoryCreatedOpeningItNow"));
     await selectRepository(repository.path);
   } catch (error) {
-    reportError(error, tr("创建本地仓库失败", "Could not create local repository"));
+    reportError(error, t("workspace.controller.couldNotCreateLocalRepository"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1722,7 +1814,7 @@ async function loadDiff(
     diffText.value = diff;
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取差异失败", "Could not load diff"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadDiff"));
     }
   } finally {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
@@ -1740,7 +1832,7 @@ async function openFileBlame(): Promise<void> {
     blameText.value = await api.getFileBlame(activeRepositoryPath.value, selectedChange.value.path);
   } catch (error) {
     blameModalShown.value = false;
-    reportError(error, tr("读取文件 Blame 失败", "Could not load file blame"));
+    reportError(error, t("workspace.controller.couldNotLoadFileBlame"));
   } finally {
     blameLoading.value = false;
   }
@@ -1764,9 +1856,9 @@ async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
       diffText.value = "";
       selectedDiffStaged.value = false;
     }
-    message.success(reverse ? tr("代码块已取消暂存。", "Hunk unstaged.") : tr("代码块已暂存。", "Hunk staged."));
+    message.success(reverse ? t("workspace.controller.hunkUnstaged") : t("workspace.controller.hunkStaged"));
   } catch (error) {
-    reportError(error, reverse ? tr("取消暂存代码块失败", "Could not unstage hunk") : tr("暂存代码块失败", "Could not stage hunk"));
+    reportError(error, reverse ? t("workspace.controller.couldNotUnstageHunk") : t("workspace.controller.couldNotStageHunk"));
   } finally {
     mutationBusy.value = false;
   }
@@ -1828,7 +1920,7 @@ async function loadCommitHistoryWithOptions(options: HistoryLoadOptions = {}): P
     }
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取提交历史失败", "Could not load commit history"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadCommitHistory"));
     }
   } finally {
     if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) historyLoading.value = false;
@@ -1855,7 +1947,7 @@ async function loadStashesWithOptions(options: HistoryLoadOptions = {}): Promise
     stashesLoadedRepositoryPath = repositoryPath;
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取暂存栈失败", "Could not load stashes"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadStashes"));
     }
   } finally {
     if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration) stashesLoading.value = false;
@@ -1871,7 +1963,7 @@ async function openReflog(): Promise<void> {
     reflogText.value = await api.listReflog(activeRepositoryPath.value);
   } catch (error) {
     reflogModalShown.value = false;
-    reportError(error, tr("读取 Reflog 失败", "Could not load reflog"));
+    reportError(error, t("workspace.controller.couldNotLoadReflog"));
   } finally {
     reflogLoading.value = false;
   }
@@ -1895,7 +1987,7 @@ async function loadWorktrees(reportErrors = true, showLoading = true): Promise<v
     ) worktrees.value = reuseEqualArray(worktrees.value, nextWorktrees, worktreesAreEqual);
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === worktreesRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取工作树失败", "Could not load worktrees"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadWorktrees"));
     }
   } finally {
     if (
@@ -1924,7 +2016,7 @@ async function loadSubmodules(reportErrors = true, showLoading = true): Promise<
     ) submodules.value = reuseEqualArray(submodules.value, nextSubmodules, submodulesAreEqual);
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === submodulesRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取子模块失败", "Could not load submodules"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadSubmodules"));
     }
   } finally {
     if (
@@ -1955,7 +2047,7 @@ async function loadLfsStatus(reportErrors = true, showLoading = true): Promise<v
       : nextLfsStatus;
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === lfsRequestGeneration) {
-      if (reportErrors) reportError(error, tr("读取 Git LFS 状态失败", "Could not load Git LFS status"));
+      if (reportErrors) reportError(error, t("workspace.controller.couldNotLoadGitLfsStatus"));
     }
   } finally {
     if (
@@ -1970,7 +2062,7 @@ async function loadExternalEditor(): Promise<void> {
   try {
     externalEditor.value = await api.getExternalEditor();
   } catch (error) {
-    reportError(error, tr("读取外部编辑器配置失败", "Could not load external editor configuration"));
+    reportError(error, t("workspace.controller.couldNotLoadExternalEditorConfiguration"));
   }
 }
 
@@ -2027,7 +2119,7 @@ async function fetchCommitFiles(
     }
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
-      reportError(error, tr("读取提交文件失败", "Could not load changed files"));
+      reportError(error, t("workspace.controller.couldNotLoadChangedFiles"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
@@ -2152,7 +2244,7 @@ async function fetchCommitFileDiff(
     }
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
-      reportError(error, tr("读取提交文件改动失败", "Could not load the file diff"));
+      reportError(error, t("workspace.controller.couldNotLoadTheFileDiff"));
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
@@ -2172,7 +2264,7 @@ async function setChangeIncluded(entry: GitStatusEntry, included: boolean): Prom
     applySnapshot(nextSnapshot);
     if (wasSelected) await syncSelectedDiff(nextSnapshot, entry.path);
   } catch (error) {
-    reportError(error, included ? tr("暂存失败", "Could not stage changes") : tr("取消暂存失败", "Could not unstage changes"));
+    reportError(error, included ? t("workspace.controller.couldNotStageChanges") : t("workspace.controller.couldNotUnstageChanges"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2186,9 +2278,9 @@ async function stageAll(): Promise<void> {
     const nextSnapshot = await api.stagePaths(activeRepositoryPath.value, workingChanges.value.map((entry) => entry.path));
     applySnapshot(nextSnapshot);
     if (selectedPath) await syncSelectedDiff(nextSnapshot, selectedPath);
-    message.success(tr("已暂存全部工作区改动。", "All working-tree changes are staged."));
+    message.success(t("workspace.controller.allWorkingTreeChangesAreStaged"));
   } catch (error) {
-    reportError(error, tr("暂存失败", "Could not stage changes"));
+    reportError(error, t("workspace.controller.couldNotStageChanges"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2202,9 +2294,9 @@ async function unstageAll(): Promise<void> {
     const nextSnapshot = await api.unstagePaths(activeRepositoryPath.value, stagedChanges.value.map((entry) => entry.path));
     applySnapshot(nextSnapshot);
     if (selectedPath) await syncSelectedDiff(nextSnapshot, selectedPath);
-    message.success(tr("已将全部文件移出暂存区。", "All files are removed from the staging area."));
+    message.success(t("workspace.controller.allFilesAreRemovedFromTheStagingArea"));
   } catch (error) {
-    reportError(error, tr("取消暂存失败", "Could not unstage changes"));
+    reportError(error, t("workspace.controller.couldNotUnstageChanges"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2219,29 +2311,27 @@ async function confirmDiscardChanges(paths: string[]): Promise<void> {
   try {
     discardPreview = await api.previewDiscardChanges(repositoryPath, uniquePaths);
   } catch (error) {
-    reportError(error, tr("准备丢弃改动失败", "Could not prepare to discard changes"));
+    reportError(error, t("workspace.controller.couldNotPrepareToDiscardChanges"));
     return;
   } finally {
     mutationBusy.value = false;
   }
   if (activeRepositoryPath.value !== repositoryPath) return;
   dialog.error({
-    title: tr("丢弃改动", "Discard changes"),
-    content: tr(
-      "永久丢弃 {count} 个文件的工作区和暂存区改动？此操作不能撤销。{untracked}",
-      "Permanently discard working-tree and staged changes in {count} file(s)? This cannot be undone.{untracked}",
+    title: t("workspace.controller.discardChanges"),
+    content: t("workspace.controller.permanentlyDiscardWorkingTreeAndStagedChangesInCountFileSThisCannotBeUndoneUntracked",
       {
         count: discardPreview.pathCount,
         untracked: discardPreview.untrackedCount > 0
-          ? tr("其中的未跟踪文件会从磁盘删除。", " Untracked files among them will be deleted from disk.")
+          ? t("workspace.controller.untrackedFilesAmongThemWillBeDeletedFromDisk")
           : "",
       },
     ),
-    positiveText: tr("丢弃改动", "Discard changes"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.discardChanges"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       if (activeRepositoryPath.value !== repositoryPath) {
-        message.warning(tr("当前仓库已切换，请重新操作。", "The active repository changed. Please try again."));
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
         return;
       }
       mutationBusy.value = true;
@@ -2250,9 +2340,9 @@ async function confirmDiscardChanges(paths: string[]): Promise<void> {
         if (selectedChange.value && uniquePaths.includes(selectedChange.value.path)) {
           clearDiffSelection();
         }
-        message.success(tr("改动已丢弃。", "Changes discarded."));
+        message.success(t("workspace.controller.changesDiscarded"));
       } catch (error) {
-        reportError(error, tr("丢弃改动失败", "Could not discard changes"));
+        reportError(error, t("workspace.controller.couldNotDiscardChanges"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2271,26 +2361,24 @@ async function confirmCleanUntracked(): Promise<void> {
   try {
     cleanPreview = await api.previewCleanUntracked(activeRepositoryPath.value);
   } catch (error) {
-    reportError(error, tr("预览未跟踪文件清理失败", "Could not preview untracked file cleanup"));
+    reportError(error, t("workspace.controller.couldNotPreviewUntrackedFileCleanup"));
     return;
   } finally {
     mutationBusy.value = false;
   }
   const entries = cleanPreview.preview.split(/\r?\n/u).filter(Boolean);
   if (!entries.length) {
-    message.info(tr("没有可清理的未跟踪文件。", "There are no untracked files to clean."));
+    message.info(t("workspace.controller.thereAreNoUntrackedFilesToClean"));
     return;
   }
   const count = entries.length;
   dialog.error({
-    title: tr("清理未跟踪文件", "Clean untracked files"),
-    content: tr(
-      "永久删除 {count} 个未跟踪的文件或目录？已忽略的文件不会删除，此操作不能撤销。",
-      "Permanently delete {count} untracked file(s) or folder(s)? Ignored files are not removed and this cannot be undone.",
+    title: t("workspace.controller.cleanUntrackedFiles"),
+    content: t("workspace.controller.permanentlyDeleteCountUntrackedFileSOrFolderSIgnoredFilesAreNotRemovedAndThisCannotBeUndone",
       { count },
     ),
-    positiveText: tr("永久删除", "Delete permanently"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.deletePermanently"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
@@ -2303,9 +2391,9 @@ async function confirmCleanUntracked(): Promise<void> {
         if (selectedPath && !nextSnapshot.status.entries.some((entry) => entry.path === selectedPath)) {
           clearDiffSelection();
         }
-        message.success(tr("未跟踪文件已清理。", "Untracked files cleaned."));
+        message.success(t("workspace.controller.untrackedFilesCleaned"));
       } catch (error) {
-        reportError(error, tr("清理未跟踪文件失败", "Could not clean untracked files"));
+        reportError(error, t("workspace.controller.couldNotCleanUntrackedFiles"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2326,7 +2414,7 @@ function openExternalEditorModal(): void {
 async function saveExternalEditor(): Promise<void> {
   const executable = externalEditorForm.executable.trim();
   if (!executable) {
-    message.warning(tr("请输入外部编辑器的绝对可执行文件路径。", "Enter the external editor's absolute executable path."));
+    message.warning(t("workspace.controller.enterTheExternalEditorSAbsoluteExecutablePath"));
     return;
   }
   const editorArguments = externalEditorForm.arguments
@@ -2337,9 +2425,9 @@ async function saveExternalEditor(): Promise<void> {
   try {
     externalEditor.value = await api.saveExternalEditor({ executable, arguments: editorArguments });
     externalEditorModalShown.value = false;
-    message.success(tr("外部编辑器已保存。", "External editor saved."));
+    message.success(t("workspace.controller.externalEditorSaved"));
   } catch (error) {
-    reportError(error, tr("保存外部编辑器失败", "Could not save external editor"));
+    reportError(error, t("workspace.controller.couldNotSaveExternalEditor"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2347,21 +2435,19 @@ async function saveExternalEditor(): Promise<void> {
 
 function confirmClearExternalEditor(): void {
   dialog.warning({
-    title: tr("清除外部编辑器", "Clear external editor"),
-    content: tr(
-      "清除应用保存的外部编辑器配置？这不会修改系统、Git 或编辑器本身的设置。",
-      "Clear the external editor configuration saved by this app? This does not change system, Git, or editor settings.",
+    title: t("workspace.controller.clearExternalEditor"),
+    content: t("workspace.controller.clearTheExternalEditorConfigurationSavedByThisAppThisDoesNotChangeSystemGitOrEditorSettings",
     ),
-    positiveText: tr("清除", "Clear"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.clear"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         externalEditor.value = await api.saveExternalEditor(null);
         externalEditorModalShown.value = false;
-        message.success(tr("外部编辑器配置已清除。", "External editor configuration cleared."));
+        message.success(t("workspace.controller.externalEditorConfigurationCleared"));
       } catch (error) {
-        reportError(error, tr("清除外部编辑器失败", "Could not clear external editor"));
+        reportError(error, t("workspace.controller.couldNotClearExternalEditor"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2379,14 +2465,12 @@ async function openConflictedFilesInExternalEditor(): Promise<void> {
   try {
     const paths = await api.openConflictedFilesInExternalEditor(activeRepositoryPath.value);
     message.info(
-      tr(
-        "已在外部编辑器中打开 {count} 个冲突文件。完成后回到这里刷新、暂存并继续操作。",
-        "Opened {count} conflicted file(s) in the external editor. When finished, return here to refresh, stage, and continue.",
+      t("workspace.controller.openedCountConflictedFileSInTheExternalEditorWhenFinishedReturnHereToRefreshStageAndContinue",
         { count: paths.length },
       ),
     );
   } catch (error) {
-    reportError(error, tr("打开外部编辑器失败", "Could not open external editor"));
+    reportError(error, t("workspace.controller.couldNotOpenExternalEditor"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2401,7 +2485,7 @@ async function setAmendLastCommit(value: boolean): Promise<void> {
     return;
   }
   if (!canAmendLatestCommit.value) {
-    message.warning(tr("当前分支还没有可修改的提交。", "This branch has no commit to amend yet."));
+    message.warning(t("workspace.controller.thisBranchHasNoCommitToAmendYet"));
     return;
   }
   amendLastCommit.value = true;
@@ -2412,7 +2496,7 @@ async function setAmendLastCommit(value: boolean): Promise<void> {
 async function commitChanges(): Promise<void> {
   if (!activeRepositoryPath.value) return;
   if (!commitMessage.value.trim()) {
-    message.warning(tr("请输入提交说明。", "Enter a commit message."));
+    message.warning(t("workspace.controller.enterACommitMessage"));
     return;
   }
   mutationBusy.value = true;
@@ -2425,9 +2509,9 @@ async function commitChanges(): Promise<void> {
     const amended = amendLastCommit.value;
     amendLastCommit.value = false;
     await loadHistory();
-    message.success(amended ? tr("最近一次提交已修改。", "Latest commit amended.") : tr("提交已创建。", "Commit created."));
+    message.success(amended ? t("workspace.controller.latestCommitAmended") : t("workspace.controller.commitCreated"));
   } catch (error) {
-    reportError(error, tr("提交失败", "Commit failed"));
+    reportError(error, t("workspace.controller.commitFailed"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2438,7 +2522,7 @@ function requestBranchSwitch(
   execute: (stashLocalChanges: boolean) => Promise<void>,
 ): void {
   if (snapshot.value?.operation || conflictedChanges.value.length) {
-    message.warning(tr("请先完成或中止当前 Git 操作，再切换分支。", "Finish or abort the current Git operation before switching branches."));
+    message.warning(t("workspace.controller.finishOrAbortTheCurrentGitOperationBeforeSwitchingBranches"));
     return;
   }
   const changeCount = snapshot.value?.status.entries.length ?? 0;
@@ -2447,10 +2531,8 @@ function requestBranchSwitch(
     return;
   }
   const branchSwitchDialog = dialog.warning({
-    title: tr("切换分支前暂存改动？", "Stash changes before switching?"),
-    content: tr(
-      "当前有 {count} 个未提交改动，即将切换到 {branch}。暂存后切换会保存已暂存、未暂存和未跟踪文件；直接切换会保留它们，但若会覆盖文件，Git 会拒绝切换。",
-      "There are {count} uncommitted change(s) before switching to {branch}. Stash and switch saves staged, unstaged, and untracked files; switch directly keeps them, but Git refuses if a file would be overwritten.",
+    title: t("workspace.controller.stashChangesBeforeSwitching"),
+    content: t("workspace.controller.thereAreCountUncommittedChangeSBeforeSwitchingToBranchStashAndSwitchSavesStagedUnstagedAndUntrac",
       { count: changeCount, branch: target },
     ),
     closable: true,
@@ -2458,7 +2540,7 @@ function requestBranchSwitch(
       h(
         NButton,
         { onClick: () => branchSwitchDialog.destroy() },
-        { default: () => tr("取消", "Cancel") },
+        { default: () => t("workspace.controller.cancel") },
       ),
       h(
         NButton,
@@ -2469,7 +2551,7 @@ function requestBranchSwitch(
             void execute(false);
           },
         },
-        { default: () => tr("直接切换", "Switch directly") },
+        { default: () => t("workspace.controller.switchDirectly") },
       ),
       h(
         NButton,
@@ -2480,7 +2562,7 @@ function requestBranchSwitch(
             void execute(true);
           },
         },
-        { default: () => tr("暂存后切换", "Stash and switch") },
+        { default: () => t("workspace.controller.stashAndSwitch") },
       ),
     ],
   });
@@ -2499,15 +2581,15 @@ async function switchLocalBranch(branch: BranchInfo, stashLocalChanges: boolean)
     if (stashLocalChanges) await loadHistory();
     message.success(
       stashLocalChanges
-        ? tr("改动已暂存，并切换到 {branch}。", "Changes stashed and switched to {branch}.", { branch: branch.name })
-        : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branch.name }),
+        ? t("workspace.controller.changesStashedAndSwitchedToBranch", { branch: branch.name })
+        : t("workspace.controller.switchedToBranch", { branch: branch.name }),
     );
   } catch (error) {
     await reconcileSnapshotAfterMutationError(repositoryPath);
     if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
       await loadHistory().catch(() => undefined);
     }
-    reportError(error, tr("切换分支失败", "Could not switch branch"));
+    reportError(error, t("workspace.controller.couldNotSwitchBranch"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2537,15 +2619,15 @@ async function switchRemoteBranch(remoteBranch: RemoteBranchInfo, stashLocalChan
     const branchLabel = `${remoteBranch.remoteName}/${remoteBranch.name}`;
     message.success(
       stashLocalChanges
-        ? tr("改动已暂存，并切换到 {branch}。", "Changes stashed and switched to {branch}.", { branch: branchLabel })
-        : tr("已切换到 {branch}。", "Switched to {branch}.", { branch: branchLabel }),
+        ? t("workspace.controller.changesStashedAndSwitchedToBranch", { branch: branchLabel })
+        : t("workspace.controller.switchedToBranch", { branch: branchLabel }),
     );
   } catch (error) {
     await reconcileSnapshotAfterMutationError(repositoryPath);
     if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
       await loadHistory().catch(() => undefined);
     }
-    reportError(error, tr("切换远程分支失败", "Could not switch remote branch"));
+    reportError(error, t("workspace.controller.couldNotSwitchRemoteBranch"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2563,7 +2645,7 @@ function checkoutRemoteBranch(remoteBranch: RemoteBranchInfo): void {
 
 async function createBranch(): Promise<void> {
   if (!activeRepositoryPath.value || !branchForm.name.trim()) {
-    message.warning(tr("请输入分支名称。", "Enter a branch name."));
+    message.warning(t("workspace.controller.enterABranchName"));
     return;
   }
   const repositoryPath = activeRepositoryPath.value;
@@ -2576,10 +2658,10 @@ async function createBranch(): Promise<void> {
     branchModalShown.value = false;
     branchForm.name = "";
     branchForm.checkout = true;
-    message.success(tr("分支已创建。", "Branch created."));
+    message.success(t("workspace.controller.branchCreated"));
   } catch (error) {
     await reconcileSnapshotAfterMutationError(repositoryPath);
-    reportError(error, tr("创建分支失败", "Could not create branch"));
+    reportError(error, t("workspace.controller.couldNotCreateBranch"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2593,7 +2675,7 @@ function openRenameBranchModal(branch: BranchInfo): void {
 
 async function renameBranch(): Promise<void> {
   if (!activeRepositoryPath.value || !renameBranchForm.newName.trim()) {
-    message.warning(tr("请输入新的分支名称。", "Enter a new branch name."));
+    message.warning(t("workspace.controller.enterANewBranchName"));
     return;
   }
   mutationBusy.value = true;
@@ -2606,9 +2688,9 @@ async function renameBranch(): Promise<void> {
       ),
     );
     renameBranchModalShown.value = false;
-    message.success(tr("分支已重命名。", "Branch renamed."));
+    message.success(t("workspace.controller.branchRenamed"));
   } catch (error) {
-    reportError(error, tr("重命名分支失败", "Could not rename branch"));
+    reportError(error, t("workspace.controller.couldNotRenameBranch"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2617,21 +2699,19 @@ async function renameBranch(): Promise<void> {
 function confirmDeleteBranch(branch: BranchInfo): void {
   if (!activeRepositoryPath.value || branch.isCurrent) return;
   dialog.warning({
-    title: tr("删除分支", "Delete branch"),
-    content: tr(
-      "删除本地分支 {branch}？未合并的分支会被 Git 拒绝，以防止意外丢失提交。",
-      "Delete local branch {branch}? Git will reject an unmerged branch to prevent accidental loss of commits.",
+    title: t("workspace.controller.deleteBranch"),
+    content: t("workspace.controller.deleteLocalBranchBranchGitWillRejectAnUnmergedBranchToPreventAccidentalLossOfCommits",
       { branch: branch.name },
     ),
-    positiveText: tr("删除", "Delete"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.delete"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         applySnapshot(await api.deleteBranch(activeRepositoryPath.value!, branch.name, false));
-        message.success(tr("分支已删除。", "Branch deleted."));
+        message.success(t("workspace.controller.branchDeleted"));
       } catch (error) {
-        reportError(error, tr("删除分支失败", "Could not delete branch"));
+        reportError(error, t("workspace.controller.couldNotDeleteBranch"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2642,22 +2722,20 @@ function confirmDeleteBranch(branch: BranchInfo): void {
 function confirmMergeBranch(branch: BranchInfo): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("合并分支", "Merge branch"),
-    content: tr(
-      "将 {branch} 合并到当前分支 {current}？如有冲突，Git 会保留工作区供你处理。",
-      "Merge {branch} into the current branch {current}? If conflicts occur, Git leaves the working tree available for resolution.",
+    title: t("workspace.controller.mergeBranch"),
+    content: t("workspace.controller.mergeBranchIntoTheCurrentBranchCurrentIfConflictsOccurGitLeavesTheWorkingTreeAvailableForResolut",
       { branch: branch.name, current: currentBranch.value },
     ),
-    positiveText: tr("合并", "Merge"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.merge"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         await api.mergeBranch(activeRepositoryPath.value!, branch.name);
         await refreshSnapshot();
-        message.success(tr("已合并 {branch}。", "Merged {branch}.", { branch: branch.name }));
+        message.success(t("workspace.controller.mergedBranch", { branch: branch.name }));
       } catch (error) {
-        reportError(error, tr("合并分支失败", "Could not merge branch"));
+        reportError(error, t("workspace.controller.couldNotMergeBranch"));
         await refreshAfterGitConflict(error);
       } finally {
         mutationBusy.value = false;
@@ -2673,7 +2751,7 @@ function openRebaseModal(): void {
 
 async function startRebase(): Promise<void> {
   if (!activeRepositoryPath.value || !rebaseForm.base) {
-    message.warning(tr("请选择要变基到的本地分支。", "Select a local branch to rebase onto."));
+    message.warning(t("workspace.controller.selectALocalBranchToRebaseOnto"));
     return;
   }
   mutationBusy.value = true;
@@ -2681,9 +2759,9 @@ async function startRebase(): Promise<void> {
     applySnapshot(await api.startRebase(activeRepositoryPath.value, rebaseForm.base));
     rebaseModalShown.value = false;
     await loadHistory();
-    message.success(snapshot.value?.operation ? tr("变基已开始；完成冲突处理后可继续。", "Rebase started; continue after resolving any conflicts.") : tr("变基已完成。", "Rebase completed."));
+    message.success(snapshot.value?.operation ? t("workspace.controller.rebaseStartedContinueAfterResolvingAnyConflicts") : t("workspace.controller.rebaseCompleted"));
   } catch (error) {
-    reportError(error, tr("变基失败", "Could not rebase branch"));
+    reportError(error, t("workspace.controller.couldNotRebaseBranch"));
     await refreshAfterGitConflict(error);
   } finally {
     mutationBusy.value = false;
@@ -2697,7 +2775,7 @@ function openCherryPickModal(revision = ""): void {
 
 async function cherryPickCommits(): Promise<void> {
   if (!activeRepositoryPath.value || !cherryPickForm.revision.trim()) {
-    message.warning(tr("请输入要拣选的提交 SHA 或引用。", "Enter a commit SHA or revision to cherry-pick."));
+    message.warning(t("workspace.controller.enterACommitShaOrRevisionToCherryPick"));
     return;
   }
   mutationBusy.value = true;
@@ -2705,9 +2783,9 @@ async function cherryPickCommits(): Promise<void> {
     applySnapshot(await api.cherryPickCommits(activeRepositoryPath.value, [cherryPickForm.revision.trim()]));
     cherryPickModalShown.value = false;
     await loadHistory();
-    message.success(tr("提交已拣选。", "Commit cherry-picked."));
+    message.success(t("workspace.controller.commitCherryPicked"));
   } catch (error) {
-    reportError(error, tr("拣选提交失败", "Could not cherry-pick commit"));
+    reportError(error, t("workspace.controller.couldNotCherryPickCommit"));
     await refreshAfterGitConflict(error);
   } finally {
     mutationBusy.value = false;
@@ -2717,7 +2795,7 @@ async function cherryPickCommits(): Promise<void> {
 async function continueGitOperation(): Promise<void> {
   if (!activeRepositoryPath.value || !snapshot.value?.operation) return;
   if (snapshot.value.operation.hasConflicts || conflictedChanges.value.length) {
-    message.warning(tr("请先解决并暂存全部冲突文件。", "Resolve and stage all conflicted files first."));
+    message.warning(t("workspace.controller.resolveAndStageAllConflictedFilesFirst"));
     return;
   }
   const operation = snapshot.value.operation;
@@ -2725,9 +2803,9 @@ async function continueGitOperation(): Promise<void> {
   try {
     applySnapshot(await api.continueGitOperation(activeRepositoryPath.value, operation.kind));
     await loadHistory();
-    message.success(tr("Git 操作已继续。", "Git operation continued."));
+    message.success(t("workspace.controller.gitOperationContinued"));
   } catch (error) {
-    reportError(error, tr("继续 Git 操作失败", "Could not continue Git operation"));
+    reportError(error, t("workspace.controller.couldNotContinueGitOperation"));
     await refreshAfterGitConflict(error);
   } finally {
     mutationBusy.value = false;
@@ -2738,22 +2816,20 @@ function confirmAbortGitOperation(): void {
   if (!activeRepositoryPath.value || !snapshot.value?.operation) return;
   const operation = snapshot.value.operation;
   dialog.error({
-    title: tr("中止 Git 操作", "Abort Git operation"),
-    content: tr(
-      "中止当前 {operation}？Git 会尝试恢复该操作开始前的状态，冲突解决中的未提交改动可能会丢失。",
-      "Abort the current {operation}? Git will try to restore the state from before it started; unresolved conflict work may be lost.",
+    title: t("workspace.controller.abortGitOperation"),
+    content: t("workspace.controller.abortTheCurrentOperationGitWillTryToRestoreTheStateFromBeforeItStartedUnresolvedConflictWorkMayB",
       { operation: gitOperationLabel(operation.kind) },
     ),
-    positiveText: tr("中止操作", "Abort operation"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.abortOperation"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         applySnapshot(await api.abortGitOperation(activeRepositoryPath.value!, operation.kind));
         await loadHistory();
-        message.success(tr("Git 操作已中止。", "Git operation aborted."));
+        message.success(t("workspace.controller.gitOperationAborted"));
       } catch (error) {
-        reportError(error, tr("中止 Git 操作失败", "Could not abort Git operation"));
+        reportError(error, t("workspace.controller.couldNotAbortGitOperation"));
         await refreshAfterGitConflict(error);
       } finally {
         mutationBusy.value = false;
@@ -2773,8 +2849,8 @@ async function addWorktree(): Promise<void> {
   if (!activeRepositoryPath.value || !worktreeForm.path.trim() || !worktreeForm.branch.trim()) {
     message.warning(
       worktreeForm.mode === "new"
-        ? tr("请输入新工作树目录和新分支名称。", "Enter a new worktree folder and branch name.")
-        : tr("请输入工作树目录并选择现有分支。", "Enter a worktree folder and select an existing branch."),
+        ? t("workspace.controller.enterANewWorktreeFolderAndBranchName")
+        : t("workspace.controller.enterAWorktreeFolderAndSelectAnExistingBranch"),
     );
     return;
   }
@@ -2788,9 +2864,9 @@ async function addWorktree(): Promise<void> {
     );
     worktreeModalShown.value = false;
     await loadRepositories();
-    message.success(tr("工作树已创建，可从列表打开。", "Worktree created. You can open it from the list."));
+    message.success(t("workspace.controller.worktreeCreatedYouCanOpenItFromTheList"));
   } catch (error) {
-    reportError(error, tr("创建工作树失败", "Could not create worktree"));
+    reportError(error, t("workspace.controller.couldNotCreateWorktree"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2799,22 +2875,20 @@ async function addWorktree(): Promise<void> {
 function confirmRemoveWorktree(worktree: WorktreeInfo): void {
   if (!activeRepositoryPath.value || worktree.isMain || worktree.path === snapshot.value?.repository.path) return;
   dialog.error({
-    title: tr("移除工作树", "Remove worktree"),
-    content: tr(
-      "移除工作树 {path}？该目录及其中未提交的改动会被删除；若工作树不干净，Git 会拒绝此操作。",
-      "Remove worktree {path}? Its directory and uncommitted changes will be deleted; Git rejects the operation if the worktree is not clean.",
+    title: t("workspace.controller.removeWorktree"),
+    content: t("workspace.controller.removeWorktreePathItsDirectoryAndUncommittedChangesWillBeDeletedGitRejectsTheOperationIfTheWorkt",
       { path: worktree.path },
     ),
-    positiveText: tr("移除工作树", "Remove worktree"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.removeWorktree"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         worktrees.value = await api.removeWorktree(activeRepositoryPath.value!, worktree.path, false);
         await loadRepositories();
-        message.success(tr("工作树已移除。", "Worktree removed."));
+        message.success(t("workspace.controller.worktreeRemoved"));
       } catch (error) {
-        reportError(error, tr("移除工作树失败", "Could not remove worktree"));
+        reportError(error, t("workspace.controller.couldNotRemoveWorktree"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2825,20 +2899,18 @@ function confirmRemoveWorktree(worktree: WorktreeInfo): void {
 function confirmUpdateSubmodules(): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("初始化或更新子模块", "Initialize or update submodules"),
-    content: tr(
-      "按仓库当前配置递归初始化或更新全部子模块？这可能会从子模块远程仓库下载内容。",
-      "Initialize or update all submodules recursively using this repository's current configuration? This may download content from submodule remotes.",
+    title: t("workspace.controller.initializeOrUpdateSubmodules"),
+    content: t("workspace.controller.initializeOrUpdateAllSubmodulesRecursivelyUsingThisRepositorySCurrentConfigurationThisMayDownloa",
     ),
-    positiveText: tr("初始化并更新", "Initialize and update"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.initializeAndUpdate"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         submodules.value = await api.updateSubmodules(activeRepositoryPath.value!, true, true);
-        message.success(tr("子模块已初始化或更新。", "Submodules initialized or updated."));
+        message.success(t("workspace.controller.submodulesInitializedOrUpdated"));
       } catch (error) {
-        reportError(error, tr("更新子模块失败", "Could not update submodules"));
+        reportError(error, t("workspace.controller.couldNotUpdateSubmodules"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2851,9 +2923,9 @@ async function initializeLfs(): Promise<void> {
   mutationBusy.value = true;
   try {
     lfsStatus.value = await api.installLfs(activeRepositoryPath.value);
-    message.success(tr("Git LFS 已在此仓库初始化。", "Git LFS initialized for this repository."));
+    message.success(t("workspace.controller.gitLfsInitializedForThisRepository"));
   } catch (error) {
-    reportError(error, tr("初始化 Git LFS 失败", "Could not initialize Git LFS"));
+    reportError(error, t("workspace.controller.couldNotInitializeGitLfs"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2866,7 +2938,7 @@ function openLfsTrackModal(): void {
 
 async function trackLfsPattern(): Promise<void> {
   if (!activeRepositoryPath.value || !lfsTrackForm.pattern.trim()) {
-    message.warning(tr("请输入要由 Git LFS 跟踪的文件模式。", "Enter a file pattern for Git LFS to track."));
+    message.warning(t("workspace.controller.enterAFilePatternForGitLfsToTrack"));
     return;
   }
   mutationBusy.value = true;
@@ -2874,9 +2946,9 @@ async function trackLfsPattern(): Promise<void> {
     applySnapshot(await api.trackLfsPattern(activeRepositoryPath.value, lfsTrackForm.pattern.trim()));
     lfsTrackModalShown.value = false;
     await loadLfsStatus();
-    message.success(tr("Git LFS 规则已写入 .gitattributes，请审查并提交该改动。", "The Git LFS rule was written to .gitattributes. Review and commit that change."));
+    message.success(t("workspace.controller.theGitLfsRuleWasWrittenToGitattributesReviewAndCommitThatChange"));
   } catch (error) {
-    reportError(error, tr("添加 Git LFS 规则失败", "Could not add Git LFS rule"));
+    reportError(error, t("workspace.controller.couldNotAddGitLfsRule"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2901,9 +2973,9 @@ async function stashChanges(): Promise<void> {
     );
     stashModalShown.value = false;
     await loadHistory();
-    message.success(tr("改动已保存到暂存栈。", "Changes saved to stash."));
+    message.success(t("workspace.controller.changesSavedToStash"));
   } catch (error) {
-    reportError(error, tr("保存暂存栈失败", "Could not stash changes"));
+    reportError(error, t("workspace.controller.couldNotStashChanges"));
   } finally {
     mutationBusy.value = false;
   }
@@ -2912,22 +2984,20 @@ async function stashChanges(): Promise<void> {
 function confirmPopStash(stash: StashEntry): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("恢复暂存栈", "Pop stash"),
-    content: tr(
-      "恢复 {reference} 到当前工作区并从暂存栈移除？若产生冲突，Git 会保留工作区供你处理。",
-      "Apply {reference} to the current working tree and remove it from the stash? If conflicts occur, Git leaves the working tree available for resolution.",
+    title: t("workspace.controller.popStash"),
+    content: t("workspace.controller.applyReferenceToTheCurrentWorkingTreeAndRemoveItFromTheStashIfConflictsOccurGitLeavesTheWorkingT",
       { reference: stash.reference },
     ),
-    positiveText: tr("恢复", "Pop"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.pop"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         applySnapshot(await api.popStash(activeRepositoryPath.value!, stash.reference, stash.commitId));
         await loadHistory();
-        message.success(tr("暂存栈已恢复。", "Stash restored."));
+        message.success(t("workspace.controller.stashRestored"));
       } catch (error) {
-        reportError(error, tr("恢复暂存栈失败", "Could not pop stash"));
+        reportError(error, t("workspace.controller.couldNotPopStash"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2938,22 +3008,20 @@ function confirmPopStash(stash: StashEntry): void {
 function confirmDropStash(stash: StashEntry): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("删除暂存栈", "Drop stash"),
-    content: tr(
-      "永久删除 {reference}？此操作不能撤销。",
-      "Permanently delete {reference}? This cannot be undone.",
+    title: t("workspace.controller.dropStash"),
+    content: t("workspace.controller.permanentlyDeleteReferenceThisCannotBeUndone",
       { reference: stash.reference },
     ),
-    positiveText: tr("删除", "Drop"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.drop"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         await api.dropStash(activeRepositoryPath.value!, stash.reference, stash.commitId);
         await loadHistory();
-        message.success(tr("暂存栈已删除。", "Stash dropped."));
+        message.success(t("workspace.controller.stashDropped"));
       } catch (error) {
-        reportError(error, tr("删除暂存栈失败", "Could not drop stash"));
+        reportError(error, t("workspace.controller.couldNotDropStash"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2965,27 +3033,25 @@ function confirmResetCommit(commit: CommitSummary, mode: ResetMode): void {
   if (!activeRepositoryPath.value) return;
   const modeLabel =
     mode === "soft"
-      ? tr("Soft：保留暂存区和工作区", "Soft: keep index and working tree")
+      ? t("workspace.controller.softKeepIndexAndWorkingTree")
       : mode === "mixed"
-        ? tr("Mixed：保留工作区，取消暂存", "Mixed: keep working tree, unstage changes")
-        : tr("Hard：丢弃暂存区和工作区改动", "Hard: discard index and working-tree changes");
+        ? t("workspace.controller.mixedKeepWorkingTreeUnstageChanges")
+        : t("workspace.controller.hardDiscardIndexAndWorkingTreeChanges");
   dialog.error({
-    title: tr("重置分支", "Reset branch"),
-    content: tr(
-      "将当前分支重置到 {commit}？{mode}。Hard reset 可能永久丢失未提交改动。",
-      "Reset the current branch to {commit}? {mode}. A hard reset can permanently discard uncommitted changes.",
+    title: t("workspace.controller.resetBranch"),
+    content: t("workspace.controller.resetTheCurrentBranchToCommitModeAHardResetCanPermanentlyDiscardUncommittedChanges",
       { commit: commit.shortSha, mode: modeLabel },
     ),
-    positiveText: tr("确认重置", "Reset branch"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.confirmResetBranch"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         applySnapshot(await api.resetBranch(activeRepositoryPath.value!, commit.sha, mode));
         await loadHistory();
-        message.success(tr("分支已重置。", "Branch reset."));
+        message.success(t("workspace.controller.branchReset"));
       } catch (error) {
-        reportError(error, tr("重置分支失败", "Could not reset branch"));
+        reportError(error, t("workspace.controller.couldNotResetBranch"));
       } finally {
         mutationBusy.value = false;
       }
@@ -2995,7 +3061,7 @@ function confirmResetCommit(commit: CommitSummary, mode: ResetMode): void {
 
 function openSquashModal(): void {
   if (commits.value.length < 3) {
-    message.warning(tr("至少需要三个提交，才能保留一个基线提交并压缩最近提交。", "At least three commits are needed to preserve a base commit while squashing recent commits."));
+    message.warning(t("workspace.controller.atLeastThreeCommitsAreNeededToPreserveABaseCommitWhileSquashingRecentCommits"));
     return;
   }
   squashForm.count = "2";
@@ -3007,7 +3073,7 @@ async function squashRecentCommits(): Promise<void> {
   if (!activeRepositoryPath.value) return;
   const count = Number(squashForm.count);
   if (!Number.isInteger(count) || count < 2 || count >= commits.value.length || !squashForm.message.trim()) {
-    message.warning(tr("请输入有效的提交数量（至少 2，且保留一个基线提交）和提交说明。", "Enter a valid count (at least 2 while keeping a base commit) and commit message."));
+    message.warning(t("workspace.controller.enterAValidCountAtLeast2WhileKeepingABaseCommitAndCommitMessage"));
     return;
   }
   mutationBusy.value = true;
@@ -3015,9 +3081,9 @@ async function squashRecentCommits(): Promise<void> {
     applySnapshot(await api.squashRecentCommits(activeRepositoryPath.value, count, squashForm.message.trim()));
     squashModalShown.value = false;
     await loadHistory();
-    message.success(tr("最近提交已压缩。", "Recent commits squashed."));
+    message.success(t("workspace.controller.recentCommitsSquashed"));
   } catch (error) {
-    reportError(error, tr("压缩提交失败", "Could not squash commits"));
+    reportError(error, t("workspace.controller.couldNotSquashCommits"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3026,22 +3092,20 @@ async function squashRecentCommits(): Promise<void> {
 function confirmRevertCommit(commit: CommitSummary): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("还原提交", "Revert commit"),
-    content: tr(
-      "创建一个新的提交来还原 {commit}？这不会改写现有历史。",
-      "Create a new commit that reverts {commit}? This does not rewrite existing history.",
+    title: t("workspace.controller.revertCommit"),
+    content: t("workspace.controller.createANewCommitThatRevertsCommitThisDoesNotRewriteExistingHistory",
       { commit: commit.shortSha },
     ),
-    positiveText: tr("创建还原提交", "Create revert commit"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.createRevertCommit"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         applySnapshot(await api.revertCommit(activeRepositoryPath.value!, commit.sha));
         await loadHistory();
-        message.success(tr("已创建还原提交。", "Revert commit created."));
+        message.success(t("workspace.controller.revertCommitCreated"));
       } catch (error) {
-        reportError(error, tr("还原提交失败", "Could not revert commit"));
+        reportError(error, t("workspace.controller.couldNotRevertCommit"));
       } finally {
         mutationBusy.value = false;
       }
@@ -3060,14 +3124,14 @@ function openTagModal(target = ""): void {
 
 async function createTag(): Promise<void> {
   if (!tagForm.name.trim()) {
-    message.warning(tr("请输入标签名称。", "Enter a tag name."));
+    message.warning(t("workspace.controller.enterATagName"));
     return;
   }
   const repositoryPath = tagRepositoryPath.value;
   if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) {
     tagModalShown.value = false;
     tagRepositoryPath.value = null;
-    message.warning(tr("仓库已切换，请重新选择要创建标签的提交。", "The repository changed. Select the tag target again."));
+    message.warning(t("workspace.controller.theRepositoryChangedSelectTheTagTargetAgain"));
     return;
   }
   mutationBusy.value = true;
@@ -3082,11 +3146,11 @@ async function createTag(): Promise<void> {
     tagRepositoryPath.value = null;
     if (activeRepositoryPath.value === repositoryPath) {
       await refreshSnapshot();
-      message.success(tr("标签已创建。", "Tag created."));
+      message.success(t("workspace.controller.tagCreated"));
     }
   } catch (error) {
     if (activeRepositoryPath.value === repositoryPath) {
-      reportError(error, tr("创建标签失败", "Could not create tag"));
+      reportError(error, t("workspace.controller.couldNotCreateTag"));
     }
   } finally {
     mutationBusy.value = false;
@@ -3096,18 +3160,18 @@ async function createTag(): Promise<void> {
 function confirmDeleteTag(name: string): void {
   if (!activeRepositoryPath.value) return;
   dialog.warning({
-    title: tr("删除本地标签", "Delete local tag"),
-    content: tr("删除本地标签 {tag}？这不会删除远程标签。", "Delete local tag {tag}? This does not delete a remote tag.", { tag: name }),
-    positiveText: tr("删除", "Delete"),
-    negativeText: tr("取消", "Cancel"),
+    title: t("workspace.controller.deleteLocalTag"),
+    content: t("workspace.controller.deleteLocalTagTagThisDoesNotDeleteARemoteTag", { tag: name }),
+    positiveText: t("workspace.controller.delete"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         await api.deleteTag(activeRepositoryPath.value!, name);
         await refreshSnapshot();
-        message.success(tr("标签已删除。", "Tag deleted."));
+        message.success(t("workspace.controller.tagDeleted"));
       } catch (error) {
-        reportError(error, tr("删除标签失败", "Could not delete tag"));
+        reportError(error, t("workspace.controller.couldNotDeleteTag"));
       } finally {
         mutationBusy.value = false;
       }
@@ -3125,7 +3189,7 @@ function openRemoteEditor(remote?: RemoteProfile): void {
 
 async function saveRemote(): Promise<void> {
   if (!activeRepositoryPath.value || !remoteForm.name.trim() || !remoteForm.fetchUrl.trim()) {
-    message.warning(tr("请输入 remote 名称和 fetch 地址。", "Enter a remote name and fetch URL."));
+    message.warning(t("workspace.controller.enterARemoteNameAndFetchUrl"));
     return;
   }
 
@@ -3146,9 +3210,9 @@ async function saveRemote(): Promise<void> {
     }
     remoteModalShown.value = false;
     await refreshSnapshot();
-    message.success(tr("远程仓库已保存。", "Remote saved."));
+    message.success(t("workspace.controller.remoteSaved"));
   } catch (error) {
-    reportError(error, tr("保存远程仓库失败", "Could not save remote"));
+    reportError(error, t("workspace.controller.couldNotSaveRemote"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3158,19 +3222,19 @@ function confirmRemoveRemote(): void {
   if (!activeRepositoryPath.value || !editedRemoteName.value) return;
   const name = editedRemoteName.value;
   dialog.warning({
-    title: tr("移除远程仓库", "Remove remote"),
-    content: tr("移除远程仓库 {remote}？关联的账号绑定也会被删除。", "Remove remote {remote}? Its associated account binding will also be removed.", { remote: name }),
-    positiveText: tr("移除", "Remove"),
-    negativeText: tr("取消", "Cancel"),
+    title: t("workspace.controller.removeRemote"),
+    content: t("workspace.controller.removeRemoteRemoteItsAssociatedAccountBindingWillAlsoBeRemoved", { remote: name }),
+    positiveText: t("workspace.controller.remove"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         await api.removeRemote(activeRepositoryPath.value!, name);
         remoteModalShown.value = false;
         await refreshSnapshot();
-        message.success(tr("远程仓库已移除。", "Remote removed."));
+        message.success(t("workspace.controller.remoteRemoved"));
       } catch (error) {
-        reportError(error, tr("移除远程仓库失败", "Could not remove remote"));
+        reportError(error, t("workspace.controller.couldNotRemoveRemote"));
       } finally {
         mutationBusy.value = false;
       }
@@ -3187,18 +3251,18 @@ async function runNetworkAction(
   const remoteName = capturedTarget?.remoteName ?? activeRemote.value?.name;
   const selectionGeneration = capturedTarget?.selectionGeneration ?? repositorySelectionGeneration;
   if (!repositoryPath || !remoteName) {
-    message.warning(tr("请先选择一个 remote。", "Select a remote first."));
+    message.warning(t("workspace.controller.selectARemoteFirst"));
     return;
   }
   if (
     !repositorySelectionIsCurrent(repositoryPath, selectionGeneration) ||
     (capturedTarget && activeRemote.value?.name !== remoteName)
   ) {
-    message.warning(tr("仓库或 remote 已切换，请重新执行操作。", "The repository or remote changed. Start the operation again."));
+    message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
     return;
   }
   if (networkOperationsInFlight.has(repositoryPath)) {
-    message.warning(tr("已有网络操作正在进行，请等待完成。", "A network operation is already in progress. Wait for it to finish."));
+    message.warning(t("workspace.controller.aNetworkOperationIsAlreadyInProgressWaitForItToFinish"));
     return;
   }
   networkOperationsInFlight.add(repositoryPath);
@@ -3211,16 +3275,18 @@ async function runNetworkAction(
       : action === "pull"
         ? api.pullRemote(repositoryPath, remoteName)
         : api.pushRemote(repositoryPath, remoteName, forceWithLease));
-    const actionLabel =
-      action === "fetch"
-        ? tr("获取", "Fetch")
-        : action === "pull"
-          ? tr("拉取", "Pull")
-          : forceWithLease
-            ? tr("强制推送（带 lease）", "Force push with lease")
-            : tr("推送", "Push");
+    let actionLabel: string;
+    if (action === "fetch") {
+      actionLabel = t("workspace.controller.fetch");
+    } else if (action === "pull") {
+      actionLabel = t("workspace.controller.pull");
+    } else {
+      actionLabel = forceWithLease
+        ? t("workspace.controller.forcePushWithLease")
+        : t("workspace.controller.push");
+    }
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      message.success(tr("{action} 已完成。", "{action} completed.", { action: actionLabel }));
+      message.success(t("workspace.controller.actionCompleted", { action: actionLabel }));
       await refreshSnapshot();
     }
   } catch (error) {
@@ -3228,10 +3294,10 @@ async function runNetworkAction(
       reportError(
         error,
         action === "fetch"
-          ? tr("获取失败", "Fetch failed")
+          ? t("workspace.controller.fetchFailed")
           : action === "pull"
-            ? tr("拉取失败", "Pull failed")
-            : tr("推送失败", "Push failed"),
+            ? t("workspace.controller.pullFailed")
+            : t("workspace.controller.pushFailed"),
       );
     }
   } finally {
@@ -3250,14 +3316,12 @@ function confirmForcePush(): void {
     selectionGeneration: repositorySelectionGeneration,
   };
   dialog.error({
-    title: tr("强制推送（带 lease）", "Force push with lease"),
-    content: tr(
-      "向 {remote} 使用 force-with-lease 推送？它会改写远程分支历史，但在远程分支已被他人更新时会拒绝覆盖。请先确认团队协作约定。",
-      "Force-push to {remote} with lease? It rewrites remote branch history but refuses to overwrite a branch changed by someone else. Confirm your team workflow first.",
+    title: t("workspace.controller.forcePushWithLease"),
+    content: t("workspace.controller.forcePushToRemoteWithLeaseItRewritesRemoteBranchHistoryButRefusesToOverwriteABranchChangedBySome",
       { remote: target.remoteName },
     ),
-    positiveText: tr("强制推送", "Force push"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.forcePush"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: () => void runNetworkAction("push", true, target),
   });
 }
@@ -3278,11 +3342,11 @@ async function saveBinding(): Promise<void> {
   if (!snapshot.value || !bindingRemote.value || !bindingForm.endpointId) return;
   const selectedAccount = accounts.value.find((account) => account.id === bindingForm.accountId);
   if (bindingForm.accountId !== "auto" && (!selectedAccount || selectedAccount.endpointId !== bindingForm.endpointId)) {
-    message.warning(tr("请选择属于该代码托管 Endpoint 的账号。", "Select an account that belongs to this Git service endpoint."));
+    message.warning(t("workspace.controller.selectAnAccountThatBelongsToThisGitServiceEndpoint"));
     return;
   }
   if (selectedAccount && !supportsGitRemoteCredentials(selectedAccount)) {
-    message.warning(tr("指定账号绑定仅支持应用管理的 PAT。SSH agent 与系统 Git credential helper 会按 remote URL 自动处理，无需绑定账号。", "An account-bound remote supports only an app-managed PAT. SSH agent and the system Git credential helper work automatically by remote URL and need no account binding."));
+    message.warning(t("workspace.controller.anAccountBoundRemoteSupportsOnlyAnAppManagedPatSshAgentAndTheSystemGitCredentialHelperWorkAutoma"));
     return;
   }
   const binding: RemoteBinding = {
@@ -3296,9 +3360,9 @@ async function saveBinding(): Promise<void> {
     await api.saveRemoteBinding(binding);
     bindingDrawerShown.value = false;
     await refreshSnapshot();
-    message.success(tr("已保存 remote 账号绑定。下次网络操作将优先采用该绑定。", "Remote account binding saved. Future network operations will prefer it."));
+    message.success(t("workspace.controller.remoteAccountBindingSavedFutureNetworkOperationsWillPreferIt"));
   } catch (error) {
-    reportError(error, tr("保存绑定失败", "Could not save binding"));
+    reportError(error, t("workspace.controller.couldNotSaveBinding"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3306,11 +3370,11 @@ async function saveBinding(): Promise<void> {
 
 async function saveAccount(): Promise<void> {
   if (accountUsesPat.value && !accountFormCapabilities.value.patKeychain) {
-    message.warning(tr("此 Endpoint 尚未实现应用钥匙串 PAT。请使用已支持的认证方式。", "This endpoint does not support an app-managed PAT. Choose a supported authentication method."));
+    message.warning(t("workspace.controller.thisEndpointDoesNotSupportAnAppManagedPatChooseASupportedAuthenticationMethod"));
     return;
   }
   if (!accountForm.login.trim() || (accountUsesPat.value && !accountForm.token.trim())) {
-    message.warning(accountUsesPat.value ? tr("请输入登录名和个人访问令牌。", "Enter an account login and personal access token.") : tr("请输入账号登录名。", "Enter the account login."));
+    message.warning(accountUsesPat.value ? t("workspace.controller.enterAnAccountLoginAndPersonalAccessToken") : t("workspace.controller.enterTheAccountLogin"));
     return;
   }
   // Read the token once. It is immediately cleared from reactive UI state and is never logged or displayed.
@@ -3337,12 +3401,12 @@ async function saveAccount(): Promise<void> {
     accountForm.displayName = "";
     message.success(
       accountUsesPat.value
-        ? tr("账号元数据已保存，PAT 已交给系统钥匙串。应用不会再次读取或展示它。", "Account metadata was saved and the PAT was sent to the system keychain. It will not be shown again.")
-        : tr("账号资料已保存。网络 Git 操作会按 remote 绑定使用此认证方式。", "Account profile saved. Network Git operations will use this method according to the remote binding."),
+        ? t("workspace.controller.accountMetadataWasSavedAndThePatWasSentToTheSystemKeychainItWillNotBeShownAgain")
+        : t("workspace.controller.accountProfileSavedNetworkGitOperationsWillUseThisMethodAccordingToTheRemoteBinding"),
     );
     void refreshAccountStatuses(true);
   } catch (error) {
-    reportError(error, tr("添加账号失败", "Could not add account"));
+    reportError(error, t("workspace.controller.couldNotAddAccount"));
   } finally {
     accountForm.token = "";
     mutationBusy.value = false;
@@ -3367,7 +3431,7 @@ async function saveCustomEndpoint(): Promise<void> {
     !endpointForm.gitHost.trim() ||
     (requiresPlatformUrls && (!endpointForm.webUrl.trim() || !endpointForm.apiUrl.trim()))
   ) {
-    message.warning(tr("请填写完整的自托管 Endpoint 信息。", "Complete the required Git service endpoint details."));
+    message.warning(t("workspace.controller.completeTheRequiredGitServiceEndpointDetails"));
     return;
   }
   mutationBusy.value = true;
@@ -3384,9 +3448,9 @@ async function saveCustomEndpoint(): Promise<void> {
     const index = endpoints.value.findIndex((item) => item.id === endpoint.id);
     endpoints.value = index === -1 ? [...endpoints.value, endpoint] : endpoints.value.map((item, itemIndex) => (itemIndex === index ? endpoint : item));
     customEndpointModalShown.value = false;
-    message.success(tr("自托管 Endpoint 已保存；现在可为 remote 选择它。", "Git service endpoint saved. You can now select it for a remote."));
+    message.success(t("workspace.controller.gitServiceEndpointSavedYouCanNowSelectItForARemote"));
   } catch (error) {
-    reportError(error, tr("保存自托管 Endpoint 失败", "Could not save Git service endpoint"));
+    reportError(error, t("workspace.controller.couldNotSaveGitServiceEndpoint"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3398,9 +3462,9 @@ async function importCliAccounts(endpointId: string): Promise<void> {
   try {
     const imported = await api.importCliAccounts(endpointId);
     await loadAccounts();
-    message.success(imported.length ? tr("已检测到 {count} 个 CLI 账号。", "Detected {count} CLI account(s).", { count: imported.length }) : tr("没有可导入的 CLI 账号。", "No CLI accounts are available to import."));
+    message.success(imported.length ? t("workspace.controller.detectedCountCliAccountS", { count: imported.length }) : t("workspace.controller.noCliAccountsAreAvailableToImport"));
 } catch (error) {
-    reportError(error, tr("检测 CLI 账号失败", "Could not detect CLI accounts"));
+    reportError(error, t("workspace.controller.couldNotDetectCliAccounts"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3410,9 +3474,9 @@ async function setDefaultCandidate(account: AccountProfile): Promise<void> {
   mutationBusy.value = true;
   try {
     accounts.value = await api.setDefaultAccount(account.id, !account.isDefaultCandidate);
-    message.success(account.isDefaultCandidate ? tr("已取消默认候选。", "Default candidate removed.") : tr("已设为默认候选。它不会覆盖 remote 的明确绑定。", "Set as default candidate. It does not override an explicit remote binding."));
+    message.success(account.isDefaultCandidate ? t("workspace.controller.defaultCandidateRemoved") : t("workspace.controller.setAsDefaultCandidateItDoesNotOverrideAnExplicitRemoteBinding"));
   } catch (error) {
-    reportError(error, tr("更新默认候选失败", "Could not update default candidate"));
+    reportError(error, t("workspace.controller.couldNotUpdateDefaultCandidate"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3420,22 +3484,20 @@ async function setDefaultCandidate(account: AccountProfile): Promise<void> {
 
 function confirmRemoveAccount(account: AccountProfile): void {
   dialog.warning({
-    title: tr("移除账号", "Remove account"),
-    content: tr(
-      "移除 {account} 的本地账号资料？这会移除应用使用的钥匙串引用，但不会修改 Git、gh 或 glab 的全局配置。",
-      "Remove the local profile for {account}? This removes the app's keychain reference but never changes global Git, gh, or glab configuration.",
+    title: t("workspace.controller.removeAccount"),
+    content: t("workspace.controller.removeTheLocalProfileForAccountThisRemovesTheAppSKeychainReferenceButNeverChangesGlobalGitGhOrGl",
       { account: account.displayName || account.login },
     ),
-    positiveText: tr("移除", "Remove"),
-    negativeText: tr("取消", "Cancel"),
+    positiveText: t("workspace.controller.remove"),
+    negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
       mutationBusy.value = true;
       try {
         await api.removeAccount(account.id);
         accounts.value = accounts.value.filter((item) => item.id !== account.id);
-        message.success(tr("账号已移除。", "Account removed."));
+        message.success(t("workspace.controller.accountRemoved"));
       } catch (error) {
-        reportError(error, tr("移除账号失败", "Could not remove account"));
+        reportError(error, t("workspace.controller.couldNotRemoveAccount"));
       } finally {
         mutationBusy.value = false;
       }
@@ -3449,7 +3511,7 @@ async function loadRepositoryInfo(): Promise<void> {
   try {
     repositoryInfo.value = await api.getCodeHostRepositoryInfo(activeRepositoryPath.value, activeRemote.value.name);
   } catch (error) {
-    reportError(error, tr("读取代码托管仓库信息失败", "Could not load Git service repository information"));
+    reportError(error, t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"));
   } finally {
     platformLoading.value = false;
   }
@@ -3461,7 +3523,7 @@ async function loadPullRequests(): Promise<void> {
   try {
     pullRequests.value = await api.listPullRequests(activeRepositoryPath.value, activeRemote.value.name);
   } catch (error) {
-    reportError(error, tr("读取 Pull Request 失败", "Could not load pull requests"));
+    reportError(error, t("workspace.controller.couldNotLoadPullRequests"));
   } finally {
     pullRequestsLoading.value = false;
   }
@@ -3478,15 +3540,15 @@ function openCreatePullRequest(): void {
 
 async function createPullRequest(): Promise<void> {
   if (!activeRepositoryPath.value || !activeRemote.value || !snapshot.value?.status.branch) {
-    message.warning(tr("请先切换到一个本地分支。", "Switch to a local branch before creating a pull request."));
+    message.warning(t("workspace.controller.switchToALocalBranchBeforeCreatingAPullRequest"));
     return;
   }
   if (!pullRequestForm.title.trim() || !pullRequestForm.base.trim()) {
-    message.warning(tr("请输入 Pull Request 标题并选择目标分支。", "Enter a pull request title and choose a base branch."));
+    message.warning(t("workspace.controller.enterAPullRequestTitleAndChooseABaseBranch"));
     return;
   }
   if (pullRequestForm.base.trim() === snapshot.value.status.branch) {
-    message.warning(tr("源分支和目标分支不能相同。", "The head branch and base branch cannot be the same."));
+    message.warning(t("workspace.controller.theHeadBranchAndBaseBranchCannotBeTheSame"));
     return;
   }
   mutationBusy.value = true;
@@ -3501,14 +3563,12 @@ async function createPullRequest(): Promise<void> {
     pullRequests.value = [pullRequest, ...pullRequests.value.filter((item) => item.number !== pullRequest.number)];
     pullRequestModalShown.value = false;
     message.success(
-      tr(
-        "Pull Request #{number} 已创建。",
-        "Pull request #{number} created.",
+      t("workspace.controller.pullRequestNumberCreated",
         { number: pullRequest.number },
       ),
     );
   } catch (error) {
-    reportError(error, tr("创建 Pull Request 失败", "Could not create pull request"));
+    reportError(error, t("workspace.controller.couldNotCreatePullRequest"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3551,8 +3611,8 @@ async function loadPublishOwners(): Promise<void> {
     if (requestGeneration !== publishOwnersRequestGeneration) return;
     const appError: AppError = isAppError(error)
       ? error
-      : { code: "unexpected_error", message: tr("发生未预期错误。", "An unexpected error occurred."), details: null };
-    publishOwnersError.value = localizedErrorMessage(appError.code, appError.message);
+      : { code: "unexpected_error", message: t("workspace.controller.anUnexpectedErrorOccurred"), details: null };
+    publishOwnersError.value = localizedErrorMessage(appError.code);
   } finally {
     if (requestGeneration === publishOwnersRequestGeneration) publishOwnersLoading.value = false;
   }
@@ -3569,11 +3629,11 @@ function openPublishModal(): void {
 
 async function publishGitHubRepository(): Promise<void> {
   if (!activeRepositoryPath.value || !publishForm.endpointId || !publishForm.accountId || !canPublishToSelectedOwner.value || !publishForm.name.trim()) {
-    message.warning(tr("请选择可发布的所有者并填写 GitHub 仓库名称。", "Select an eligible owner and enter a GitHub repository name."));
+    message.warning(t("workspace.controller.selectAnEligibleOwnerAndEnterAGithubRepositoryName"));
     return;
   }
   if (publishForm.name.trim().includes("/")) {
-    message.warning(tr("仓库名称只填写名称即可，所有者请使用上方选项。", "Enter only the repository name; choose its owner above."));
+    message.warning(t("workspace.controller.enterOnlyTheRepositoryNameChooseItsOwnerAbove"));
     return;
   }
   mutationBusy.value = true;
@@ -3590,9 +3650,9 @@ async function publishGitHubRepository(): Promise<void> {
     );
     publishModalShown.value = false;
     await loadCapabilities();
-    message.success(tr("仓库已发布到 GitHub，并已配置 origin。", "Repository published to GitHub and origin configured."));
+    message.success(t("workspace.controller.repositoryPublishedToGithubAndOriginConfigured"));
   } catch (error) {
-    reportError(error, tr("发布 GitHub 仓库失败", "Could not publish GitHub repository"));
+    reportError(error, t("workspace.controller.couldNotPublishGithubRepository"));
   } finally {
     mutationBusy.value = false;
   }
@@ -3653,6 +3713,10 @@ function scheduleRepositoryTabLoad(tab: RepositoryTab): void {
   }
   requestAnimationFrame(() => requestAnimationFrame(() => void revealAndLoad()));
 }
+
+watch(appLocale, () => {
+  void refreshBrowserDemoLocalizedData().catch(() => undefined);
+});
 
 watch(selectedRemoteName, () => {
   repositoryInfo.value = null;
@@ -4154,7 +4218,7 @@ onBeforeUnmount(() => {
     appLocale,
     localizedErrorMessage,
     setAppLocale,
-    tr,
+    t,
     colorMode,
     setColorMode,
     themeColor,

@@ -1,0 +1,19 @@
+{
+  "accounts.action.addAccount": "Add account",
+  "accounts.action.addAuthenticationAccount": "Add authentication account",
+  "accounts.action.addEndpoint": "Add Git service endpoint",
+  "accounts.action.detectCli": "Detect",
+  "accounts.action.refreshAuthentication": "Refresh authentication",
+  "accounts.heading.description": "A default account only ranks Auto candidates; an explicit remote binding always wins.",
+  "accounts.heading.securityEyebrow": "No plaintext tokens stored",
+  "accounts.heading.title": "Accounts & authentication",
+  "accounts.saved.empty": "No account profiles yet",
+  "accounts.saved.statusChecking": "Checking authentication in background",
+  "accounts.saved.title": "Saved account profiles",
+  "accounts.security.cliIdentity.description": "gh / glab only use the currently matching CLI identity and never call auth switch.",
+  "accounts.security.cliIdentity.title": "No CLI active-account switching",
+  "accounts.security.gitConfig.description": "The backend resolves the authentication strategy per remote binding.",
+  "accounts.security.gitConfig.title": "No global Git configuration changes",
+  "accounts.security.keychain.description": "The UI only writes a PAT once; it never reads, logs, or displays it.",
+  "accounts.security.keychain.title": "Tokens only enter the system keychain"
+}

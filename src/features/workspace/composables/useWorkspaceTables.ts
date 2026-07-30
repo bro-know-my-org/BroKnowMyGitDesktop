@@ -1,10 +1,7 @@
 import { computed, h, type Ref } from "vue";
 import { NButton, NTag, type DataTableColumns } from "naive-ui";
-import type { AppLocale, tr as translate } from "../../../shared/i18n";
+import { authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, type t as translate } from "../../../shared/i18n";
 import {
-  authenticationMethodLabel,
-  authenticationStatusLabel,
-  endpointKindLabel,
   type AccountProfile,
   type BranchInfo,
   type PullRequestSummary,
@@ -20,8 +17,7 @@ type Translate = typeof translate;
 type MaybePromiseVoid = void | Promise<void>;
 
 interface WorkspaceTableDependencies {
-  tr: Translate;
-  appLocale: Ref<AppLocale>;
+  t: Translate;
   snapshot: Ref<RepositorySnapshot | null>;
   checkoutBranch: (branch: BranchInfo) => MaybePromiseVoid;
   checkoutRemoteBranch: (branch: RemoteBranchInfo) => MaybePromiseVoid;
@@ -45,8 +41,7 @@ interface WorkspaceTableDependencies {
 
 export function useWorkspaceTables(dependencies: WorkspaceTableDependencies) {
   const {
-    tr,
-    appLocale,
+    t,
     snapshot,
     checkoutBranch,
     checkoutRemoteBranch,
@@ -70,7 +65,7 @@ export function useWorkspaceTables(dependencies: WorkspaceTableDependencies) {
 
 const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
   {
-    title: tr("分支", "Branch"),
+    title: t("workspace.tables.branch"),
     key: "name",
     render: (branch) =>
       h(
@@ -80,18 +75,18 @@ const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
       ),
   },
   {
-    title: tr("跟踪分支", "Upstream"),
+    title: t("workspace.tables.upstream"),
     key: "upstream",
     render: (branch) => branch.upstream || "—",
   },
   {
-    title: tr("状态", "Status"),
+    title: t("workspace.tables.status"),
     key: "isCurrent",
     width: 90,
-    render: (branch) => (branch.isCurrent ? h(NTag, { size: "small", type: "primary" }, { default: () => tr("当前", "Current") }) : ""),
+    render: (branch) => (branch.isCurrent ? h(NTag, { size: "small", type: "primary" }, { default: () => t("workspace.tables.current") }) : ""),
   },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "actions",
     width: 195,
     render: (branch) =>
@@ -101,21 +96,21 @@ const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
               h(
                 NButton,
                 { size: "tiny", tertiary: true, onClick: () => confirmMergeBranch(branch) },
-                { default: () => tr("合并", "Merge") },
+                { default: () => t("workspace.tables.merge") },
               ),
             ]
           : []),
         h(
           NButton,
           { size: "tiny", tertiary: true, onClick: () => openRenameBranchModal(branch) },
-          { default: () => tr("重命名", "Rename") },
+          { default: () => t("workspace.tables.rename") },
         ),
         ...(!branch.isCurrent
           ? [
               h(
                 NButton,
                 { size: "tiny", tertiary: true, type: "error", onClick: () => confirmDeleteBranch(branch) },
-                { default: () => tr("删除", "Delete") },
+                { default: () => t("workspace.tables.delete") },
               ),
             ]
           : []),
@@ -129,7 +124,7 @@ function localBranchForRemoteBranch(remoteBranch: RemoteBranchInfo): BranchInfo 
 
 const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
   {
-    title: tr("远程分支", "Remote branch"),
+    title: t("workspace.tables.remoteBranch"),
     key: "name",
     minWidth: 220,
     render: (remoteBranch) => {
@@ -147,21 +142,21 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
     },
   },
   {
-    title: tr("Remote", "Remote"),
+    title: t("workspace.tables.remote"),
     key: "remoteName",
     width: 130,
   },
   {
-    title: tr("本地状态", "Local status"),
+    title: t("workspace.tables.localStatus"),
     key: "localState",
     minWidth: 155,
     render: (remoteBranch) => {
       const localBranch = localBranchForRemoteBranch(remoteBranch);
       if (!localBranch) {
-        return h(NTag, { size: "small", type: "warning" }, { default: () => tr("切换时创建", "Create on switch") });
+        return h(NTag, { size: "small", type: "warning" }, { default: () => t("workspace.tables.createOnSwitch") });
       }
       if (localBranch.isCurrent) {
-        return h(NTag, { size: "small", type: "primary" }, { default: () => tr("当前分支", "Current branch") });
+        return h(NTag, { size: "small", type: "primary" }, { default: () => t("workspace.tables.currentBranch") });
       }
       return h(
         NTag,
@@ -169,14 +164,14 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
         {
           default: () =>
             localBranch.upstream === `${remoteBranch.remoteName}/${remoteBranch.name}`
-              ? tr("本地已跟踪", "Tracking locally")
-              : tr("同名本地分支", "Same local branch"),
+              ? t("workspace.tables.trackingLocally")
+              : t("workspace.tables.sameLocalBranch"),
         },
       );
     },
   },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "actions",
     width: 86,
     render: (remoteBranch) => {
@@ -189,7 +184,7 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
           disabled: localBranch?.isCurrent,
           onClick: () => void checkoutRemoteBranch(remoteBranch),
         },
-        { default: () => tr("切换", "Switch") },
+        { default: () => t("workspace.tables.switch") },
       );
     },
   },
@@ -197,7 +192,7 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
 
 const worktreeColumns = computed<DataTableColumns<WorktreeInfo>>(() => [
   {
-    title: tr("工作树路径", "Worktree path"),
+    title: t("workspace.tables.worktreePath"),
     key: "path",
     minWidth: 280,
     ellipsis: { tooltip: true },
@@ -209,25 +204,25 @@ const worktreeColumns = computed<DataTableColumns<WorktreeInfo>>(() => [
       ),
   },
   {
-    title: tr("分支", "Branch"),
+    title: t("workspace.tables.branch"),
     key: "branch",
     width: 180,
-    render: (worktree) => worktree.branch || tr("分离 HEAD", "Detached HEAD"),
+    render: (worktree) => worktree.branch || t("workspace.tables.detachedHead"),
   },
   {
-    title: tr("状态", "State"),
+    title: t("workspace.tables.state"),
     key: "state",
     width: 190,
     render: (worktree) =>
       h("div", { class: "table-action-group" }, [
-        ...(worktree.isMain ? [h(NTag, { size: "small", type: "primary" }, { default: () => tr("主工作树", "Main") })] : []),
-        ...(worktree.isDetached ? [h(NTag, { size: "small", type: "warning" }, { default: () => tr("分离", "Detached") })] : []),
-        ...(worktree.isLocked ? [h(NTag, { size: "small", type: "warning" }, { default: () => tr("已锁定", "Locked") })] : []),
-        ...(worktree.isPrunable ? [h(NTag, { size: "small", type: "error" }, { default: () => tr("可清理", "Prunable") })] : []),
+        ...(worktree.isMain ? [h(NTag, { size: "small", type: "primary" }, { default: () => t("workspace.tables.main") })] : []),
+        ...(worktree.isDetached ? [h(NTag, { size: "small", type: "warning" }, { default: () => t("workspace.tables.detached") })] : []),
+        ...(worktree.isLocked ? [h(NTag, { size: "small", type: "warning" }, { default: () => t("workspace.tables.locked") })] : []),
+        ...(worktree.isPrunable ? [h(NTag, { size: "small", type: "error" }, { default: () => t("workspace.tables.prunable") })] : []),
       ]),
   },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "actions",
     width: 145,
     render: (worktree) =>
@@ -235,14 +230,14 @@ const worktreeColumns = computed<DataTableColumns<WorktreeInfo>>(() => [
         h(
           NButton,
           { size: "tiny", tertiary: true, onClick: () => void selectRepository(worktree.path) },
-          { default: () => tr("打开", "Open") },
+          { default: () => t("workspace.tables.open") },
         ),
         ...(!worktree.isMain && worktree.path !== snapshot.value?.repository.path
           ? [
               h(
                 NButton,
                 { size: "tiny", tertiary: true, type: "error", onClick: () => confirmRemoveWorktree(worktree) },
-                { default: () => tr("移除", "Remove") },
+                { default: () => t("workspace.tables.remove") },
               ),
             ]
           : []),
@@ -251,10 +246,10 @@ const worktreeColumns = computed<DataTableColumns<WorktreeInfo>>(() => [
 ]);
 
 const submoduleColumns = computed<DataTableColumns<SubmoduleInfo>>(() => [
-  { title: tr("路径", "Path"), key: "path", minWidth: 260, ellipsis: { tooltip: true } },
-  { title: tr("提交", "Commit"), key: "commit", width: 150, ellipsis: { tooltip: true } },
+  { title: t("workspace.tables.path"), key: "path", minWidth: 260, ellipsis: { tooltip: true } },
+  { title: t("workspace.tables.commit"), key: "commit", width: 150, ellipsis: { tooltip: true } },
   {
-    title: tr("状态", "Status"),
+    title: t("workspace.tables.status"),
     key: "status",
     width: 130,
     render: (submodule) =>
@@ -267,21 +262,21 @@ const submoduleColumns = computed<DataTableColumns<SubmoduleInfo>>(() => [
 ]);
 
 const remoteColumns = computed<DataTableColumns<RemoteProfile>>(() => [
-  { title: tr("远程仓库", "Remote"), key: "name", width: 120 },
+  { title: t("workspace.tables.remoteRepository"), key: "name", width: 120 },
   {
-    title: tr("平台", "Service"),
+    title: t("workspace.tables.service"),
     key: "codeHostKind",
     width: 120,
-    render: (remote) => h(NTag, { size: "small", bordered: false }, { default: () => endpointKindLabel(remote.codeHostKind, appLocale.value) }),
+    render: (remote) => h(NTag, { size: "small", bordered: false }, { default: () => endpointKindLabel(remote.codeHostKind) }),
   },
   {
-    title: tr("认证绑定", "Account binding"),
+    title: t("workspace.tables.accountBinding"),
     key: "binding",
     minWidth: 180,
     render: (remote) => remoteBindingLabel(remote),
   },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "action",
     width: 165,
     render: (remote) =>
@@ -289,12 +284,12 @@ const remoteColumns = computed<DataTableColumns<RemoteProfile>>(() => [
         h(
           NButton,
           { size: "tiny", tertiary: true, onClick: () => openBindingDrawer(remote) },
-          { default: () => tr("绑定账号", "Bind account") },
+          { default: () => t("workspace.tables.bindAccount") },
         ),
         h(
           NButton,
           { size: "tiny", tertiary: true, onClick: () => openRemoteEditor(remote) },
-          { default: () => tr("编辑", "Edit") },
+          { default: () => t("workspace.tables.edit") },
         ),
       ]),
   },
@@ -302,36 +297,36 @@ const remoteColumns = computed<DataTableColumns<RemoteProfile>>(() => [
 
 const accountColumns = computed<DataTableColumns<AccountProfile>>(() => [
   {
-    title: tr("账号", "Account"),
+    title: t("workspace.tables.account"),
     key: "login",
     minWidth: 180,
     render: (account) => account.displayName || account.login,
   },
   {
-    title: tr("平台", "Service"),
+    title: t("workspace.tables.service"),
     key: "endpointId",
     width: 130,
     render: (account) => endpointLabel(account.endpointId),
   },
   {
-    title: tr("认证方式", "Authentication"),
+    title: t("workspace.tables.authentication"),
     key: "authMethod",
     minWidth: 150,
-    render: (account) => authenticationMethodLabel(account.authMethod, appLocale.value),
+    render: (account) => authenticationMethodLabel(account.authMethod),
   },
   {
-    title: tr("认证状态", "Authentication status"),
+    title: t("workspace.tables.authenticationStatus"),
     key: "status",
     width: 125,
     render: (account) =>
       h(
         NTag,
         { size: "small", type: authenticationTagType(account.status) },
-        { default: () => authenticationStatusLabel(account.status, appLocale.value) },
+        { default: () => authenticationStatusLabel(account.status) },
       ),
   },
   {
-    title: tr("默认候选", "Default candidate"),
+    title: t("workspace.tables.defaultCandidate"),
     key: "isDefaultCandidate",
     width: 120,
     render: (account) =>
@@ -343,35 +338,35 @@ const accountColumns = computed<DataTableColumns<AccountProfile>>(() => [
           type: account.isDefaultCandidate ? "primary" : "default",
           onClick: () => void setDefaultCandidate(account),
         },
-        { default: () => (account.isDefaultCandidate ? tr("默认候选", "Default candidate") : tr("设为候选", "Set as candidate")) },
+        { default: () => (account.isDefaultCandidate ? t("workspace.tables.defaultCandidate") : t("workspace.tables.setAsCandidate")) },
       ),
   },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "actions",
     width: 80,
     render: (account) =>
       h(
         NButton,
         { size: "tiny", text: true, type: "error", onClick: () => confirmRemoveAccount(account) },
-        { default: () => tr("移除", "Remove") },
+        { default: () => t("workspace.tables.remove") },
       ),
   },
 ]);
 
 const pullRequestColumns = computed<DataTableColumns<PullRequestSummary>>(() => [
   { title: "#", key: "number", width: 64 },
-  { title: tr("标题", "Title"), key: "title", minWidth: 260 },
-  { title: tr("作者", "Author"), key: "author", width: 120 },
-  { title: tr("状态", "Status"), key: "state", width: 90 },
-  { title: tr("更新", "Updated"), key: "updatedAt", width: 110, render: (item) => item.updatedAt || "—" },
+  { title: t("workspace.tables.title"), key: "title", minWidth: 260 },
+  { title: t("workspace.tables.author"), key: "author", width: 120 },
+  { title: t("workspace.tables.status"), key: "state", width: 90 },
+  { title: t("workspace.tables.updated"), key: "updatedAt", width: 110, render: (item) => item.updatedAt || "—" },
 ]);
 
 const stashColumns = computed<DataTableColumns<StashEntry>>(() => [
-  { title: tr("引用", "Reference"), key: "reference", width: 105 },
-  { title: tr("说明", "Message"), key: "message", minWidth: 210, ellipsis: { tooltip: true } },
+  { title: t("workspace.tables.reference"), key: "reference", width: 105 },
+  { title: t("workspace.tables.stashMessage"), key: "message", minWidth: 210, ellipsis: { tooltip: true } },
   {
-    title: tr("操作", "Actions"),
+    title: t("workspace.tables.actions"),
     key: "actions",
     width: 140,
     render: (stash) =>
@@ -379,12 +374,12 @@ const stashColumns = computed<DataTableColumns<StashEntry>>(() => [
         h(
           NButton,
           { size: "tiny", tertiary: true, onClick: () => confirmPopStash(stash) },
-          { default: () => tr("恢复", "Pop") },
+          { default: () => t("workspace.tables.pop") },
         ),
         h(
           NButton,
           { size: "tiny", tertiary: true, type: "error", onClick: () => confirmDropStash(stash) },
-          { default: () => tr("删除", "Drop") },
+          { default: () => t("workspace.tables.drop") },
         ),
       ]),
   },

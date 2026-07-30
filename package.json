@@ -8,8 +8,9 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "pnpm check:i18n && vue-tsc --noEmit && vite build",
     "check": "pnpm lint:css && pnpm build",
+    "check:i18n": "node scripts/check-i18n.mjs",
     "lint:css": "stylelint \"src/**/*.{css,vue}\"",
     "preview": "vite preview",
     "tauri": "tauri"

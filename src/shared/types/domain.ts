@@ -317,38 +317,3 @@ export interface CreateBranchInput {
   name: string;
   checkout: boolean;
 }
-
-export function endpointKindLabel(kind: CodeHostKind, locale: "zh-CN" | "en-US" = "zh-CN"): string {
-  const labels: Record<CodeHostKind, [string, string]> = {
-    gitHub: ["GitHub", "GitHub"],
-    gitLab: ["GitLab", "GitLab"],
-    gitee: ["Gitee", "Gitee"],
-    gitea: ["Gitea", "Gitea"],
-    forgejo: ["Forgejo", "Forgejo"],
-    genericGit: ["通用 Git 服务", "Generic Git service"],
-    unknown: ["未识别平台", "Unrecognized service"],
-  };
-  return labels[kind][locale === "zh-CN" ? 0 : 1];
-}
-
-export function authenticationMethodLabel(method: AuthenticationMethod, locale: "zh-CN" | "en-US" = "zh-CN"): string {
-  const labels: Record<AuthenticationMethod, [string, string]> = {
-    sshAgent: ["SSH agent", "SSH agent"],
-    systemGitCredentialHelper: ["系统 Git credential helper", "System Git credential helper"],
-    ghCli: ["GitHub CLI (gh)", "GitHub CLI (gh)"],
-    glabCli: ["GitLab CLI (glab)", "GitLab CLI (glab)"],
-    personalAccessToken: ["个人访问令牌 (PAT)", "Personal access token (PAT)"],
-  };
-  return labels[method][locale === "zh-CN" ? 0 : 1];
-}
-
-export function authenticationStatusLabel(status: AuthenticationStatus, locale: "zh-CN" | "en-US" = "zh-CN"): string {
-  const labels: Record<AuthenticationStatus, [string, string]> = {
-    unknown: ["未检测", "Unchecked"],
-    available: ["可用", "Available"],
-    valid: ["有效", "Valid"],
-    needsReauthentication: ["需要重新认证", "Reauthentication required"],
-    unavailable: ["不可用", "Unavailable"],
-  };
-  return labels[status][locale === "zh-CN" ? 0 : 1];
-}

@@ -1,0 +1,19 @@
+{
+  "accounts.action.addAccount": "添加账号",
+  "accounts.action.addAuthenticationAccount": "添加认证账号",
+  "accounts.action.addEndpoint": "添加 Git 服务 Endpoint",
+  "accounts.action.detectCli": "检测",
+  "accounts.action.refreshAuthentication": "刷新认证状态",
+  "accounts.heading.description": "默认账号只用于 Auto 的候选排序；每个 remote 的明确绑定始终优先。",
+  "accounts.heading.securityEyebrow": "不保存令牌明文",
+  "accounts.heading.title": "账号与认证",
+  "accounts.saved.empty": "还没有账号资料",
+  "accounts.saved.statusChecking": "正在后台检测认证状态",
+  "accounts.saved.title": "保存的账号资料",
+  "accounts.security.cliIdentity.description": "gh / glab 仅使用当前匹配的 CLI 身份，不调用 auth switch。",
+  "accounts.security.cliIdentity.title": "不切换 CLI 活跃账号",
+  "accounts.security.gitConfig.description": "网络操作由后端按 remote binding 解析认证策略。",
+  "accounts.security.gitConfig.title": "不改 Git 全局配置",
+  "accounts.security.keychain.description": "前端只做一次性写入，不会读取、记录或显示 PAT。",
+  "accounts.security.keychain.title": "令牌只进入系统钥匙串"
+}
