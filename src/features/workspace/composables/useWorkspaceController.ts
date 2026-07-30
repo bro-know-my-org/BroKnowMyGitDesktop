@@ -202,6 +202,12 @@ const repositoryActionOptions = computed(() => [
 
 const section = ref<AppSection>("repositories");
 const activeTab = ref<RepositoryTab>("changes");
+const repositoryTabContentReady = reactive<Record<RepositoryTab, boolean>>({
+  changes: true,
+  history: false,
+  branches: false,
+  overview: false,
+});
 const repositories = ref<RepositoryRecord[]>([]);
 const repositoryGrouping = ref<RepositoryGrouping>(initialRepositoryGrouping());
 const activeRepositoryPath = ref<string | null>(null);
@@ -262,6 +268,7 @@ const historyLoading = ref(false);
 let historyRequestGeneration = 0;
 let historyLoadedRepositoryPath: string | null = null;
 let historyLoadedSignature: string | null = null;
+let repositoryTabLoadGeneration = 0;
 const reflogLoading = ref(false);
 const commitFilesLoading = ref(false);
 const commitDiffLoading = ref(false);
@@ -3600,18 +3607,60 @@ function updateSection(value: string | number): void {
   }
 }
 
+function activateRepositoryTabOnPointerDown(tab: RepositoryTab, event: PointerEvent): void {
+  if (event.button !== 0 || !event.isPrimary) return;
+  const tabElement = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  queueMicrotask(() => {
+    if (
+      controllerMounted &&
+      !event.defaultPrevented &&
+      tabElement?.isConnected &&
+      tabElement.dataset.name === tab
+    ) activeTab.value = tab;
+  });
+}
+
+function scheduleRepositoryTabLoad(tab: RepositoryTab): void {
+  const loadGeneration = ++repositoryTabLoadGeneration;
+  const selectionGeneration = repositorySelectionGeneration;
+  const revealAndLoad = async () => {
+    if (
+      !controllerMounted ||
+      loadGeneration !== repositoryTabLoadGeneration ||
+      selectionGeneration !== repositorySelectionGeneration ||
+      activeTab.value !== tab
+    ) return;
+    repositoryTabContentReady[tab] = true;
+    await nextTick();
+    if (
+      !controllerMounted ||
+      loadGeneration !== repositoryTabLoadGeneration ||
+      selectionGeneration !== repositorySelectionGeneration ||
+      activeTab.value !== tab
+    ) return;
+    if (tab === "history") void loadHistoryWithOptions();
+    else if (tab === "branches") {
+      void Promise.all([loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
+    }
+  };
+
+  // First present the selected tab with its lightweight shell. Mount the full
+  // panel and start repository I/O only after that frame is visible, so neither
+  // initial component work nor Tauri command dispatch can delay click feedback.
+  if (typeof requestAnimationFrame !== "function") {
+    setTimeout(() => void revealAndLoad(), 0);
+    return;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(() => void revealAndLoad()));
+}
+
 watch(selectedRemoteName, () => {
   repositoryInfo.value = null;
   pullRequests.value = [];
   void loadCapabilities();
 });
 
-watch(activeTab, (tab) => {
-  if (tab === "history") void loadHistoryWithOptions();
-  else if (tab === "branches") {
-    void Promise.all([loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
-  }
-});
+watch(activeTab, scheduleRepositoryTabLoad, { flush: "post" });
 
 watch(
   () => bindingForm.endpointId,
@@ -3770,6 +3819,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   controllerMounted = false;
+  repositoryTabLoadGeneration += 1;
   if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
   if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
   commitFilesDebounceTimer = null;
@@ -3811,6 +3861,8 @@ onBeforeUnmount(() => {
     repositoryActionOptions,
     section,
     activeTab,
+    activateRepositoryTabOnPointerDown,
+    repositoryTabContentReady,
     repositories,
     repositoryGrouping,
     activeRepositoryPath,

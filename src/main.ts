@@ -2,8 +2,10 @@ import { createApp } from "vue";
 import "./styles/app.css";
 import Root from "./Root.vue";
 import { markPerformance, measurePerformance, performanceProfilingEnabled } from "./shared/performance";
+import { installPressActivation } from "./shared/pressActivation";
 
 markPerformance("main:execute");
+installPressActivation();
 measurePerformance("Bootstrap to main module execution", "bootstrap", "main:execute");
 markPerformance("vue:create:start");
 const app = createApp(Root);

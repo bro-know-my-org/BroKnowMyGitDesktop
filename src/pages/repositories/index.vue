@@ -1,6 +1,6 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NTabPane, NTabs, NTag, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NSpin, NTabPane, NTabs, NTag, NText } from "naive-ui";
 import RepositoryBranchesPanel from "./components/BranchesPanel.vue";
 import RepositoryChangesPanel from "./components/ChangesPanel.vue";
 import RepositoryHistoryPanel from "./components/HistoryPanel.vue";
@@ -9,7 +9,7 @@ import { useWorkspaceControllerContext } from "../../features/workspace/composab
 
 export default defineComponent({
   name: "RepositoriesPage",
-  components: { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NTabPane, NTabs, NTag, NText, RepositoryChangesPanel, RepositoryHistoryPanel, RepositoryBranchesPanel, RepositoryOverviewPanel },
+  components: { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NSpin, NTabPane, NTabs, NTag, NText, RepositoryChangesPanel, RepositoryHistoryPanel, RepositoryBranchesPanel, RepositoryOverviewPanel },
   setup() {
     return useWorkspaceControllerContext();
   },
@@ -37,9 +37,13 @@ export default defineComponent({
             </n-alert>
 
             <n-tabs v-model:value="activeTab" type="line" :tabs-padding="8" class="repository-tabs">
-              <n-tab-pane name="changes" :tab="tr('改动', 'Changes')"><RepositoryChangesPanel /></n-tab-pane>
-              <n-tab-pane name="history" :tab="tr('历史', 'History')"><RepositoryHistoryPanel /></n-tab-pane>
-              <n-tab-pane name="branches" :tab="tr('分支与远程', 'Branches & remotes')">
+              <n-tab-pane name="changes" :tab="tr('改动', 'Changes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('changes', event) }" display-directive="show:lazy"><RepositoryChangesPanel /></n-tab-pane>
+              <n-tab-pane name="history" :tab="tr('历史', 'History')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('history', event) }" display-directive="show:lazy">
+                <RepositoryHistoryPanel v-if="repositoryTabContentReady.history" />
+                <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
+              </n-tab-pane>
+              <n-tab-pane name="branches" :tab="tr('分支与远程', 'Branches & remotes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('branches', event) }" display-directive="show:lazy">
+                <template v-if="repositoryTabContentReady.branches">
                 <n-card v-if="activeRemote" size="small" class="remote-summary-card">
                   <n-grid :cols="4" x-gap="18" y-gap="12" responsive="screen" item-responsive>
                     <n-grid-item span="4 m:1">
@@ -70,8 +74,13 @@ export default defineComponent({
                   </template>
                 </n-card>
                 <RepositoryBranchesPanel />
+                </template>
+                <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
               </n-tab-pane>
-              <n-tab-pane name="overview" :tab="tr('详情', 'Details')"><RepositoryOverviewPanel /></n-tab-pane>
+              <n-tab-pane name="overview" :tab="tr('详情', 'Details')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('overview', event) }" display-directive="show:lazy">
+                <RepositoryOverviewPanel v-if="repositoryTabContentReady.overview" />
+                <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
+              </n-tab-pane>
             </n-tabs>
           </section>
 </template>

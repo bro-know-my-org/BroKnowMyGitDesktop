@@ -42,6 +42,13 @@
   padding: 4px 10px !important;
 }
 
+.repository-tab-loading {
+  display: grid;
+  min-height: 160px;
+  flex: 1 1 auto;
+  place-items: center;
+}
+
 @media (width >= 1121px) {
   .content-area.is-fixed-repository-content > .n-layout-scroll-container {
     overflow-y: hidden;
@@ -76,4 +83,3 @@
     min-height: 0;
   }
 }
-
