@@ -1160,7 +1160,7 @@ function installRepositoryWatcher(repositoryPath: string): void {
     });
 }
 
-async function selectRepository(repositoryPath: string): Promise<void> {
+async function selectRepository(repositoryPath: string, reportOpenError = true): Promise<void> {
   if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
   repositoryWatcherRetryTimer = null;
   repositoryWatcherRetryAttempt = 0;
@@ -1225,7 +1225,7 @@ async function selectRepository(repositoryPath: string): Promise<void> {
     await syncSelectedDiff(nextSnapshot, undefined, true);
     await Promise.all([loadCapabilities(), loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
   } catch (error) {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+    if (reportOpenError && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
       reportError(error, tr("打开仓库失败", "Could not open repository"));
     }
   } finally {
@@ -3596,6 +3596,7 @@ onMounted(async () => {
   window.addEventListener("focus", handleWindowFocus);
   window.addEventListener("blur", handleWindowBlur);
   document.addEventListener("visibilitychange", handleVisibilityChange);
+  const startupDataPromise = Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
   if (!browserDemo) {
     const [repositoryListener, watchErrorListener, focusListener] = await Promise.allSettled([
       listen<RepositoryChangedPayload>("repository-changed", handleRepositoryChanged),
@@ -3617,9 +3618,14 @@ onMounted(async () => {
     if (watchErrorListener.status === "fulfilled") stopRepositoryWatchErrorListener = watchErrorListener.value;
     if (focusListener.status === "fulfilled") stopWindowFocusListener = focusListener.value;
   }
-  await Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
   if (!controllerMounted) return;
   const storedPath = storedLastRepositoryPath();
+  if (storedPath) await selectRepository(storedPath, false);
+  if (!controllerMounted) return;
+  if (snapshot.value) workspaceInitializing.value = false;
+
+  await startupDataPromise;
+  if (!controllerMounted) return;
   const storedRepository = storedPath
     ? repositories.value.find((repository) => repository.path === storedPath)
     : undefined;
@@ -3627,7 +3633,7 @@ onMounted(async () => {
     (left, right) => (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0),
   )[0];
   const startupRepository = storedRepository ?? mostRecentRepository;
-  if (startupRepository) await selectRepository(startupRepository.path);
+  if (!snapshot.value && startupRepository) await selectRepository(startupRepository.path);
   if (controllerMounted) workspaceInitializing.value = false;
 });
 
