@@ -24,7 +24,7 @@ button {
   font: inherit;
 }
 
-.n-button:has(> .n-button__icon .n-base-loading) > .n-button__icon {
+.n-button.n-button--loading > .n-button__icon {
   position: absolute;
   top: 50%;
   left: 50%;
@@ -32,7 +32,7 @@ button {
   transform: translate(-50%, -50%);
 }
 
-.n-button:has(> .n-button__icon .n-base-loading) > .n-button__content {
+.n-button.n-button--loading > .n-button__content {
   visibility: hidden;
 }
 
