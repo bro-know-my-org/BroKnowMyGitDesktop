@@ -1,5 +1,82 @@
 use super::support::*;
 use super::*;
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Semaphore;
+
+const MAX_REPOSITORY_LIST_WORKERS: usize = 4;
+static REPOSITORY_LIST_PROBE_POOL: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn repository_list_probe_pool() -> Arc<Semaphore> {
+    Arc::clone(
+        REPOSITORY_LIST_PROBE_POOL
+            .get_or_init(|| Arc::new(Semaphore::new(MAX_REPOSITORY_LIST_WORKERS))),
+    )
+}
+
+fn repository_records(
+    store: &ProfileStore,
+    refresh_owners: bool,
+) -> Result<Vec<RepositoryRecord>, AppError> {
+    if store.recent_repositories.is_empty() {
+        return Ok(Vec::new());
+    }
+    let worker_count = store
+        .recent_repositories
+        .len()
+        .min(MAX_REPOSITORY_LIST_WORKERS);
+    let chunk_size = store.recent_repositories.len().div_ceil(worker_count);
+    let worker_results = std::thread::scope(|scope| {
+        let workers = store
+            .recent_repositories
+            .chunks(chunk_size)
+            .map(|repositories| {
+                scope.spawn(move || {
+                    let git = GitCore::new();
+                    repositories
+                        .iter()
+                        .filter_map(|repository| {
+                            let mut record = git
+                                .repository_record(Path::new(&repository.path))
+                                .ok()
+                                .map(|record| store.repository_with_metadata(record))?;
+                            if refresh_owners {
+                                // This only reads local Git configuration. It makes owner
+                                // grouping useful immediately for existing repositories
+                                // without treating a list refresh as a repository open or
+                                // changing recent ordering.
+                                if let Ok(remotes) = git.remotes(Path::new(&record.path)) {
+                                    let (host, namespace) = repository_owner_from_remotes(&remotes);
+                                    record.host = host;
+                                    record.namespace = namespace;
+                                }
+                            }
+                            Some(record)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker.join().map_err(|_| {
+                    AppError::new("repository_list_failed", "仓库列表后台任务未能完成。")
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    let mut repositories = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    for records in worker_results {
+        for record in records {
+            if seen_paths.insert(record.path.clone()) {
+                repositories.push(record);
+            }
+        }
+    }
+    repositories.sort_by(|left, right| left.name.cmp(&right.name).then(left.path.cmp(&right.path)));
+    Ok(repositories)
+}
 
 #[tauri::command]
 pub async fn list_repositories(
@@ -7,36 +84,20 @@ pub async fn list_repositories(
     state: State<'_, AppState>,
 ) -> Result<Vec<RepositoryRecord>, AppError> {
     let state = state.inner().clone();
+    // Admission waits on the async runtime, before a blocking worker exists.
+    // Taking all four slots atomically keeps the catalog's internal parallel
+    // probes globally bounded without deadlocking overlapping requests.
+    let probe_permits = repository_list_probe_pool()
+        .acquire_many_owned(MAX_REPOSITORY_LIST_WORKERS as u32)
+        .await
+        .map_err(|_| AppError::new("repository_list_failed", "仓库列表任务调度器不可用。"))?;
     tauri::async_runtime::spawn_blocking(move || {
-        let git = GitCore::new();
+        let _probe_permits = probe_permits;
         let store = state.snapshot()?;
-        let mut repositories = Vec::new();
-        for repository in &store.recent_repositories {
-            if let Ok(record) = git.repository_record(Path::new(&repository.path)) {
-                let mut record = store.repository_with_metadata(record);
-                if refresh_owners.unwrap_or(false) {
-                    // This only reads local Git configuration. It makes owner
-                    // grouping useful immediately for existing repositories
-                    // without treating a list refresh as a repository open or
-                    // changing recent ordering. Keep it opt-in because a large
-                    // repository catalog should not slow the normal app startup.
-                    if let Ok(remotes) = git.remotes(Path::new(&record.path)) {
-                        let (host, namespace) = repository_owner_from_remotes(&remotes);
-                        record.host = host;
-                        record.namespace = namespace;
-                    }
-                }
-                if !repositories
-                    .iter()
-                    .any(|existing: &RepositoryRecord| existing.path == record.path)
-                {
-                    repositories.push(record);
-                }
-            }
-        }
-        repositories
-            .sort_by(|left, right| left.name.cmp(&right.name).then(left.path.cmp(&right.path)));
-        Ok(repositories)
+        // Validating saved repositories requires one bounded Git process per
+        // path. Run a small fixed number in parallel so a normal catalog does
+        // not turn process startup latency into a fully serial startup cost.
+        repository_records(&store, refresh_owners.unwrap_or(false))
     })
     .await
     .map_err(|_| AppError::new("repository_list_failed", "仓库列表后台任务未能完成。"))?

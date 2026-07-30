@@ -43,6 +43,10 @@
 11. 仓库分组是应用本地元数据：不改 Git 配置、不触发网络。扫描和普通列表刷新只能登记 / 读取仓库，不能更新“最近使用”；只有 `get_repository_snapshot` 的显式打开路径可以更新最近时间。切到组织/用户视图时才会批量读取本地 remote 配置以补全归属，`origin` 的 `host + namespace` 优先，缺失时才回退到其他可识别 remote。
 12. 桌面端 Modal 直接显示和关闭，不使用缩放、位移、淡入淡出或遮罩过渡。WebView 在弹窗首次挂载、布局和文本绘制期间容易超过单帧预算；新增或升级 Naive UI 弹窗时必须确认 `WorkspaceDialogs.css` 的统一覆盖仍然生效。
 13. 按钮进入 loading 状态时不能改变自身宽度或推动相邻操作。Spinner 应覆盖在按钮中央，原标签保留布局占位；弹窗内部已有加载反馈时，不要在打开弹窗的入口按钮上重复显示 Spinner。按钮 loading 覆盖必须绑定 `.n-button--loading` 等稳定状态类，不能用 `:has()` 追踪 Transition 动态增删的内部 Spinner 节点；WebKitGTK 可能不会及时使这类关系选择器失效，导致加载结束后文字仍长期隐藏。
+14. 仓库 watcher 与只读 Git 命令不能互相触发。后台 `git status` 必须设置 `GIT_OPTIONAL_LOCKS=0`，避免 Git 创建临时 `index.lock` 后被 watcher 识别为外部修改，形成“刷新 → 锁文件事件 → 再刷新”的循环。新增自动刷新来源时应通过性能报告确认空闲窗口不会持续调用 `refresh_repository_snapshot`。
+15. 可能启动 Git 子进程或扫描工作区的只读 Tauri command 也必须通过 `spawn_blocking` 执行，不能占用 Tauri IPC 执行器。默认“改动”页只加载当前 Diff；工作树、子模块和 LFS 仅在首次进入“分支与远程”时并行读取，不能把非首屏面板的冷启动成本加入仓库打开关键路径。
+16. 仓库 watcher 必须按 Git ignore 规则生成工作树监听计划，逐个目录使用非递归监听；不能把仓库根目录直接交给 `RecursiveMode::Recursive`，否则 `node_modules`、`target` 等被 Git 忽略的依赖和构建树仍会被底层 watcher 全量注册。Git 元数据目录单独递归监听；已跟踪但后来被 ignore 的路径必须补回监听计划。新目录、`.gitignore`、`.git/info/exclude` 或相关 Git 配置变化会使计划失效，协调刷新后必须自动重建。安装和销毁都通过 blocking worker 执行，安装完成事件继续触发一次协调刷新，以覆盖计划生成窗口内发生的外部变化。
+17. Git 子进程等待不能对所有命令固定休眠 25ms 后才检查退出。仓库 snapshot 会串行执行多条极短 Git 查询，固定轮询间隔会把每条查询的人为等待累加到启动路径。统一执行器从 1ms 开始指数退避并封顶 25ms：短命令及时完成，长命令在约 31ms 后恢复原有低频轮询。调整轮询策略时必须同时覆盖普通输出和有上限的预览读取路径，且不能削弱超时、输出上限或进程树清理。
 
 相关前端入口：
 

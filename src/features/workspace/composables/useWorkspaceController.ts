@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, localizedErrorMessage, setAppLocale, tr, type AppLocale } from "../../../shared/i18n";
+import { completeStartupPerformance, markPerformance, measurePerformance } from "../../../shared/performance";
 import { colorMode, resetThemeColor, setColorMode, setThemeColor, themeColor, type ColorMode } from "../../../shared/theme";
 import {
   authenticationMethodLabel,
@@ -62,6 +63,7 @@ interface RepositoryChangedPayload {
   retryable: boolean;
   historyObjectsChanged: boolean;
   stashesChanged: boolean;
+  watchPlanChanged: boolean;
 }
 
 interface RefreshSnapshotOptions {
@@ -340,6 +342,12 @@ let automaticRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 let repositoryWatcherRetryTimer: ReturnType<typeof setTimeout> | null = null;
 let repositoryWatcherRetryAttempt = 0;
 let repositoryWatcherUnavailable = false;
+let repositoriesLoadPromise: Promise<void> | null = null;
+let repositoriesReloadPending = false;
+let repositoriesRefreshOwnersPending = false;
+const repositoryWatchSupersededGenerations = new Set<number>();
+let repositoryWatchPlanChangeGeneration = 0;
+let repositoryWatchPlanAppliedGeneration = 0;
 let automaticRefreshDirty = false;
 let automaticRefreshInFlight = false;
 let repositoryViewportInteractionGeneration = 0;
@@ -754,7 +762,9 @@ function handleRepositoryViewportKeydown(event: KeyboardEvent): void {
 }
 
 function repositorySelectionIsCurrent(repositoryPath: string, generation: number): boolean {
-  return activeRepositoryPath.value === repositoryPath && repositorySelectionGeneration === generation;
+  return controllerMounted
+    && activeRepositoryPath.value === repositoryPath
+    && repositorySelectionGeneration === generation;
 }
 
 function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshRequests = true): boolean {
@@ -1077,14 +1087,32 @@ async function saveRepositoryAlias(): Promise<void> {
 }
 
 async function loadRepositories(refreshOwners = repositoryGrouping.value === "owner"): Promise<void> {
-  repositoriesLoading.value = true;
-  try {
-    repositories.value = await api.listRepositories(refreshOwners);
-  } catch (error) {
-    reportError(error, tr("读取仓库列表失败", "Could not load repositories"));
-  } finally {
-    repositoriesLoading.value = false;
+  if (repositoriesLoadPromise) {
+    repositoriesReloadPending = true;
+    repositoriesRefreshOwnersPending ||= refreshOwners;
+    return repositoriesLoadPromise;
   }
+  repositoriesLoadPromise = (async () => {
+    repositoriesLoading.value = true;
+    let shouldRefreshOwners = refreshOwners;
+    try {
+      do {
+        repositoriesReloadPending = false;
+        repositoriesRefreshOwnersPending = false;
+        try {
+          repositories.value = await api.listRepositories(shouldRefreshOwners);
+        } catch (error) {
+          reportError(error, tr("读取仓库列表失败", "Could not load repositories"));
+          if (!repositoriesReloadPending) break;
+        }
+        shouldRefreshOwners = repositoriesRefreshOwnersPending;
+      } while (repositoriesReloadPending);
+    } finally {
+      repositoriesLoading.value = false;
+      repositoriesLoadPromise = null;
+    }
+  })();
+  return repositoriesLoadPromise;
 }
 
 async function loadAccounts(): Promise<void> {
@@ -1125,11 +1153,20 @@ async function loadEndpoints(): Promise<void> {
   }
 }
 
-function installRepositoryWatcher(repositoryPath: string): void {
+function installRepositoryWatcher(repositoryPath: string): Promise<void> {
   if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
   repositoryWatcherRetryTimer = null;
+  const previousGeneration = repositoryWatchRequestGeneration;
   const requestGeneration = ++repositoryWatchRequestGeneration;
-  void api.watchRepositoryChanges(repositoryPath, requestGeneration)
+  if (previousGeneration > 0) {
+    repositoryWatchSupersededGenerations.add(previousGeneration);
+    if (repositoryWatchSupersededGenerations.size > 32) {
+      const oldestGeneration = repositoryWatchSupersededGenerations.values().next().value;
+      if (oldestGeneration !== undefined) repositoryWatchSupersededGenerations.delete(oldestGeneration);
+    }
+  }
+  const watchPlanGeneration = repositoryWatchPlanChangeGeneration;
+  return api.watchRepositoryChanges(repositoryPath, requestGeneration)
     .then(() => {
       if (
         controllerMounted &&
@@ -1138,6 +1175,10 @@ function installRepositoryWatcher(repositoryPath: string): void {
       ) {
         repositoryWatcherRetryAttempt = 0;
         repositoryWatcherUnavailable = false;
+        repositoryWatchPlanAppliedGeneration = Math.max(
+          repositoryWatchPlanAppliedGeneration,
+          watchPlanGeneration,
+        );
       }
     })
     .catch((error) => {
@@ -1154,17 +1195,25 @@ function installRepositoryWatcher(repositoryPath: string): void {
             retryable: !isAppError(error) || error.code !== "repository_watch_failed_permanent",
             historyObjectsChanged: false,
             stashesChanged: false,
+            watchPlanChanged: false,
           },
         });
       }
     });
 }
 
-async function selectRepository(repositoryPath: string, reportOpenError = true): Promise<void> {
+async function selectRepository(
+  repositoryPath: string,
+  reportOpenError = true,
+  deferWatcherUntilInteractive = false,
+): Promise<void> {
   if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
   repositoryWatcherRetryTimer = null;
   repositoryWatcherRetryAttempt = 0;
   repositoryWatcherUnavailable = false;
+  repositoryWatchPlanChangeGeneration = 0;
+  repositoryWatchPlanAppliedGeneration = 0;
+  repositoryWatchSupersededGenerations.clear();
   snapshotApplicationGeneration += 1;
   snapshotRefreshRequestGeneration += 1;
   invalidateCommitHistoryCache();
@@ -1209,8 +1258,23 @@ async function selectRepository(repositoryPath: string, reportOpenError = true):
     clearDiffSelection();
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
     if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+    if (deferWatcherUntilInteractive) markPerformance("workspace:snapshot-apply:start");
     applySnapshot(nextSnapshot);
-    installRepositoryWatcher(nextSnapshot.repository.path);
+    if (deferWatcherUntilInteractive) {
+      markPerformance("workspace:snapshot-apply:end");
+      measurePerformance("Snapshot application (sync)", "workspace:snapshot-apply:start", "workspace:snapshot-apply:end");
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => {
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+          markPerformance("workspace:snapshot-rendered-frame");
+          measurePerformance(
+            "Snapshot application to rendered frame",
+            "workspace:snapshot-apply:start",
+            "workspace:snapshot-rendered-frame",
+          );
+        });
+      }
+    }
     rememberLastRepositoryPath(nextSnapshot.repository.path);
     activeTab.value = "changes";
     repositoryInfo.value = null;
@@ -1222,8 +1286,17 @@ async function selectRepository(repositoryPath: string, reportOpenError = true):
     lfsStatus.value = null;
     clearCommitSelection();
     amendLastCommit.value = false;
-    await syncSelectedDiff(nextSnapshot, undefined, true);
-    await Promise.all([loadCapabilities(), loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
+    await Promise.all([syncSelectedDiff(nextSnapshot, undefined, true), loadCapabilities()]);
+    if (
+      !deferWatcherUntilInteractive
+      && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+    ) {
+      // Recursive watcher installation can be expensive for repositories
+      // containing large dependency or build trees. Its initial event already
+      // schedules a reconciling refresh, so install it after the first visible
+      // Diff instead of competing with the startup critical path.
+      void installRepositoryWatcher(nextSnapshot.repository.path);
+    }
   } catch (error) {
     if (reportOpenError && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
       reportError(error, tr("打开仓库失败", "Could not open repository"));
@@ -1434,20 +1507,31 @@ async function runAutomaticRefresh(): Promise<void> {
   } finally {
     await restoreRepositoryViewport(viewport);
     automaticRefreshInFlight = false;
+    if (
+      controllerMounted
+      && repositoryPath
+      && activeRepositoryPath.value === repositoryPath
+      && repositoryWatchPlanAppliedGeneration < repositoryWatchPlanChangeGeneration
+    ) {
+      void installRepositoryWatcher(repositoryPath);
+    }
     if (automaticRefreshDirty) scheduleAutomaticRefresh();
   }
 }
 
 function handleRepositoryChanged(event: { payload: RepositoryChangedPayload }): void {
+  const supersededPlanChange = event.payload.watchPlanChanged
+    && repositoryWatchSupersededGenerations.has(event.payload.requestGeneration);
   if (
     event.payload.repositoryPath !== activeRepositoryPath.value ||
-    event.payload.requestGeneration !== repositoryWatchRequestGeneration
+    (event.payload.requestGeneration !== repositoryWatchRequestGeneration && !supersededPlanChange)
   ) return;
   if (event.payload.historyObjectsChanged) {
     invalidateCommitHistoryCache();
     invalidateCommitDetailCaches();
   }
   if (event.payload.stashesChanged) invalidateStashesCache();
+  if (event.payload.watchPlanChanged) repositoryWatchPlanChangeGeneration += 1;
   scheduleAutomaticRefresh();
 }
 
@@ -1476,7 +1560,7 @@ function handleRepositoryWatchError(event: { payload: RepositoryChangedPayload }
       repositoryWatchRequestGeneration === requestGeneration &&
       activeRepositoryPath.value === event.payload.repositoryPath
     ) {
-      installRepositoryWatcher(event.payload.repositoryPath);
+      void installRepositoryWatcher(event.payload.repositoryPath);
     }
   }, retryDelay);
 }
@@ -1485,7 +1569,7 @@ function handleWindowFocus(): void {
   windowFocused = true;
   if (repositoryWatcherUnavailable && activeRepositoryPath.value) {
     repositoryWatcherRetryAttempt = 0;
-    installRepositoryWatcher(activeRepositoryPath.value);
+    void installRepositoryWatcher(activeRepositoryPath.value);
   }
   if (section.value === "accounts") {
     void refreshAccountStatuses();
@@ -3524,6 +3608,9 @@ watch(selectedRemoteName, () => {
 
 watch(activeTab, (tab) => {
   if (tab === "history") void loadHistoryWithOptions();
+  else if (tab === "branches") {
+    void Promise.all([loadWorktrees(), loadSubmodules(), loadLfsStatus()]);
+  }
 });
 
 watch(
@@ -3588,6 +3675,7 @@ watch(repositoryGrouping, (grouping) => {
 });
 
 onMounted(async () => {
+  markPerformance("workspace:mounted");
   controllerMounted = true;
   if (!browserDemo) window.addEventListener("keydown", handleDevtoolsShortcut);
   window.addEventListener("keydown", handleRepositoryViewportKeydown);
@@ -3596,7 +3684,22 @@ onMounted(async () => {
   window.addEventListener("focus", handleWindowFocus);
   window.addEventListener("blur", handleWindowBlur);
   document.addEventListener("visibilitychange", handleVisibilityChange);
-  const startupDataPromise = Promise.all([loadRepositories(), loadAccounts(), loadEndpoints(), loadExternalEditor()]);
+  markPerformance("workspace:startup-data:start");
+  const startupDataPromise = Promise.all([loadAccounts(), loadEndpoints(), loadExternalEditor()])
+    .then((result) => {
+      markPerformance("workspace:startup-data:end");
+      measurePerformance("Startup settings requests", "workspace:startup-data:start", "workspace:startup-data:end");
+      return result;
+    });
+  const storedPath = storedLastRepositoryPath();
+  const storedRepositoryPromise = storedPath
+    ? (async () => {
+        markPerformance("workspace:stored-repository:start");
+        await selectRepository(storedPath, false, true);
+        markPerformance("workspace:stored-repository:end");
+        measurePerformance("Stored repository open", "workspace:stored-repository:start", "workspace:stored-repository:end");
+      })()
+    : Promise.resolve();
   if (!browserDemo) {
     const [repositoryListener, watchErrorListener, focusListener] = await Promise.allSettled([
       listen<RepositoryChangedPayload>("repository-changed", handleRepositoryChanged),
@@ -3618,12 +3721,22 @@ onMounted(async () => {
     if (watchErrorListener.status === "fulfilled") stopRepositoryWatchErrorListener = watchErrorListener.value;
     if (focusListener.status === "fulfilled") stopWindowFocusListener = focusListener.value;
   }
+  markPerformance("workspace:listeners-ready");
+  measurePerformance("Workspace listener setup", "workspace:mounted", "workspace:listeners-ready");
   if (!controllerMounted) return;
-  const storedPath = storedLastRepositoryPath();
-  if (storedPath) await selectRepository(storedPath, false);
+  // Watcher installation is deferred until the first interactive frame, so
+  // opening the remembered repository does not depend on event listeners.
+  // Starting it alongside the bridge/listener warm-up removes that fixed
+  // startup round trip from the repository critical path.
+  await storedRepositoryPromise;
   if (!controllerMounted) return;
   if (snapshot.value) workspaceInitializing.value = false;
 
+  let repositoriesLoadedDuringStartup = false;
+  if (!snapshot.value) {
+    await loadRepositories();
+    repositoriesLoadedDuringStartup = true;
+  }
   await startupDataPromise;
   if (!controllerMounted) return;
   const storedRepository = storedPath
@@ -3633,8 +3746,26 @@ onMounted(async () => {
     (left, right) => (right.lastOpenedAt ?? 0) - (left.lastOpenedAt ?? 0),
   )[0];
   const startupRepository = storedRepository ?? mostRecentRepository;
-  if (!snapshot.value && startupRepository) await selectRepository(startupRepository.path);
-  if (controllerMounted) workspaceInitializing.value = false;
+  if (!snapshot.value && startupRepository) {
+    markPerformance("workspace:fallback-repository:start");
+    await selectRepository(startupRepository.path, true, true);
+    markPerformance("workspace:fallback-repository:end");
+    measurePerformance("Fallback repository open", "workspace:fallback-repository:start", "workspace:fallback-repository:end");
+  }
+  if (controllerMounted) {
+    workspaceInitializing.value = false;
+    completeStartupPerformance(() => {
+      if (!controllerMounted) return;
+      const repositoryPath = activeRepositoryPath.value;
+      const loadDeferredRepositories = () => {
+        if (controllerMounted && !repositoriesLoadedDuringStartup) void loadRepositories();
+      };
+      if (repositoryPath && activeRepositoryPath.value === repositoryPath) {
+        void installRepositoryWatcher(repositoryPath);
+      }
+      loadDeferredRepositories();
+    });
+  }
 });
 
 onBeforeUnmount(() => {
@@ -3647,6 +3778,7 @@ onBeforeUnmount(() => {
   commitFilesRequestGeneration += 1;
   commitDiffRequestGeneration += 1;
   const stopWatcherGeneration = ++repositoryWatchRequestGeneration;
+  repositoryWatchSupersededGenerations.clear();
   void api.stopRepositoryWatcher(stopWatcherGeneration).catch(() => undefined);
   if (automaticRefreshTimer) clearTimeout(automaticRefreshTimer);
   if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);

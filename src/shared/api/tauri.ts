@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { measureCommand, performanceProfilingEnabled } from "../performance";
 import type {
   AccountProfile,
   AppError,
@@ -522,15 +523,15 @@ function asAppError(error: unknown): AppError {
 }
 
 async function request<T>(command: string, args: object, browserFallback: () => T | Promise<T>): Promise<T> {
-  if (!isTauriRuntime()) {
-    return browserFallback();
-  }
-
-  try {
-    return await invoke<T>(command, args as Record<string, unknown>);
-  } catch (error) {
-    throw asAppError(error);
-  }
+  const operation = async (): Promise<T> => {
+    if (!isTauriRuntime()) return browserFallback();
+    try {
+      return await invoke<T>(command, args as Record<string, unknown>);
+    } catch (error) {
+      throw asAppError(error);
+    }
+  };
+  return performanceProfilingEnabled ? measureCommand(command, operation) : operation();
 }
 
 function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): RepositorySnapshot {

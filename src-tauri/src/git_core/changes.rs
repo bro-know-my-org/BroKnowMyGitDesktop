@@ -22,6 +22,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const MAX_EXTERNAL_EDITOR_REAPERS: usize = 4;
 static ACTIVE_EXTERNAL_EDITOR_REAPERS: AtomicUsize = AtomicUsize::new(0);
 
+pub(crate) struct WorktreeExcludesFile {
+    pub(crate) path: PathBuf,
+    pub(crate) watch_externally: bool,
+    pub(crate) load_rules: bool,
+}
+
 /// A filesystem identity captured with an untracked-file cleanup preview.
 /// It stays in memory only; it is neither exposed through IPC nor persisted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1184,6 +1190,149 @@ impl Drop for ExternalEditorReaperPermit {
 }
 
 impl GitCore {
+    /// Returns index paths for watcher planning. Git ignore rules can match a
+    /// path after it has already been committed; those tracked files must
+    /// remain observable even when an ignore-aware directory walk skips the
+    /// surrounding untracked content.
+    pub(crate) fn tracked_worktree_paths(
+        &self,
+        repository: &Path,
+    ) -> Result<Vec<PathBuf>, AppError> {
+        let output = self.run(
+            Some(repository),
+            &os_arguments(&["ls-files", "--cached", "-z"]),
+            &GitEnvironment::default(),
+            "读取已跟踪路径",
+        )?;
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|field| !field.is_empty())
+            .map(|field| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::ffi::OsStringExt;
+                    Ok(PathBuf::from(OsString::from_vec(field.to_vec())))
+                }
+                #[cfg(not(unix))]
+                {
+                    String::from_utf8(field.to_vec())
+                        .map(PathBuf::from)
+                        .map_err(|_| {
+                            AppError::new("git_parse_error", "无法解析用于仓库监听的已跟踪路径。")
+                        })
+                }
+            })
+            .collect()
+    }
+
+    /// Resolves the effective `core.excludesFile` with Git's own path
+    /// expansion. Repository-local configuration may override the user's
+    /// global ignore file, so watcher planning cannot infer this path from the
+    /// process environment alone.
+    pub(crate) fn worktree_excludes_file(
+        &self,
+        repository: &Path,
+    ) -> Result<Option<WorktreeExcludesFile>, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "config",
+                "--null",
+                "--show-scope",
+                "--path",
+                "--get",
+                "core.excludesFile",
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.success() {
+            let mut fields = output.stdout.split(|byte| *byte == 0);
+            let scope = fields.next().unwrap_or_default();
+            let path = fields.next().unwrap_or_default();
+            if scope.is_empty() || path.is_empty() || fields.any(|field| !field.is_empty()) {
+                return Err(AppError::new(
+                    "git_parse_error",
+                    "无法读取 Git 全局忽略文件位置。",
+                ));
+            }
+            let path = git_path_from_output(path, "无法读取 Git 全局忽略文件位置。")?;
+            let path = if path.is_absolute() {
+                path
+            } else {
+                repository.join(path)
+            };
+            if matches!(scope, b"local" | b"worktree") {
+                let repository_anchor = fs::canonicalize(repository).map_err(|_| {
+                    AppError::new("repository_not_found", "仓库目录不存在或无法访问。")
+                })?;
+                let git_directory_anchor = fs::canonicalize(self.git_directory(repository)?)
+                    .map_err(|_| {
+                        AppError::new("repository_invalid", "Git 元数据目录不存在或无法访问。")
+                    })?;
+                let common_directory_anchor =
+                    fs::canonicalize(self.git_common_directory(repository)?).map_err(|_| {
+                        AppError::new("repository_invalid", "Git 共享元数据目录不存在或无法访问。")
+                    })?;
+                let mut existing_path = path.as_path();
+                while !existing_path.exists() {
+                    let Some(parent) = existing_path.parent() else {
+                        return Ok(None);
+                    };
+                    existing_path = parent;
+                }
+                let unresolved_suffix = path.strip_prefix(existing_path).map_err(|_| {
+                    AppError::new(
+                        "repository_watch_failed_transient",
+                        "无法验证 Git 忽略文件位置。",
+                    )
+                })?;
+                if unresolved_suffix
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+                {
+                    return Ok(None);
+                }
+                let existing_anchor = fs::canonicalize(existing_path).map_err(|_| {
+                    AppError::new(
+                        "repository_watch_failed_transient",
+                        "无法验证 Git 忽略文件位置。",
+                    )
+                })?;
+                if !existing_anchor.starts_with(repository_anchor)
+                    && !existing_anchor.starts_with(git_directory_anchor)
+                    && !existing_anchor.starts_with(common_directory_anchor)
+                {
+                    // Repository-local config is controlled by the opened
+                    // repository. Never let it expand watcher scope to an
+                    // arbitrary external directory.
+                    return Ok(None);
+                }
+                let fully_resolved = unresolved_suffix.as_os_str().is_empty();
+                let load_rules = fully_resolved && existing_anchor.is_file();
+                let validated_path = if fully_resolved {
+                    existing_anchor
+                } else {
+                    existing_anchor.join(unresolved_suffix)
+                };
+                return Ok(Some(WorktreeExcludesFile {
+                    path: validated_path,
+                    watch_externally: false,
+                    load_rules,
+                }));
+            }
+            return Ok(Some(WorktreeExcludesFile {
+                path,
+                watch_externally: true,
+                load_rules: true,
+            }));
+        }
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        Err(git_command_error("读取 Git 全局忽略文件位置", &output))
+    }
+
     /// Reads status using porcelain v2, which is designed for machine parsing.
     pub fn status(&self, repository: &Path) -> Result<GitStatus, AppError> {
         let arguments = os_arguments(&[
@@ -1196,7 +1345,11 @@ impl GitCore {
         let output = self.run(
             Some(repository),
             &arguments,
-            &GitEnvironment::default(),
+            // Status refreshes are observational. Git otherwise takes an
+            // optional index lock to refresh cached stat information, and
+            // the repository watcher interprets that temporary lock as an
+            // external change, creating a self-sustaining refresh loop.
+            &GitEnvironment::new().with_variable("GIT_OPTIONAL_LOCKS", "0"),
             "读取仓库状态",
         )?;
         let mut status = parse_status_porcelain_v2(&output.stdout)?;

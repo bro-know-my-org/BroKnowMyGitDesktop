@@ -2,9 +2,13 @@ use super::support::*;
 use super::*;
 
 #[tauri::command]
-pub fn list_worktrees(repository_path: String) -> Result<Vec<WorktreeInfo>, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().worktrees(&repository)
+pub async fn list_worktrees(repository_path: String) -> Result<Vec<WorktreeInfo>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().worktrees(&repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "工作树后台任务未能完成。"))?
 }
 
 #[tauri::command]
@@ -81,9 +85,13 @@ pub fn remove_worktree(
 }
 
 #[tauri::command]
-pub fn list_submodules(repository_path: String) -> Result<Vec<SubmoduleInfo>, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().submodules(&repository)
+pub async fn list_submodules(repository_path: String) -> Result<Vec<SubmoduleInfo>, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().submodules(&repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "子模块读取后台任务未能完成。"))?
 }
 
 #[tauri::command]
@@ -120,9 +128,13 @@ pub async fn update_submodules(
 }
 
 #[tauri::command]
-pub fn get_lfs_status(repository_path: String) -> Result<LfsStatus, AppError> {
-    let repository = repository_root(&repository_path)?;
-    GitCore::new().lfs_status(&repository)
+pub async fn get_lfs_status(repository_path: String) -> Result<LfsStatus, AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        GitCore::new().lfs_status(&repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "Git LFS 状态后台任务未能完成。"))?
 }
 
 #[tauri::command]

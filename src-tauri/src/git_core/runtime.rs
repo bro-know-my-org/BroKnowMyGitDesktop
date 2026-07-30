@@ -9,8 +9,19 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 const MAX_CONCURRENT_GIT_PIPE_OPERATIONS: usize = 32;
+const INITIAL_GIT_PROCESS_POLL_DELAY: Duration = Duration::from_millis(1);
+const MAX_GIT_PROCESS_POLL_DELAY: Duration = Duration::from_millis(25);
 
 static ACTIVE_GIT_PIPE_OPERATIONS: AtomicUsize = AtomicUsize::new(0);
+
+fn sleep_before_next_git_process_poll(delay: &mut Duration) {
+    // Most repository queries finish in a few milliseconds. A fixed 25 ms
+    // sleep is multiplied by every Git command used to assemble a snapshot;
+    // exponential backoff keeps those short queries responsive while quickly
+    // returning long-running operations to the previous low wake-up rate.
+    thread::sleep(*delay);
+    *delay = std::cmp::min(delay.saturating_mul(2), MAX_GIT_PROCESS_POLL_DELAY);
+}
 
 /// A permit remains owned by every pipe worker until it finishes. A hostile
 /// hook or transport helper can escape the direct Git process group and keep
@@ -208,6 +219,21 @@ impl GitCore {
             "读取 Git 操作状态",
         )?;
         let git_dir = git_path_from_output(&output.stdout, "无法读取 Git 元数据目录")?;
+        Ok(if git_dir.is_absolute() {
+            git_dir
+        } else {
+            repository.join(git_dir)
+        })
+    }
+
+    pub(super) fn git_common_directory(&self, repository: &Path) -> Result<PathBuf, AppError> {
+        let output = self.run(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--git-common-dir"]),
+            &GitEnvironment::default(),
+            "读取 Git 共享元数据目录",
+        )?;
+        let git_dir = git_path_from_output(&output.stdout, "无法读取 Git 共享元数据目录")?;
         Ok(if git_dir.is_absolute() {
             git_dir
         } else {
@@ -445,6 +471,7 @@ impl GitCore {
         let deadline = Instant::now() + BOUNDED_GIT_COMMAND_TIMEOUT;
         let mut stdout_ready = None;
         let mut stderr_ready = None;
+        let mut process_poll_delay = INITIAL_GIT_PROCESS_POLL_DELAY;
         let status = loop {
             if let Err(error) = poll_git_preview_pipe(&stdout_reader, &mut stdout_ready) {
                 terminate_git_network_child(&mut child, process_id, Some(&process_tree));
@@ -527,7 +554,7 @@ impl GitCore {
                         "Git 命令超时，请缩小范围后重试。",
                     ));
                 }
-                Ok(None) => thread::sleep(Duration::from_millis(25)),
+                Ok(None) => sleep_before_next_git_process_poll(&mut process_poll_delay),
                 Err(error) => {
                     terminate_git_network_child(&mut child, process_id, Some(&process_tree));
                     return Err(AppError::io("等待 Git", error));
@@ -752,6 +779,7 @@ impl GitCore {
         let mut stdout_ready = None;
         let mut stderr_ready = None;
         let mut input_ready = input_writer.is_none();
+        let mut process_poll_delay = INITIAL_GIT_PROCESS_POLL_DELAY;
         let status = loop {
             if let Some(writer) = &input_writer {
                 if let Err(error) = poll_git_input_writer(writer, &mut input_ready) {
@@ -775,7 +803,7 @@ impl GitCore {
                     terminate_git_network_child(&mut child, process_id, Some(&process_tree));
                     return Err(AppError::new(limits.timeout_code, limits.timeout_message));
                 }
-                Ok(None) => thread::sleep(Duration::from_millis(25)),
+                Ok(None) => sleep_before_next_git_process_poll(&mut process_poll_delay),
                 Err(error) => {
                     terminate_git_network_child(&mut child, process_id, Some(&process_tree));
                     return Err(AppError::io("等待 Git", error));

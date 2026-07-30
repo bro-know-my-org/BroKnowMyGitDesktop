@@ -2,23 +2,41 @@ use super::support::*;
 use super::*;
 
 #[tauri::command]
-pub fn get_file_diff(
+pub async fn get_file_diff(
     repository_path: String,
     path: String,
     staged: bool,
 ) -> Result<String, AppError> {
-    let repository = repository_root(&repository_path)?;
-    // Git permits filenames containing only whitespace. Only an actual empty
-    // IPC value requests a repository-wide diff.
-    let paths = (!path.is_empty()).then_some(path);
-    GitCore::new().diff(
-        &repository,
-        &DiffOptions {
-            staged,
-            paths: paths.into_iter().collect(),
-            context_lines: Some(3),
-        },
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(debug_assertions)]
+        let command_started = std::time::Instant::now();
+        let repository = repository_root(&repository_path)?;
+        #[cfg(debug_assertions)]
+        let repository_resolved = std::time::Instant::now();
+        // Git permits filenames containing only whitespace. Only an actual empty
+        // IPC value requests a repository-wide diff.
+        let paths = (!path.is_empty()).then_some(path);
+        let result = GitCore::new().diff(
+            &repository,
+            &DiffOptions {
+                staged,
+                paths: paths.into_iter().collect(),
+                context_lines: Some(3),
+            },
+        );
+        #[cfg(debug_assertions)]
+        eprintln!(
+            "[BKM performance] get_file_diff: repository_root={}ms git_diff={}ms total={}ms",
+            repository_resolved
+                .duration_since(command_started)
+                .as_millis(),
+            repository_resolved.elapsed().as_millis(),
+            command_started.elapsed().as_millis(),
+        );
+        result
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "文件差异后台任务未能完成。"))?
 }
 
 #[tauri::command]

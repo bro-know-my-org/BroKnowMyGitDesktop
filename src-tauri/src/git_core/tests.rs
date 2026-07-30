@@ -208,6 +208,26 @@ fn git_children_replace_inherited_credential_environment() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn status_disables_optional_index_locks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-status-optional-lock-test"),
+    );
+    let fake_git = root.join("fake-git.sh");
+    fs::write(
+        &fake_git,
+        "#!/bin/sh\n[ \"$GIT_OPTIONAL_LOCKS\" = \"0\" ] || exit 9\nprintf '%s\\n' \"$@\" | grep -qx -- status || exit 10\nprintf '%s\\n' \"$@\" | grep -qx -- --porcelain=v2 || exit 11\nprintf '%s\\n' \"$@\" | grep -qx -- -z || exit 12\nprintf '%s\\n' \"$@\" | grep -qx -- --branch || exit 13\nprintf '# branch.oid 0123456789abcdef0123456789abcdef01234567\\n# branch.head main\\n'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let status = GitCore::with_executable(fake_git).status(&root).unwrap();
+    assert_eq!(status.branch.as_deref(), Some("main"));
+}
+
 #[test]
 fn explicit_credentials_clear_repository_helper_configuration() {
     let mut environment = GitEnvironment::new();
@@ -3957,5 +3977,94 @@ fn returned_remote_urls_run_through_domain_sanitizer() {
     assert_eq!(
         safe_remote_url("https://token-value@github.com/org/repo.git?access_token=hidden"),
         "https://github.com/org/repo.git"
+    );
+}
+
+#[test]
+fn repository_configured_excludes_is_deferred_until_the_file_exists() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-excludes-path-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+    let configured_path = Path::new("config/ignore");
+    let excludes_file = repository.join(configured_path);
+    let configured = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "config",
+            "core.excludesFile",
+            configured_path.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(configured.success());
+
+    assert_eq!(
+        GitCore::new()
+            .worktree_excludes_file(&repository)
+            .unwrap()
+            .map(|exclude| (exclude.path, exclude.watch_externally, exclude.load_rules)),
+        Some((excludes_file.clone(), false, false))
+    );
+    fs::create_dir_all(excludes_file.parent().unwrap()).unwrap();
+    fs::write(&excludes_file, "generated/\n").unwrap();
+    assert_eq!(
+        GitCore::new()
+            .worktree_excludes_file(&repository)
+            .unwrap()
+            .map(|exclude| (exclude.path, exclude.watch_externally, exclude.load_rules)),
+        Some((fs::canonicalize(excludes_file).unwrap(), false, true))
+    );
+}
+
+#[test]
+fn repository_configured_excludes_cannot_expand_watcher_scope_outside_repository() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-excludes-scope-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+    let external_directory = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-external-excludes-test-{}-{suffix}",
+        std::process::id()
+    )));
+    let external_excludes_file = external_directory.join("ignore");
+    fs::write(&external_excludes_file, "ignored/\n").unwrap();
+    let configured = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "config",
+            "core.excludesFile",
+            external_excludes_file.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(configured.success());
+
+    assert_eq!(
+        GitCore::new()
+            .worktree_excludes_file(&repository)
+            .unwrap()
+            .map(|exclude| exclude.path),
+        None
     );
 }
