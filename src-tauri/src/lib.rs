@@ -10,6 +10,7 @@ pub mod persistence;
 pub mod process_tree;
 
 use crate::persistence::AppState;
+use tauri::webview::PageLoadEvent;
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -19,6 +20,17 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(AppState::load(&app_data_dir)?);
             Ok(())
+        })
+        .on_page_load(|webview, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let window = webview.window();
+            if window.show().is_err() {
+                eprintln!("BroKnowMyGitDesktop could not reveal its main window.");
+                return;
+            }
+            let _ = window.set_focus();
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_repositories,

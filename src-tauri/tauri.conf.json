@@ -17,6 +17,8 @@
         "height": 820,
         "minWidth": 1024,
         "minHeight": 680,
+        "backgroundColor": "#f6f8fb",
+        "visible": false,
         "devtools": true
       }
     ],
