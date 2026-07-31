@@ -53,6 +53,51 @@
   flex: 1 1 0;
 }
 
+.history-stash-count {
+  display: inline-grid;
+  min-width: 17px;
+  height: 17px;
+  place-items: center;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--app-row-hover);
+  color: var(--app-text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.history-header-action-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.history-header-action-icon.is-filled {
+  fill: currentcolor;
+  stroke: none;
+}
+
+.history-stash-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.history-stash-summary {
+  color: var(--app-text-muted);
+  font-size: 12px;
+}
+
+.history-stash-empty {
+  margin-top: 72px;
+}
+
 .history-commit-scroll > .n-scrollbar-container {
   overscroll-behavior: contain;
 }

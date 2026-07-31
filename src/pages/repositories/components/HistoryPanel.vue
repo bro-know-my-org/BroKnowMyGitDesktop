@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
-import { NButton, NCard, NDataTable, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, useMessage } from "naive-ui";
+import { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, useMessage } from "naive-ui";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
@@ -9,11 +9,12 @@ import type { CommitChangedFile, CommitFileStatus, CommitSummary } from "../../.
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { NButton, NCard, NDataTable, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
+  components: { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const message = useMessage();
     const commitContextMenuOpen = ref(false);
+    const stashDrawerShown = ref(false);
     const commitContextMenuX = ref(0);
     const commitContextMenuY = ref(0);
     const commitContextTarget = ref<{ repositoryPath: string; sha: string } | null>(null);
@@ -24,6 +25,11 @@ export default defineComponent({
       { label: t('repository.history.copyCommitDetails'), key: "copy-details" },
       { type: "divider", key: "copy-divider" },
       { label: t('repository.history.createTagCommit'), key: "create-tag" },
+    ]);
+    const historyActionOptions = computed(() => [
+      { label: t('repository.history.refresh'), key: "refresh", disabled: workspace.historyLoading.value },
+      { label: t('repository.history.viewReflog'), key: "reflog", disabled: workspace.reflogLoading.value },
+      { label: t('repository.history.squashRecent'), key: "squash", disabled: workspace.commits.value.length < 3 },
     ]);
     const commitFileStatusCodes: Record<CommitFileStatus, string> = {
       added: "A",
@@ -156,6 +162,16 @@ export default defineComponent({
       }
     }
 
+    function selectHistoryAction(value: string | number): void {
+      if (value === "refresh") {
+        void workspace.loadHistory();
+      } else if (value === "reflog") {
+        workspace.openReflog();
+      } else if (value === "squash") {
+        workspace.openSquashModal();
+      }
+    }
+
     watch(
       [workspace.activeRepositoryPath, workspace.commits],
       () => {
@@ -165,18 +181,25 @@ export default defineComponent({
       },
     );
 
+    watch(workspace.activeRepositoryPath, () => {
+      stashDrawerShown.value = false;
+    });
+
     return {
       ...workspace,
       ...useRepositoryPanelSplit(),
       commitContextMenuOpen,
+      stashDrawerShown,
       commitContextMenuX,
       commitContextMenuY,
       commitContextMenuOptions,
+      historyActionOptions,
       commitFileStatusCode,
       commitFileStatusClass,
       commitFileStatusLabel,
       openCommitContextMenu,
       selectCommitContextMenuItem,
+      selectHistoryAction,
       t,
     };
   },
@@ -188,10 +211,29 @@ export default defineComponent({
 <div class="history-workspace repository-split-layout" :style="repositoryPanelStyle">
                   <n-card size="small" :title="t('repository.history.commitHistory')" class="history-commit-card">
                     <template #header-extra>
-                      <n-space size="small">
-                        <n-button size="tiny" tertiary :disabled="reflogLoading" @click="openReflog">{{ t('repository.history.viewReflog') }}</n-button>
-                        <n-button size="tiny" tertiary :disabled="commits.length < 3" @click="openSquashModal">{{ t('repository.history.squashRecent') }}</n-button>
-                        <n-button size="tiny" tertiary :loading="historyLoading" @click="loadHistory">{{ t('repository.history.refresh') }}</n-button>
+                      <n-space size="small" :wrap="false">
+                        <n-button
+                          size="tiny"
+                          tertiary
+                          :loading="stashesLoading"
+                          :aria-label="t('repository.history.stashCount', { count: stashes.length })"
+                          :title="t('repository.history.stashCount', { count: stashes.length })"
+                          @click="stashDrawerShown = true"
+                        >
+                          <svg class="history-header-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M4 8h16v12H4zM3 4h18v4H3zm6 8h6" />
+                          </svg>
+                          <span v-if="stashes.length" class="history-stash-count">{{ stashes.length }}</span>
+                        </n-button>
+                        <n-dropdown trigger="click" :options="historyActionOptions" @select="selectHistoryAction">
+                          <n-button size="tiny" tertiary :aria-label="t('repository.history.moreActions')" :title="t('repository.history.moreActions')">
+                            <svg class="history-header-action-icon is-filled" viewBox="0 0 24 24" aria-hidden="true">
+                              <circle cx="5" cy="12" r="2" />
+                              <circle cx="12" cy="12" r="2" />
+                              <circle cx="19" cy="12" r="2" />
+                            </svg>
+                          </n-button>
+                        </n-dropdown>
                       </n-space>
                     </template>
                     <n-spin :show="historyLoading">
@@ -337,11 +379,25 @@ export default defineComponent({
                   </n-card>
                 </div>
 
-                <n-card size="small" :title="t('repository.history.stash')" class="commit-card">
-                  <template #header-extra><n-button size="tiny" type="primary" :disabled="!snapshot.status.entries.length" @click="openStashModal">{{ t('repository.history.stashChanges') }}</n-button></template>
-                  <n-data-table :columns="stashColumns" :data="stashes" :loading="stashesLoading" :bordered="false" />
-                  <n-empty v-if="!stashesLoading && !stashes.length" :description="t('repository.history.stashEmpty')" />
-                </n-card>
+                <n-drawer v-model:show="stashDrawerShown" width="min(560px, 94vw)" placement="right">
+                  <n-drawer-content :title="t('repository.history.stash')" closable>
+                    <div class="history-stash-toolbar">
+                      <span class="history-stash-summary">{{ t('repository.history.stashCount', { count: stashes.length }) }}</span>
+                      <n-button type="primary" :disabled="!snapshot.status.entries.length" @click="openStashModal">
+                        {{ t('repository.history.stashChanges') }}
+                      </n-button>
+                    </div>
+                    <n-data-table
+                      v-if="stashesLoading || stashes.length"
+                      :columns="stashColumns"
+                      :data="stashes"
+                      :loading="stashesLoading"
+                      :bordered="false"
+                      size="small"
+                    />
+                    <n-empty v-else class="history-stash-empty" :description="t('repository.history.stashEmpty')" />
+                  </n-drawer-content>
+                </n-drawer>
   </template>
 </template>
 
