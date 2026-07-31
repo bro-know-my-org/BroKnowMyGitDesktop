@@ -33,6 +33,7 @@ export function useRepositoryCatalog({
   let repositoriesLoadPromise: Promise<void> | null = null;
   let repositoriesReloadPending = false;
   let repositoriesRefreshOwnersPending = false;
+  let repositoryRecordsGeneration = 0;
 
   function compareRepositoryRecords(left: RepositoryRecord, right: RepositoryRecord): number {
     const leftLabel = left.alias?.trim() || left.name;
@@ -113,6 +114,7 @@ export function useRepositoryCatalog({
   });
 
   function replaceRepositoryRecord(repository: RepositoryRecord): void {
+    repositoryRecordsGeneration += 1;
     const index = repositories.value.findIndex((item) => item.path === repository.path);
     if (index === -1) repositories.value = [...repositories.value, repository];
     else repositories.value = repositories.value.map((item) =>
@@ -189,7 +191,14 @@ export function useRepositoryCatalog({
           repositoriesReloadPending = false;
           repositoriesRefreshOwnersPending = false;
           try {
-            repositories.value = await api.listRepositories(shouldRefreshOwners);
+            const requestGeneration = repositoryRecordsGeneration;
+            const nextRepositories = await api.listRepositories(shouldRefreshOwners);
+            if (requestGeneration === repositoryRecordsGeneration) {
+              repositories.value = nextRepositories;
+            } else {
+              repositoriesReloadPending = true;
+              repositoriesRefreshOwnersPending ||= shouldRefreshOwners;
+            }
           } catch (error) {
             reportError(error, t("workspace.controller.couldNotLoadRepositories"));
             if (!repositoriesReloadPending) break;
