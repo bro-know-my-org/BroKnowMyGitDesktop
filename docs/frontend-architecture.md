@@ -24,7 +24,10 @@ src/
 - `src/App.vue` 只创建工作区控制器并提供上下文。
 - `app/AppShell.vue` 只拼装侧栏、顶部栏、内容区和弹窗层。
 - `pages/*/index.vue` 是页面编排层；仓库页的改动、历史、分支、详情各自位于 `components/`。
-- `features/workspace/composables/` 管理页面级状态、表格列和业务操作；展示无关的格式化逻辑放在 `features/repository/utils/`。
+- `features/workspace/composables/useWorkspaceController.ts` 只负责装配公开工作区接口、生命周期和跨域刷新。
+- 工作区业务按职责拆到 `useRepositoryCatalog`、`useRepositoryChanges`、`useRepositoryHistory`、`useRepositoryOperations`、`useRepositoryAuxiliary`、`useRepositoryPlatform` 和 `useWorkspaceAccounts`；模块通过窄依赖回调协作，不建立全局单例。
+- `shared/api/tauri.ts` 保持稳定的 IPC facade；运行时请求、内建 Endpoint、浏览器 Demo fixture 与 diff 解析分别位于同目录的小模块中。
+- 展示无关的格式化逻辑放在 `features/repository/utils/`。
 - `shared/api/tauri.ts` 是前端访问 Rust command 的唯一入口，禁止组件直接调用 Tauri IPC。
 
 ## 样式规则

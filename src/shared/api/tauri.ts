@@ -1,6 +1,19 @@
-import { invoke } from "@tauri-apps/api/core";
-import { localizedErrorDetails, localizedErrorMessage, t, type MessageKey } from "../i18n";
-import { measureCommand, performanceProfilingEnabled } from "../performance";
+import { localizedErrorMessage, t, type MessageKey } from "../i18n";
+import { builtinEndpoints } from "./builtinEndpoints";
+import { request } from "./tauriRuntime";
+import { boundedBrowserCommitFileDiff, parseGitDiffHeaderPaths } from "./browserDemoDiff";
+export { isAppError, isBrowserDemo, toggleDevtools } from "./tauriRuntime";
+import {
+  demoMarkers,
+  initialBrowserAccounts,
+  initialBrowserCommits,
+  initialBrowserLfsStatus,
+  initialBrowserPullRequests,
+  initialBrowserSubmodules,
+  initialBrowserWorktrees,
+  mockSnapshot,
+} from "./browserDemoFixtures";
+export { builtinEndpoints } from "./builtinEndpoints";
 import type {
   AccountProfile,
   AppError,
@@ -36,17 +49,6 @@ import type {
   WorktreeInfo,
 } from "../types/domain";
 
-const demoMarkers = {
-  repositoryAlias: "__bkm_demo_repository_alias__",
-  repositoryGroup: "__bkm_demo_repository_group__",
-  commitMultiAccount: "__bkm_demo_commit_multi_account__",
-  commitInitial: "__bkm_demo_commit_initial__",
-  updatedNow: "__bkm_demo_updated_now__",
-  accountPersonal: "__bkm_demo_account_personal__",
-  accountGitHubCli: "__bkm_demo_account_github_cli__",
-  accountWork: "__bkm_demo_account_work__",
-} as const;
-
 type DemoCommitSummaryDescriptor =
   | { kind: "message"; key: MessageKey }
   | { kind: "cherryPick"; sourceSha: string }
@@ -73,36 +75,6 @@ const browserAccountDisplayNameKeys = new Map<string, MessageKey>([
 const browserPullRequestTitleKeys = new Map<number, MessageKey>([[12, "demo.commit.multiAccount"]]);
 const browserPullRequestUpdatedAtKeys = new Map<number, MessageKey>([[12, "demo.pullRequest.updatedNow"]]);
 const browserStashMessageDescriptors = new Map<string, DemoStashMessageDescriptor>();
-
-export const builtinEndpoints: CodeHostEndpoint[] = [
-  {
-    id: "github.com",
-    kind: "gitHub",
-    displayName: "GitHub.com",
-    webUrl: "https://github.com",
-    apiUrl: "https://api.github.com",
-    gitHost: "github.com",
-    isBuiltin: true,
-  },
-  {
-    id: "gitlab.com",
-    kind: "gitLab",
-    displayName: "GitLab.com",
-    webUrl: "https://gitlab.com",
-    apiUrl: "https://gitlab.com/api/v4",
-    gitHost: "gitlab.com",
-    isBuiltin: true,
-  },
-  {
-    id: "gitee.com",
-    kind: "gitee",
-    displayName: "Gitee.com",
-    webUrl: "https://gitee.com",
-    apiUrl: "https://gitee.com/api/v5",
-    gitHost: "gitee.com",
-    isBuiltin: true,
-  },
-];
 
 const builtinCapabilities: Record<string, CodeHostCapabilities> = {
   "github.com": {
@@ -163,133 +135,8 @@ function browserCapabilities(endpointId: string): CodeHostCapabilities {
   return unavailableCapabilities;
 }
 
-const sampleRepository: RepositoryRecord = {
-  path: "/Users/you/Projects/broknowmygitdesktop",
-  name: "BroKnowMyGitDesktop",
-  alias: demoMarkers.repositoryAlias,
-  group: demoMarkers.repositoryGroup,
-  host: "gitee.com",
-  namespace: "broknowmyorg",
-  lastOpenedAt: Date.now() - 1000 * 60 * 18,
-};
-
-const sampleEntries: GitStatusEntry[] = [
-  {
-    path: "src/App.vue",
-    originalPath: null,
-    indexStatus: "M",
-    worktreeStatus: "M",
-  },
-  {
-    path: "src-tauri/src/domain.rs",
-    originalPath: null,
-    indexStatus: "",
-    worktreeStatus: "M",
-  },
-  {
-    path: "docs/architecture.md",
-    originalPath: null,
-    indexStatus: "A",
-    worktreeStatus: "",
-  },
-];
-
-const mockSnapshot: RepositorySnapshot = {
-  repository: sampleRepository,
-  hasHead: true,
-  status: {
-    headCommit: "9d7a4f0c2ea846105d1200f9cf6a4eb68d748301",
-    branch: "main",
-    upstream: "origin/main",
-    upstreamCommit: "55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10",
-    ahead: 1,
-    behind: 0,
-    entries: sampleEntries,
-  },
-  branches: [
-    { name: "main", isCurrent: true, upstream: "origin/main" },
-    { name: "feature/multi-account", isCurrent: false, upstream: "origin/feature/multi-account" },
-  ],
-  remoteBranches: [
-    { remoteName: "origin", name: "feature/multi-account" },
-    { remoteName: "origin", name: "main" },
-    { remoteName: "upstream", name: "main" },
-  ],
-  remotes: [
-    {
-      name: "origin",
-      fetchUrl: "git@gitee.com:broknowmyorg/broknowmygitdesktop.git",
-      pushUrl: "git@gitee.com:broknowmyorg/broknowmygitdesktop.git",
-      parsed: {
-        transport: "ssh",
-        host: "gitee.com",
-        port: null,
-        namespace: "broknowmyorg",
-        repository: "broknowmygitdesktop",
-      },
-      endpointId: "gitee.com",
-      codeHostKind: "gitee",
-    },
-    {
-      name: "upstream",
-      fetchUrl: "https://github.com/broknowmyorg/broknowmygitdesktop.git",
-      pushUrl: "https://github.com/broknowmyorg/broknowmygitdesktop.git",
-      parsed: {
-        transport: "https",
-        host: "github.com",
-        port: null,
-        namespace: "broknowmyorg",
-        repository: "broknowmygitdesktop",
-      },
-      endpointId: "github.com",
-      codeHostKind: "gitHub",
-    },
-  ],
-  tags: [{ name: "v0.1.0", target: "main" }],
-  bindings: [
-    {
-      repositoryPath: sampleRepository.path,
-      remoteName: "origin",
-      endpointId: "gitee.com",
-      accountSelection: { mode: "profile", accountProfileId: "gitee-personal" },
-    },
-    {
-      repositoryPath: sampleRepository.path,
-      remoteName: "upstream",
-      endpointId: "github.com",
-      accountSelection: { mode: "auto" },
-    },
-  ],
-  operation: null,
-};
-
 let browserSnapshot = rawCopy(mockSnapshot);
-let browserCommits: CommitSummary[] = [
-  {
-    sha: "9d7a4f0c2ea846105d1200f9cf6a4eb68d748301",
-    shortSha: "9d7a4f0",
-    parents: ["55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10"],
-    tags: ["v0.1.0"],
-    tagsTruncated: false,
-    pushed: false,
-    authorName: "BroKnowMy",
-    authorEmail: "broknowmy@example.test",
-    authoredAt: "2026-07-19T10:20:30+08:00",
-    summary: demoMarkers.commitMultiAccount,
-  },
-  {
-    sha: "55b91f2b0e1a6540dcdb43f1f7db2e3a22d7db10",
-    shortSha: "55b91f2",
-    parents: [],
-    tags: [],
-    tagsTruncated: false,
-    pushed: true,
-    authorName: "BroKnowMy",
-    authorEmail: "broknowmy@example.test",
-    authoredAt: "2026-07-18T09:00:00+08:00",
-    summary: demoMarkers.commitInitial,
-  },
-];
+let browserCommits = rawCopy(initialBrowserCommits);
 let browserBranchTips = new Map<string, string | null>([
   ["main", browserCommits[0].sha],
   ["feature/multi-account", browserCommits[0].sha],
@@ -393,24 +240,9 @@ function syncBrowserBranchStatus(snapshot: RepositorySnapshot): void {
 function setBrowserCurrentBranchTip(snapshot: RepositorySnapshot, sha: string | null): void {
   if (snapshot.status.branch) browserBranchTips.set(snapshot.status.branch, sha);
 }
-let browserWorktrees: WorktreeInfo[] = [
-  {
-    path: sampleRepository.path,
-    head: browserCommits[0].sha,
-    branch: "main",
-    isMain: true,
-    isDetached: false,
-    isLocked: false,
-    isPrunable: false,
-  },
-];
-let browserSubmodules: SubmoduleInfo[] = [];
-let browserLfsStatus: LfsStatus = {
-  available: true,
-  initialized: false,
-  version: "git-lfs/3.6.1 (browser demo)",
-  files: [],
-};
+let browserWorktrees = rawCopy(initialBrowserWorktrees);
+let browserSubmodules = rawCopy(initialBrowserSubmodules);
+let browserLfsStatus = rawCopy(initialBrowserLfsStatus);
 let browserExternalEditor: ExternalEditorConfig | null = null;
 let browserCleanUntrackedConfirmation: { repositoryPath: string; token: string; paths: Set<string> } | null = null;
 const browserDiscardConfirmationTtlMs = 60_000;
@@ -462,48 +294,8 @@ function stashBrowserChanges(
     ? []
     : snapshot.status.entries.filter(isBrowserUntrackedEntry);
 }
-let browserPullRequests: PullRequestSummary[] = [
-  {
-    number: 12,
-    title: demoMarkers.commitMultiAccount,
-    author: "broknowmy",
-    state: "OPEN",
-    webUrl: "https://github.com/broknowmyorg/broknowmygitdesktop/pull/12",
-    updatedAt: demoMarkers.updatedNow,
-  },
-];
-let browserAccounts: AccountProfile[] = [
-  {
-    id: "gitee-personal",
-    endpointId: "gitee.com",
-    login: "broknowmy",
-    displayName: demoMarkers.accountPersonal,
-    authMethod: "personalAccessToken",
-    secretRef: { service: "io.github.broknowmyorg.broknowmygitdesktop", account: "gitee-personal" },
-    status: "valid",
-    isDefaultCandidate: true,
-  },
-  {
-    id: "github-cli",
-    endpointId: "github.com",
-    login: "broknowmy",
-    displayName: demoMarkers.accountGitHubCli,
-    authMethod: "ghCli",
-    secretRef: null,
-    status: "available",
-    isDefaultCandidate: true,
-  },
-  {
-    id: "gitlab-cli",
-    endpointId: "gitlab.com",
-    login: "broknowmy-work",
-    displayName: demoMarkers.accountWork,
-    authMethod: "glabCli",
-    secretRef: null,
-    status: "needsReauthentication",
-    isDefaultCandidate: false,
-  },
-];
+let browserPullRequests = rawCopy(initialBrowserPullRequests);
+let browserAccounts = rawCopy(initialBrowserAccounts);
 
 function browserGitHubPublishOwnersFor(account: AccountProfile): GitHubPublishOwner[] {
   const localizedAccount = localizeBrowserAccount(account);
@@ -603,20 +395,6 @@ function localizeBrowserStashes(stashes: StashEntry[]): StashEntry[] {
   });
 }
 
-function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
-}
-
-export function isBrowserDemo(): boolean {
-  return !isTauriRuntime();
-}
-
-/** Tauri only exposes this built-in command in debug builds. */
-export async function toggleDevtools(): Promise<void> {
-  if (!isTauriRuntime()) return;
-  await invoke("plugin:webview|internal_toggle_devtools");
-}
-
 function isEmptyBrowserDemo(): boolean {
   return import.meta.env.VITE_UI_EMPTY_STATE === "true";
 }
@@ -628,54 +406,6 @@ function browserError(code: string): AppError {
   };
 }
 
-function asAppError(error: unknown): AppError {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const candidate = error as Partial<AppError>;
-    const code = typeof candidate.code === "string" ? candidate.code : "command_failed";
-    const details = candidate.details ? localizedErrorDetails(code) : "";
-    return {
-      code,
-      message: localizedErrorMessage(code),
-      details: details || null,
-    };
-  }
-
-  const raw = typeof error === "string" ? error : localizedErrorMessage("command_failed");
-  try {
-    const parsed = JSON.parse(raw) as Partial<AppError>;
-    if (typeof parsed.message === "string") {
-      const code = typeof parsed.code === "string" ? parsed.code : "command_failed";
-      const details = parsed.details ? localizedErrorDetails(code) : "";
-      return {
-        code,
-        message: localizedErrorMessage(code),
-        details: details || null,
-      };
-    }
-  } catch {
-    // Tauri also returns ordinary strings for some command failures.
-  }
-  return { code: "command_failed", message: localizedErrorMessage("command_failed"), details: null };
-}
-
-async function request<T>(command: string, args: object, browserFallback: () => T | Promise<T>): Promise<T> {
-  const operation = async (): Promise<T> => {
-    if (!isTauriRuntime()) {
-      try {
-        return await browserFallback();
-      } catch (error) {
-        throw asAppError(error);
-      }
-    }
-    try {
-      return await invoke<T>(command, args as Record<string, unknown>);
-    } catch (error) {
-      throw asAppError(error);
-    }
-  };
-  return performanceProfilingEnabled ? measureCommand(command, operation) : operation();
-}
-
 function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): RepositorySnapshot {
   updater(browserSnapshot);
   // Browser confirmations only retain path strings, unlike the native
@@ -684,96 +414,6 @@ function updateMockSnapshot(updater: (snapshot: RepositorySnapshot) => void): Re
   browserCleanUntrackedConfirmation = null;
   browserDiscardChangesConfirmation = null;
   return localizeBrowserSnapshot(browserSnapshot);
-}
-
-function boundedBrowserCommitFileDiff(text: string, maximumBytes: number): CommitFileDiff {
-  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 64 * 1024 || maximumBytes > 4 * 1024 * 1024) {
-    throw browserError("invalid_diff_limit");
-  }
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.length <= maximumBytes) return { text, truncated: false };
-  let end = maximumBytes;
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  while (end > 0) {
-    try {
-      return { text: decoder.decode(bytes.slice(0, end)), truncated: true };
-    } catch {
-      end -= 1;
-    }
-  }
-  return {
-    text: "",
-    truncated: true,
-  };
-}
-
-function parseGitQuotedDiffPath(header: string, index: number): { path: string; end: number } | null {
-  if (header[index] !== '"') return null;
-  const bytes: number[] = [];
-  for (let cursor = index + 1; cursor < header.length; cursor += 1) {
-    const character = header[cursor];
-    if (character === '"') {
-      try {
-        return { path: new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes)), end: cursor + 1 };
-      } catch {
-        return null;
-      }
-    }
-    if (character === "\\") {
-      const escaped = header[++cursor];
-      if (escaped === undefined) return null;
-      const escapedByte = escaped === "n" ? 0x0a
-        : escaped === "r" ? 0x0d
-          : escaped === "t" ? 0x09
-            : escaped === "\\" || escaped === '"' ? escaped.charCodeAt(0)
-              : null;
-      if (escapedByte !== null) {
-        bytes.push(escapedByte);
-        continue;
-      }
-      if (!/[0-7]/u.test(escaped) || cursor + 2 >= header.length) return null;
-      const octal = header.slice(cursor, cursor + 3);
-      if (!/^[0-7]{3}$/u.test(octal)) return null;
-      bytes.push(Number.parseInt(octal, 8));
-      cursor += 2;
-      continue;
-    }
-    const code = character.charCodeAt(0);
-    if (code < 0x20) return null;
-    if (code <= 0x7e) {
-      bytes.push(code);
-    } else {
-      bytes.push(...new TextEncoder().encode(character));
-    }
-  }
-  return null;
-}
-
-function parseGitDiffHeaderPaths(header: string): [string, string] | null {
-  const prefix = "diff --git ";
-  if (!header.startsWith(prefix)) return null;
-  let index = prefix.length;
-  const paths: string[] = [];
-  for (let pathIndex = 0; pathIndex < 2; pathIndex += 1) {
-    if (index >= header.length) return null;
-    if (header[index] === '"') {
-      const parsed = parseGitQuotedDiffPath(header, index);
-      if (!parsed) return null;
-      paths.push(parsed.path);
-      index = parsed.end;
-    } else {
-      const end = header.indexOf(" ", index);
-      const tokenEnd = end === -1 ? header.length : end;
-      if (tokenEnd === index) return null;
-      paths.push(header.slice(index, tokenEnd));
-      index = tokenEnd;
-    }
-    if (pathIndex === 0) {
-      if (header[index] !== " ") return null;
-      index += 1;
-    }
-  }
-  return index === header.length ? [paths[0], paths[1]] : null;
 }
 
 function requireBrowserSnapshot(repositoryPath: string): RepositorySnapshot {
@@ -2270,7 +1910,3 @@ export const api = {
     );
   },
 };
-
-export function isAppError(error: unknown): error is AppError {
-  return typeof error === "object" && error !== null && "code" in error && "message" in error;
-}
