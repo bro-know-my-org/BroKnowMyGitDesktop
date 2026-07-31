@@ -121,6 +121,7 @@ export default defineComponent({
                         <RepositoryDiffViewer
                           :lines="diffLines"
                           :line-class="diffLineClass"
+                          :file-path="selectedChange?.path || ''"
                           :reset-key="`${selectedChange?.path || ''}\u0000${selectedDiffStaged}`"
                           :label="t('repository.changes.currentFileDiff')"
                         >

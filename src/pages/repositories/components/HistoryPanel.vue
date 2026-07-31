@@ -310,6 +310,7 @@ export default defineComponent({
                             <RepositoryDiffViewer
                               :lines="commitDiffVisibleLines"
                               :line-class="diffLineClass"
+                              :file-path="selectedCommitFile?.path || ''"
                               :reset-key="`${selectedCommit?.sha || ''}\u0000${selectedCommitFile?.previousPath || ''}\u0000${selectedCommitFile?.path || ''}`"
                               :label="t('repository.history.commitFileDiff')"
                             />

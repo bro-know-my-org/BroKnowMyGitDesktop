@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import hljs from "highlight.js/lib/common";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps<{
   lines: string[];
   lineClass: (line: string) => string;
+  filePath: string;
   resetKey: string;
   label: string;
 }>();
@@ -15,16 +17,258 @@ defineSlots<{
 const diffLineHeight = 19.44;
 const diffLineOverscan = 24;
 const maximumMeasuredColumns = 10_000;
+const maximumHighlightedHunkCharacters = 100_000;
+const maximumHighlightCacheCharacters = 500_000;
+const maximumHighlightCacheEntries = 128;
 const scroller = ref<HTMLElement | null>(null);
 const visibleStart = ref(0);
 const visibleEnd = ref(0);
 let viewportAnimationFrame: number | null = null;
 let viewportResizeObserver: ResizeObserver | null = null;
 let viewerMounted = false;
+let highlightCacheCharacters = 0;
 
-const visibleLines = computed(() => props.lines
+interface HighlightedHunk {
+  characterCount: number;
+  lines: Map<number, string>;
+}
+
+const highlightCache = new Map<string, HighlightedHunk | null>();
+
+interface DiffLinePresentation {
+  index: number;
+  line: string;
+  oldLineNumber: number | null;
+  newLineNumber: number | null;
+  prefix: string;
+  content: string;
+  highlightable: boolean;
+  hunkIndex: number | null;
+}
+
+const languageByExtension: Record<string, string> = {
+  bash: "bash",
+  c: "c",
+  cc: "cpp",
+  cjs: "javascript",
+  cpp: "cpp",
+  cs: "csharp",
+  css: "css",
+  cxx: "cpp",
+  go: "go",
+  h: "c",
+  hpp: "cpp",
+  htm: "xml",
+  html: "xml",
+  ini: "ini",
+  java: "java",
+  js: "javascript",
+  json: "json",
+  jsx: "javascript",
+  kt: "kotlin",
+  kts: "kotlin",
+  less: "less",
+  lua: "lua",
+  md: "markdown",
+  mjs: "javascript",
+  php: "php",
+  plist: "xml",
+  py: "python",
+  rb: "ruby",
+  rs: "rust",
+  sass: "scss",
+  scss: "scss",
+  sh: "bash",
+  sql: "sql",
+  swift: "swift",
+  toml: "ini",
+  ts: "typescript",
+  tsx: "typescript",
+  vue: "xml",
+  xml: "xml",
+  yaml: "yaml",
+  yml: "yaml",
+  zsh: "bash",
+};
+
+const languageByFilename: Record<string, string> = {
+  "dockerfile": "dockerfile",
+  "gemfile": "ruby",
+  "makefile": "makefile",
+  "rakefile": "ruby",
+};
+
+function resolveLanguage(filePath: string): string | null {
+  const filename = filePath.split(/[\\/]/u).pop()?.toLocaleLowerCase() || "";
+  const namedLanguage = languageByFilename[filename];
+  if (namedLanguage && hljs.getLanguage(namedLanguage)) return namedLanguage;
+  const extension = filename.includes(".") ? filename.slice(filename.lastIndexOf(".") + 1) : "";
+  const extensionLanguage = languageByExtension[extension];
+  return extensionLanguage && hljs.getLanguage(extensionLanguage) ? extensionLanguage : null;
+}
+
+function presentDiffLines(lines: string[]): DiffLinePresentation[] {
+  let oldLineNumber = 0;
+  let newLineNumber = 0;
+  let insideHunk = false;
+  let hunkIndex = -1;
+
+  return lines.map((line, index) => {
+    if (line.startsWith("diff --git ")) insideHunk = false;
+    const hunkMatch = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line);
+    if (hunkMatch) {
+      oldLineNumber = Number(hunkMatch[1]);
+      newLineNumber = Number(hunkMatch[2]);
+      insideHunk = true;
+      hunkIndex += 1;
+      return { index, line, oldLineNumber: null, newLineNumber: null, prefix: "", content: line, highlightable: false, hunkIndex: null };
+    }
+
+    if (!insideHunk || line.startsWith("\\ No newline at end of file")) {
+      return { index, line, oldLineNumber: null, newLineNumber: null, prefix: "", content: line, highlightable: false, hunkIndex: null };
+    }
+
+    const prefix = line[0] || " ";
+    const content = line.length ? line.slice(1) : "";
+    if (prefix === "+") {
+      const presentation = { index, line, oldLineNumber: null, newLineNumber, prefix, content, highlightable: true, hunkIndex };
+      newLineNumber += 1;
+      return presentation;
+    }
+    if (prefix === "-") {
+      const presentation = { index, line, oldLineNumber, newLineNumber: null, prefix, content, highlightable: true, hunkIndex };
+      oldLineNumber += 1;
+      return presentation;
+    }
+    if (prefix === " ") {
+      const presentation = { index, line, oldLineNumber, newLineNumber, prefix, content, highlightable: true, hunkIndex };
+      oldLineNumber += 1;
+      newLineNumber += 1;
+      return presentation;
+    }
+
+    return { index, line, oldLineNumber: null, newLineNumber: null, prefix: "", content: line, highlightable: false, hunkIndex: null };
+  });
+}
+
+function splitHighlightedHtml(highlighted: string): string[] {
+  const lines = [""];
+  const openSpans: string[] = [];
+  const tokenPattern = /<span class="[^"]+">|<\/span>|\n/gu;
+  let sourceIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tokenPattern.exec(highlighted)) !== null) {
+    lines[lines.length - 1] += highlighted.slice(sourceIndex, match.index);
+    const token = match[0];
+    if (token === "\n") {
+      lines[lines.length - 1] += "</span>".repeat(openSpans.length);
+      lines.push(openSpans.join(""));
+    } else if (token === "</span>") {
+      lines[lines.length - 1] += token;
+      openSpans.pop();
+    } else {
+      lines[lines.length - 1] += token;
+      openSpans.push(token);
+    }
+    sourceIndex = match.index + token.length;
+  }
+  lines[lines.length - 1] += highlighted.slice(sourceIndex);
+  return lines;
+}
+
+function cacheHighlightedHunk(cacheKey: string, highlightedHunk: HighlightedHunk | null): void {
+  if (highlightedHunk && highlightedHunk.characterCount > maximumHighlightCacheCharacters) return;
+  while (
+    highlightCache.size >= maximumHighlightCacheEntries
+    || highlightCacheCharacters + (highlightedHunk?.characterCount || 0) > maximumHighlightCacheCharacters
+  ) {
+    const oldestKey = highlightCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined) break;
+    const oldest = highlightCache.get(oldestKey);
+    if (oldest) highlightCacheCharacters -= oldest.characterCount;
+    highlightCache.delete(oldestKey);
+  }
+  highlightCache.set(cacheKey, highlightedHunk);
+  highlightCacheCharacters += highlightedHunk?.characterCount || 0;
+}
+
+function highlightedHunk(language: string, hunkIndex: number, side: "old" | "new"): HighlightedHunk | null {
+  const cacheKey = `${language}\u0000${hunkIndex}\u0000${side}`;
+  if (highlightCache.has(cacheKey)) {
+    const cached = highlightCache.get(cacheKey) ?? null;
+    highlightCache.delete(cacheKey);
+    highlightCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const hunkLines = (hunkLinesByIndex.value.get(hunkIndex) || []).filter((line) => (
+    line.highlightable
+    && (line.prefix === " " || (side === "old" ? line.prefix === "-" : line.prefix === "+"))
+  ));
+  const sourceLength = hunkLines.reduce((length, line) => length + line.content.length + 1, 0);
+  if (
+    sourceLength > maximumHighlightedHunkCharacters
+    || hunkLines.some((line) => line.content.length > maximumMeasuredColumns)
+  ) {
+    cacheHighlightedHunk(cacheKey, null);
+    return null;
+  }
+
+  const highlighted = hljs.highlight(hunkLines.map((line) => line.content).join("\n"), {
+    language,
+    ignoreIllegals: true,
+  }).value;
+  if (highlighted.length > maximumHighlightCacheCharacters) {
+    cacheHighlightedHunk(cacheKey, null);
+    return null;
+  }
+  const highlightedLines = splitHighlightedHtml(highlighted);
+  const lines = new Map<number, string>();
+  hunkLines.forEach((line, index) => lines.set(line.index, highlightedLines[index] || ""));
+  const result = { characterCount: highlighted.length, lines };
+  cacheHighlightedHunk(cacheKey, result);
+  return result;
+}
+
+function highlightedCode(entry: DiffLinePresentation, language: string | null): string | null {
+  if (!language || entry.hunkIndex === null) return null;
+  const side = entry.prefix === "-" ? "old" : "new";
+  return highlightedHunk(language, entry.hunkIndex, side)?.lines.get(entry.index) ?? null;
+}
+
+function clearHighlightCache(): void {
+  highlightCache.clear();
+  highlightCacheCharacters = 0;
+}
+
+const language = computed(() => resolveLanguage(props.filePath));
+const presentedLines = computed(() => presentDiffLines(props.lines));
+const hunkLinesByIndex = computed(() => {
+  const hunks = new Map<number, DiffLinePresentation[]>();
+  for (const line of presentedLines.value) {
+    if (line.hunkIndex === null) continue;
+    const lines = hunks.get(line.hunkIndex) || [];
+    lines.push(line);
+    hunks.set(line.hunkIndex, lines);
+  }
+  return hunks;
+});
+
+const visibleLines = computed(() => presentedLines.value
   .slice(visibleStart.value, visibleEnd.value)
-  .map((line, offset) => ({ index: visibleStart.value + offset, line })));
+  .map((entry) => ({
+    ...entry,
+    highlightedContent: entry.highlightable ? highlightedCode(entry, language.value) : null,
+  })));
+
+const lineNumberColumns = computed(() => {
+  const maximumLineNumber = presentedLines.value.reduce((maximum, line) => Math.max(
+    maximum,
+    line.oldLineNumber || 0,
+    line.newLineNumber || 0,
+  ), 0);
+  return Math.max(3, String(maximumLineNumber).length);
+});
 
 const maximumLineColumns = computed(() => {
   let maximum = 0;
@@ -37,7 +281,11 @@ const maximumLineColumns = computed(() => {
 
 const spacerStyle = computed(() => ({
   height: `${props.lines.length * diffLineHeight}px`,
-  minWidth: `max(100%, calc(${maximumLineColumns.value}ch + 28px))`,
+  minWidth: `max(100%, calc(${maximumLineColumns.value + (lineNumberColumns.value * 2) + 8}ch + 28px))`,
+}));
+
+const lineNumberStyle = computed(() => ({
+  width: `${(lineNumberColumns.value + 2) * 2}ch`,
 }));
 
 function updateVisibleLines(): void {
@@ -60,7 +308,10 @@ watch(() => props.lines.length, () => {
   void nextTick(scheduleVisibleLineUpdate);
 });
 
+watch(() => props.lines, clearHighlightCache);
+
 watch(() => props.resetKey, () => {
+  clearHighlightCache();
   const element = scroller.value;
   if (element) element.scrollTop = 0;
   void nextTick(scheduleVisibleLineUpdate);
@@ -97,7 +348,15 @@ onBeforeUnmount(() => {
         :class="lineClass(entry.line)"
         :style="{ top: `${entry.index * diffLineHeight}px` }"
       >
-        <span class="virtual-diff-line-text">{{ entry.line }}</span>
+        <span class="diff-line-numbers" :style="lineNumberStyle" aria-hidden="true">
+          <span>{{ entry.oldLineNumber ?? '' }}</span>
+          <span>{{ entry.newLineNumber ?? '' }}</span>
+        </span>
+        <span class="virtual-diff-line-text">
+          <span v-if="entry.highlightable" class="diff-line-prefix">{{ entry.prefix }}</span>
+          <span v-if="entry.highlightedContent !== null" class="diff-line-code" v-html="entry.highlightedContent" />
+          <span v-else>{{ entry.content }}</span>
+        </span>
         <span v-if="$slots['line-action']" class="virtual-diff-line-action">
           <slot name="line-action" :line="entry.line" :index="entry.index" />
         </span>

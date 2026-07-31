@@ -11,7 +11,7 @@
   border-radius: 0;
   background: var(--app-diff-bg);
   color: var(--app-diff-text);
-  font: 12px/1.62 SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font: 12px/1.62 ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
   white-space: pre;
 }
 
@@ -52,6 +52,36 @@
 .virtual-diff-line-text {
   flex: 0 0 auto;
   white-space: pre;
+}
+
+.diff-line-numbers {
+  display: grid;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-right: 1ch;
+  border-right: 1px solid rgb(139 148 158 / 28%);
+  color: #8b949e;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+  text-align: right;
+  user-select: none;
+}
+
+.diff-line-numbers > span {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 0 0.75ch;
+}
+
+.diff-line-numbers > span:first-child {
+  border-right: 1px solid rgb(139 148 158 / 16%);
+}
+
+.diff-line-prefix {
+  display: inline-block;
+  width: 1ch;
+  user-select: none;
 }
 
 .virtual-diff-line-action {
@@ -108,4 +138,53 @@
 
 .diff-line.is-no-newline {
   color: #e3b341;
+}
+
+.diff-line-code .hljs-comment,
+.diff-line-code .hljs-quote {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.diff-line-code .hljs-keyword,
+.diff-line-code .hljs-selector-tag,
+.diff-line-code .hljs-type {
+  color: #ff7b72;
+}
+
+.diff-line-code .hljs-title,
+.diff-line-code .hljs-title[class~="class_"],
+.diff-line-code .hljs-title[class~="function_"] {
+  color: #d2a8ff;
+}
+
+.diff-line-code .hljs-string,
+.diff-line-code .hljs-regexp,
+.diff-line-code .hljs-attr {
+  color: #a5d6ff;
+}
+
+.diff-line-code .hljs-number,
+.diff-line-code .hljs-literal,
+.diff-line-code .hljs-symbol,
+.diff-line-code .hljs-bullet {
+  color: #79c0ff;
+}
+
+.diff-line-code [class~="hljs-built_in"],
+.diff-line-code .hljs-variable,
+.diff-line-code .hljs-template-variable,
+.diff-line-code .hljs-params {
+  color: #ffa657;
+}
+
+.diff-line-code .hljs-meta,
+.diff-line-code .hljs-doctag {
+  color: #7ee787;
+}
+
+.diff-line-code .hljs-tag,
+.diff-line-code .hljs-name,
+.diff-line-code .hljs-attribute {
+  color: #7ee787;
 }
