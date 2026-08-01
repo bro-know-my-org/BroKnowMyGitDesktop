@@ -278,7 +278,7 @@ export default defineComponent({
                         @clickoutside="commitContextMenuOpen = false"
                         @select="selectCommitContextMenuItem"
                       />
-                      <n-empty v-if="!commits.length && !historyLoading" :description="t('repository.history.branchHasNoCommitsYet')" />
+                      <n-empty v-if="!commits.length && !historyLoading" :description="t('repository.history.branchHasNoCommitsYet')" :show-icon="false" />
                     </n-spin>
                   </n-card>
                   <div
@@ -337,6 +337,7 @@ export default defineComponent({
                             v-else-if="!commitFilesLoading"
                             :description="selectedCommit ? t('repository.history.commitHasNoDisplayableFileChanges') : t('repository.history.selectCommitViewChangedFiles')"
                             size="small"
+                            :show-icon="false"
                           />
                         </n-spin>
                       </section>
@@ -372,6 +373,7 @@ export default defineComponent({
                             v-else
                             :description="selectedCommitFile ? t('repository.history.noTextDiffAvailableFile') : t('repository.history.selectFileViewItsDiff')"
                             size="small"
+                            :show-icon="false"
                           />
                         </div>
                       </section>
@@ -395,7 +397,7 @@ export default defineComponent({
                       :bordered="false"
                       size="small"
                     />
-                    <n-empty v-else class="history-stash-empty" :description="t('repository.history.stashEmpty')" />
+                    <n-empty v-else class="history-stash-empty" :description="t('repository.history.stashEmpty')" :show-icon="false" />
                   </n-drawer-content>
                 </n-drawer>
   </template>

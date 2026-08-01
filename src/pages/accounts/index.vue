@@ -52,7 +52,7 @@ export default defineComponent({
                 </n-space>
               </template>
               <n-data-table :columns="accountColumns" :data="accounts" :loading="accountsLoading" :bordered="false" />
-              <n-empty v-if="!accountsLoading && !accounts.length" :description="t('accounts.saved.empty')">
+              <n-empty v-if="!accountsLoading && !accounts.length" :description="t('accounts.saved.empty')" :show-icon="false">
                 <template #extra><n-button type="primary" @click="accountModalShown = true">{{ t("accounts.action.addAccount") }}</n-button></template>
               </n-empty>
             </n-card>

@@ -36,7 +36,7 @@ export default defineComponent({
     <AccountsPage v-if="section === 'accounts'" />
 <n-spin v-else-if="!snapshot && (workspaceInitializing || snapshotLoading)" size="large" class="loading-state" />
 <section v-else-if="!snapshot" class="repository-empty-state">
-            <n-empty :description="t('workspace.content.selectOrAddALocalGitRepository')">
+            <n-empty :description="t('workspace.content.selectOrAddALocalGitRepository')" :show-icon="false">
               <template #extra>
                 <n-space justify="center">
                   <n-button @click="discoverModalShown = true">{{ t('workspace.content.scanFolder') }}</n-button>

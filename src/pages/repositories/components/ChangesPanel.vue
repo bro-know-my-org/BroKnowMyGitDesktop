@@ -71,7 +71,7 @@ export default defineComponent({
                           <span class="change-file-status" :class="`is-${changeStatusTagType(entry)}`" aria-hidden="true" />
                         </div>
                       </div>
-                      <n-empty v-if="!snapshot.status.entries.length" :description="t('repository.changes.workingTreeClean')" />
+                      <n-empty v-if="!snapshot.status.entries.length" :description="t('repository.changes.workingTreeClean')" :show-icon="false" />
                     </n-card>
 
                     <n-card size="small" :title="t('repository.changes.createCommit')" class="commit-card changes-commit-card">
@@ -136,7 +136,7 @@ export default defineComponent({
                           </template>
                         </RepositoryDiffViewer>
                       </template>
-                      <n-empty v-else :description="selectedChange ? t('repository.changes.noTextDiffAvailableFile') : t('repository.changes.selectFileViewItsDiff')" size="small" />
+                      <n-empty v-else :description="selectedChange ? t('repository.changes.noTextDiffAvailableFile') : t('repository.changes.selectFileViewItsDiff')" size="small" :show-icon="false" />
                     </div>
                   </n-card>
                 </div>
