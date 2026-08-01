@@ -25,7 +25,7 @@ export default defineComponent({
                           <n-button size="tiny" type="primary" @click="branchModalShown = true">{{ t('repository.branches.newBranch') }}</n-button>
                         </n-space>
                       </template>
-                      <n-data-table :columns="branchColumns" :data="snapshot.branches" :bordered="false" />
+                      <n-data-table :columns="branchColumns" :data="snapshot.branches" :bordered="false" table-layout="fixed" />
                     </n-card>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
@@ -48,10 +48,11 @@ export default defineComponent({
                           {{ activeRemote ? t('repository.branches.fetchRemote', { remote: activeRemote.name }) : t('repository.branches.fetch') }}
                         </n-button>
                       </template>
-                      <n-data-table :columns="remoteBranchColumns" :data="snapshot.remoteBranches" :bordered="false" />
+                      <n-data-table :columns="remoteBranchColumns" :data="snapshot.remoteBranches" :bordered="false" table-layout="fixed" />
                       <n-empty
                         v-if="!snapshot.remoteBranches.length"
                         :description="activeRemote ? t('repository.branches.noRemoteBranches') : t('repository.branches.addSelectRemoteFirst')"
+                        :show-icon="false"
                       />
                     </n-card>
                   </n-grid-item>
@@ -59,14 +60,14 @@ export default defineComponent({
                     <n-card size="small" :title="t('repository.branches.worktrees')">
                       <template #header-extra><n-button size="tiny" type="primary" @click="openWorktreeModal">{{ t('repository.branches.newWorktree') }}</n-button></template>
                       <n-data-table :columns="worktreeColumns" :data="worktrees" :loading="worktreesLoading" :bordered="false" />
-                      <n-empty v-if="!worktreesLoading && !worktrees.length" :description="t('repository.branches.noWorktreesFound')" />
+                      <n-empty v-if="!worktreesLoading && !worktrees.length" :description="t('repository.branches.noWorktreesFound')" :show-icon="false" />
                     </n-card>
                   </n-grid-item>
                   <n-grid-item span="2">
                     <n-card size="small" :title="t('repository.branches.submodules')">
                       <template #header-extra><n-button size="tiny" tertiary :loading="mutationBusy" @click="confirmUpdateSubmodules">{{ t('repository.branches.initializeUpdateAll') }}</n-button></template>
                       <n-data-table :columns="submoduleColumns" :data="submodules" :loading="submodulesLoading" :bordered="false" />
-                      <n-empty v-if="!submodulesLoading && !submodules.length" :description="t('repository.branches.repositoryHasNoSubmodules')" />
+                      <n-empty v-if="!submodulesLoading && !submodules.length" :description="t('repository.branches.repositoryHasNoSubmodules')" :show-icon="false" />
                     </n-card>
                   </n-grid-item>
                   <n-grid-item span="2">

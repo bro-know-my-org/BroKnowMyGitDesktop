@@ -707,6 +707,19 @@ function repositorySelectionIsCurrent(repositoryPath: string, generation: number
     && repositorySelectionGeneration === generation;
 }
 
+function preferredRemoteName(repositorySnapshot: RepositorySnapshot): string {
+  const upstream = repositorySnapshot.status.upstream;
+  const upstreamRemote = upstream
+    ? [...repositorySnapshot.remotes]
+        .sort((left, right) => right.name.length - left.name.length)
+        .find((remote) => upstream.startsWith(`${remote.name}/`))
+    : undefined;
+  return upstreamRemote?.name
+    ?? repositorySnapshot.remotes.find((remote) => remote.name === "origin")?.name
+    ?? repositorySnapshot.remotes[0]?.name
+    ?? "";
+}
+
 function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshRequests = true): boolean {
   // Every backend snapshot is scoped to one repository. Never let a late
   // mutation response overwrite the currently selected repository.
@@ -734,8 +747,14 @@ function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshReques
       }
     : nextSnapshot;
   replaceRepositoryRecord(nextSnapshot.repository);
-  if (!nextSnapshot.remotes.some((remote) => remote.name === selectedRemoteName.value)) {
-    selectedRemoteName.value = nextSnapshot.remotes[0]?.name || "";
+  const branchTargetChanged = !previousSnapshot
+    || previousSnapshot.status.branch !== nextSnapshot.status.branch
+    || previousSnapshot.status.upstream !== nextSnapshot.status.upstream;
+  if (
+    branchTargetChanged
+    || !nextSnapshot.remotes.some((remote) => remote.name === selectedRemoteName.value)
+  ) {
+    selectedRemoteName.value = preferredRemoteName(nextSnapshot);
   }
   if (selectedPath) {
     const nextSelectedChange = nextSnapshot.status.entries.find((entry) => entry.path === selectedPath) ?? null;

@@ -8,3 +8,49 @@
 .lfs-file-list {
   margin-top: 12px;
 }
+
+.branch-table-name-button {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.branch-table-name-button .n-button__content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.branch-table-reference {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  align-items: baseline;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.branch-table-reference-prefix {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 0;
+  text-overflow: ellipsis;
+}
+
+.branch-table-reference-separator {
+  flex: 0 0 auto;
+}
+
+.branch-table-reference-tail {
+  max-width: 68%;
+  min-width: 0;
+  overflow: hidden;
+  direction: rtl;
+  flex: 0 0 auto;
+  text-align: left;
+  text-overflow: ellipsis;
+}

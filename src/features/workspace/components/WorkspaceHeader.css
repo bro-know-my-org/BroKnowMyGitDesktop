@@ -337,8 +337,62 @@
   font-size: 12px;
 }
 
+.branch-status-tag {
+  min-width: 0;
+  max-width: 168px;
+  flex: 0 1 auto;
+}
+
+.branch-status-tag .n-tag__content {
+  min-width: 0;
+}
+
+.middle-ellipsis-label {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: baseline;
+  white-space: nowrap;
+}
+
+.middle-ellipsis-prefix {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1 1 0;
+  text-overflow: ellipsis;
+}
+
+.middle-ellipsis-separator {
+  flex: 0 0 auto;
+}
+
+.middle-ellipsis-tail {
+  max-width: 68%;
+  min-width: 0;
+  overflow: hidden;
+  direction: rtl;
+  flex: 0 0 auto;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.topbar-select-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.topbar-reference-separator {
+  color: var(--app-text-muted);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.branch-select {
+  width: clamp(148px, var(--branch-select-content-width, 148px), 240px);
+}
+
 .remote-select {
-  width: 116px;
+  width: 104px;
 }
 
 @media (width <= 1120px) {
@@ -351,7 +405,31 @@
     padding: 0 16px;
   }
 
-  .remote-select {
-    width: 98px;
+  .branch-select {
+    width: clamp(122px, var(--branch-select-content-width, 122px), 168px);
   }
+
+  .remote-select {
+    width: 88px;
+  }
+}
+
+.branch-select-menu {
+  width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+}
+
+.branch-select-menu .n-base-select-option {
+  height: auto;
+  min-height: 34px;
+}
+
+.branch-select-menu .n-base-select-option__content {
+  min-width: 0;
+  flex: 1;
+  padding-block: 7px;
+  overflow: visible !important;
+  overflow-wrap: anywhere;
+  text-overflow: clip !important;
+  white-space: normal !important;
 }

@@ -39,6 +39,19 @@ interface WorkspaceTableDependencies {
   confirmDropStash: (stash: StashEntry) => void;
 }
 
+function renderBranchReference(name: string) {
+  const separatorIndex = name.lastIndexOf("/");
+  const prefix = separatorIndex > 0 && separatorIndex < name.length - 1
+    ? name.slice(0, separatorIndex)
+    : "";
+  const tail = prefix ? name.slice(separatorIndex + 1) : name;
+  return h("span", { class: "branch-table-reference", title: name }, [
+    prefix ? h("span", { class: "branch-table-reference-prefix" }, prefix) : null,
+    prefix ? h("span", { class: "branch-table-reference-separator", "aria-hidden": "true" }, "/") : null,
+    h("span", { class: "branch-table-reference-tail" }, tail),
+  ]);
+}
+
 export function useWorkspaceTables(dependencies: WorkspaceTableDependencies) {
   const {
     t,
@@ -67,17 +80,24 @@ const branchColumns = computed<DataTableColumns<BranchInfo>>(() => [
   {
     title: t("workspace.tables.branch"),
     key: "name",
+    width: 190,
     render: (branch) =>
       h(
         NButton,
-        { text: true, type: branch.isCurrent ? "primary" : "default", onClick: () => void checkoutBranch(branch) },
-        { default: () => branch.name },
+        {
+          text: true,
+          type: branch.isCurrent ? "primary" : "default",
+          class: "branch-table-name-button",
+          title: branch.name,
+          onClick: () => void checkoutBranch(branch),
+        },
+        { default: () => renderBranchReference(branch.name) },
       ),
   },
   {
     title: t("workspace.tables.upstream"),
     key: "upstream",
-    render: (branch) => branch.upstream || "—",
+    render: (branch) => branch.upstream ? renderBranchReference(branch.upstream) : "—",
   },
   {
     title: t("workspace.tables.status"),
@@ -126,7 +146,7 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
   {
     title: t("workspace.tables.remoteBranch"),
     key: "name",
-    minWidth: 220,
+    width: 320,
     render: (remoteBranch) => {
       const localBranch = localBranchForRemoteBranch(remoteBranch);
       return h(
@@ -134,10 +154,12 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
         {
           text: true,
           type: localBranch?.isCurrent ? "primary" : "default",
+          class: "branch-table-name-button",
+          title: remoteBranch.name,
           disabled: localBranch?.isCurrent,
           onClick: () => void checkoutRemoteBranch(remoteBranch),
         },
-        { default: () => remoteBranch.name },
+        { default: () => renderBranchReference(remoteBranch.name) },
       );
     },
   },
@@ -145,6 +167,7 @@ const remoteBranchColumns = computed<DataTableColumns<RemoteBranchInfo>>(() => [
     title: t("workspace.tables.remote"),
     key: "remoteName",
     width: 130,
+    ellipsis: { tooltip: true },
   },
   {
     title: t("workspace.tables.localStatus"),
