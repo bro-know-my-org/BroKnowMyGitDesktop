@@ -182,6 +182,8 @@
   "errors.profile_store_sync_failed.details": "Avoid powering off immediately and check the account configuration after recovery.",
   "errors.profile_store_version_unsupported": "The account profile store was written by a newer app version and was safely backed up.",
   "errors.pull_upstream_not_configured": "The current branch has no upstream configured for pulling.",
+  "errors.pull_upstream_fetch_mapping_unavailable": "The current branch upstream has no usable remote-tracking ref mapping.",
+  "errors.pull_upstream_not_a_branch": "The current branch upstream is not a remote branch.",
   "errors.pull_upstream_remote_mismatch": "The current branch does not track the selected remote.",
   "errors.push_upstream_not_a_branch": "The current branch upstream is not a remote branch.",
   "errors.remote_already_exists": "A remote with this name already exists.",

@@ -281,6 +281,17 @@ fn builds_positionally_pinned_fetch_arguments() {
 }
 
 #[test]
+fn repository_config_values_include_worktree_scope_but_not_inherited_scopes() {
+    assert_eq!(
+        super::network::parse_repository_config_values(
+            b"system\0system-fetch\0global\0global-fetch\0local\0local-fetch\0worktree\0worktree-fetch\0",
+        )
+        .unwrap(),
+        vec!["local-fetch", "worktree-fetch"]
+    );
+}
+
+#[test]
 fn pinned_fetch_requires_a_captured_refspec() {
     assert_eq!(
         super::network::fetch_arguments_for_url(
@@ -302,7 +313,9 @@ fn builds_positionally_pinned_pull_arguments_for_the_configured_upstream() {
     let arguments = super::network::pull_arguments_for_url(
         &PullOptions {
             remote: "origin".into(),
-            refspec: Some("refs/heads/feature".into()),
+            refspec: Some(
+                "+refs/heads/feature:refs/remotes/origin/feature".into(),
+            ),
         },
         "https://github.com/example/project.git",
     )
@@ -314,7 +327,7 @@ fn builds_positionally_pinned_pull_arguments_for_the_configured_upstream() {
             "--no-edit",
             "--no-recurse-submodules",
             "https://github.com/example/project.git",
-            "refs/heads/feature",
+            "+refs/heads/feature:refs/remotes/origin/feature",
         ]
     );
     assert_eq!(
@@ -333,15 +346,9 @@ fn builds_positionally_pinned_pull_arguments_for_the_configured_upstream() {
 
 #[test]
 fn resolves_the_current_branch_upstream_before_pinning_a_pull_url() {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time is available")
-        .as_nanos();
-    let repository = std::env::temp_dir().join(format!(
-        "broknowmygitdesktop-pull-upstream-test-{}-{suffix}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&repository).expect("test repository directory is created");
+    let repository = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-pull-upstream-test"),
+    );
     let repository_path = repository
         .to_str()
         .expect("test repository path is valid UTF-8");
@@ -384,6 +391,38 @@ fn resolves_the_current_branch_upstream_before_pinning_a_pull_url() {
             "-C",
             repository_path,
             "config",
+            "extensions.worktreeConfig",
+            "true",
+        ],
+        vec![
+            "-C",
+            repository_path,
+            "config",
+            "--unset-all",
+            "remote.origin.fetch",
+        ],
+        vec![
+            "-C",
+            repository_path,
+            "config",
+            "--worktree",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin-worktree/*",
+        ],
+        vec![
+            "-C",
+            repository_path,
+            "config",
+            "--worktree",
+            "--add",
+            "remote.origin.fetch",
+            "^refs/heads/private",
+        ],
+        vec![
+            "-C",
+            repository_path,
+            "config",
             "branch.feature.remote",
             "origin",
         ],
@@ -407,9 +446,17 @@ fn resolves_the_current_branch_upstream_before_pinning_a_pull_url() {
 
     let git = GitCore::new();
     assert_eq!(
+        git.fetch_refspecs_for_remote(&repository, "origin")
+            .expect("worktree-scoped exclusions remain part of the pinned fetch"),
+        vec![
+            "+refs/heads/*:refs/remotes/origin/*",
+            "^refs/heads/private",
+        ]
+    );
+    assert_eq!(
         git.pull_refspec_for_remote(&repository, "origin")
             .expect("the tracked branch produces its configured merge ref"),
-        "refs/heads/feature"
+        "+refs/heads/feature:refs/remotes/origin-worktree/feature"
     );
     assert_eq!(
         git.pull_refspec_for_remote(&repository, "upstream")
@@ -417,8 +464,114 @@ fn resolves_the_current_branch_upstream_before_pinning_a_pull_url() {
             .code(),
         "pull_upstream_remote_mismatch"
     );
+}
 
-    let _ = fs::remove_dir_all(repository);
+#[test]
+fn url_pinned_pull_updates_a_custom_remote_tracking_branch_and_push_state() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-pull-tracking-test"),
+    );
+    let remote = root.join("remote.git");
+    let source = root.join("source");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(&root, &["init", "-q", "-b", "main", source.to_str().unwrap()]);
+    run_git(&source, &["config", "user.name", "Pull Test"]);
+    run_git(
+        &source,
+        &["config", "user.email", "pull@example.invalid"],
+    );
+    run_git(&source, &["commit", "--allow-empty", "-qm", "initial"]);
+    run_git(
+        &source,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&source, &["push", "-qu", "origin", "main"]);
+    run_git(
+        &root,
+        &[
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "symbolic-ref",
+            "HEAD",
+            "refs/heads/main",
+        ],
+    );
+    run_git(
+        &root,
+        &[
+            "clone",
+            "-q",
+            remote.to_str().unwrap(),
+            repository.to_str().unwrap(),
+        ],
+    );
+    run_git(
+        &repository,
+        &["config", "--unset-all", "remote.origin.fetch"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin-mirror/*",
+        ],
+    );
+    run_git(
+        &repository,
+        &[
+            "update-ref",
+            "refs/remotes/origin-mirror/main",
+            "refs/remotes/origin/main",
+        ],
+    );
+    run_git(
+        &repository,
+        &["update-ref", "-d", "refs/remotes/origin/main"],
+    );
+    run_git(&source, &["commit", "--allow-empty", "-qm", "upstream"]);
+    run_git(&source, &["push", "-q", "origin", "main"]);
+
+    let git = GitCore::new();
+    git.pull(
+        &repository,
+        &PullOptions {
+            remote: "origin".into(),
+            refspec: None,
+        },
+    )
+    .expect("URL-pinned pull succeeds");
+
+    let head = git.head_commit_id(&repository).unwrap();
+    let tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "rev-parse",
+            "refs/remotes/origin-mirror/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(tracking.status.success());
+    assert_eq!(output_text(&tracking.stdout).trim(), head);
+    let status = git.status(&repository).unwrap();
+    assert_eq!((status.ahead, status.behind), (0, 0));
+    let commits = git.commits(&repository, 10).unwrap();
+    assert!(!commits.is_empty());
+    assert!(commits
+        .iter()
+        .all(|commit| commit.pushed == Some(true)));
 }
 
 #[test]
@@ -831,4 +984,3 @@ fn init_publishes_new_and_existing_directories_without_leaving_staging_entries()
 
     let _ = fs::remove_dir_all(root);
 }
-

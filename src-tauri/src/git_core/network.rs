@@ -9,6 +9,12 @@ struct PushUpstream {
     remote_branch: String,
 }
 
+struct BranchUpstream {
+    remote: String,
+    remote_reference: String,
+    tracking_reference: Option<String>,
+}
+
 impl GitCore {
     /// Reads the current tip of one remote branch without updating local refs.
     /// Publish reconciliation uses this to prove that a successful-looking
@@ -104,22 +110,16 @@ impl GitCore {
         self.ensure_configured_remote(repository, remote_name)?;
         self.ensure_network_configuration_is_safe(repository)?;
         let config_key = remote_fetch_refspec_config_key(remote_name)?;
-        let output = self.execute(
-            Some(repository),
-            &os_arguments(&["config", "--local", "--get-all", &config_key]),
-            &GitEnvironment::default(),
-        )?;
         let mut refspecs = vec![all_remote_branches_fetch_refspec(remote_name)?];
-        if output.status.success() {
-            for refspec in output_text(&output.stdout).lines().map(str::trim) {
-                if refspec.is_empty() || is_remote_branch_fetch_refspec(refspec) {
-                    continue;
-                }
-                validate_refspec(refspec)?;
-                refspecs.push(refspec.to_owned());
+        for refspec in self.repository_config_values(repository, &config_key)? {
+            let refspec = refspec.trim();
+            if refspec.is_empty()
+                || (is_remote_branch_fetch_refspec(refspec) && !refspec.starts_with('^'))
+            {
+                continue;
             }
-        } else if output.status.code() != Some(1) {
-            return Err(git_command_error("读取远程分支获取规则", &output));
+            validate_refspec(refspec)?;
+            refspecs.push(refspec.to_owned());
         }
         Ok(refspecs)
     }
@@ -179,29 +179,128 @@ impl GitCore {
         )
     }
 
-    /// Captures the current branch's configured upstream ref before a
+    /// Captures the current branch's configured upstream before a
     /// credential-bearing operation is prepared. Passing a raw URL to
-    /// `git pull` bypasses `remote.<name>.fetch`, so omitting this ref would
-    /// otherwise make Git merge that URL's advertised default branch.
+    /// `git pull` bypasses `remote.<name>.fetch`, so use an explicit
+    /// source:destination refspec: the source prevents Git from selecting the
+    /// URL's advertised default branch, while the destination keeps the
+    /// selected remote-tracking branch in sync just like a named-remote pull.
     pub(crate) fn pull_refspec_for_remote(
         &self,
         repository: &Path,
         remote_name: &str,
     ) -> Result<String, AppError> {
+        let upstream = self.upstream_for_remote(repository, remote_name)?;
+        let upstream_reference = upstream.remote_reference;
+        let remote_branch = upstream_reference
+            .strip_prefix("refs/heads/")
+            .ok_or_else(|| {
+                AppError::new("pull_upstream_not_a_branch", "当前分支上游不是远程分支。")
+            })?;
+        validate_ref_name(remote_branch, "远程分支名")?;
+        let tracking_reference = upstream
+            .tracking_reference
+            .ok_or_else(pull_upstream_fetch_mapping_unavailable_error)?;
+        let force = self.fetch_mapping_is_forced(
+            repository,
+            remote_name,
+            &upstream_reference,
+            &tracking_reference,
+        )?;
+        let refspec = format!(
+            "{}{upstream_reference}:{tracking_reference}",
+            if force { "+" } else { "" }
+        );
+        validate_refspec(&refspec)?;
+        Ok(refspec)
+    }
+
+    fn upstream_for_remote(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+    ) -> Result<BranchUpstream, AppError> {
         self.ensure_configured_remote(repository, remote_name)?;
         self.ensure_network_configuration_is_safe(repository)?;
         let branch = self.current_branch_name(repository)?;
-        let Some((configured_remote, refspec)) = self.branch_upstream(repository, &branch)? else {
+        let Some(upstream) = self.branch_upstream(repository, &branch)? else {
             return Err(pull_upstream_not_configured_error());
         };
-        if configured_remote != remote_name {
+        if upstream.remote != remote_name {
             return Err(AppError::new(
                 "pull_upstream_remote_mismatch",
                 "当前分支没有跟踪所选 remote。",
             ));
         }
-        validate_refspec(&refspec)?;
-        Ok(refspec)
+        validate_refspec(&upstream.remote_reference)?;
+        if let Some(tracking_reference) = &upstream.tracking_reference {
+            validate_refspec(tracking_reference)?;
+        }
+        Ok(upstream)
+    }
+
+    fn fetch_mapping_is_forced(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        source_reference: &str,
+        tracking_reference: &str,
+    ) -> Result<bool, AppError> {
+        let config_key = remote_fetch_refspec_config_key(remote_name)?;
+        let configured_refspecs = self.repository_config_values(repository, &config_key)?;
+        if configured_refspecs.is_empty() {
+            return Err(pull_upstream_fetch_mapping_unavailable_error());
+        }
+
+        let mut matching_force = None;
+        for configured_refspec in configured_refspecs.iter().map(|refspec| refspec.trim()) {
+            if configured_refspec.is_empty() {
+                continue;
+            }
+            validate_refspec(configured_refspec)?;
+            if let Some(exclusion) = configured_refspec.strip_prefix('^') {
+                if refspec_source_capture(exclusion, source_reference).is_some() {
+                    return Err(pull_upstream_fetch_mapping_unavailable_error());
+                }
+                continue;
+            }
+            let (forced, configured_refspec) = configured_refspec
+                .strip_prefix('+')
+                .map_or((false, configured_refspec), |refspec| (true, refspec));
+            let Some((source_pattern, destination_pattern)) = configured_refspec.split_once(':')
+            else {
+                continue;
+            };
+            let Some(capture) = refspec_source_capture(source_pattern, source_reference) else {
+                continue;
+            };
+            if expand_refspec_destination(destination_pattern, capture.as_deref()).as_deref()
+                != Some(tracking_reference)
+            {
+                continue;
+            }
+            matching_force = Some(matching_force.unwrap_or(false) || forced);
+        }
+        matching_force.ok_or_else(pull_upstream_fetch_mapping_unavailable_error)
+    }
+
+    fn repository_config_values(
+        &self,
+        repository: &Path,
+        config_key: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["config", "--null", "--show-scope", "--get-all", config_key]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.code() == Some(1) {
+            return Ok(Vec::new());
+        }
+        if !output.status.success() {
+            return Err(git_command_error("读取远程分支获取规则", &output));
+        }
+        parse_repository_config_values(&output.stdout)
     }
 
     /// Builds a deterministic current-branch push plan for the selected
@@ -217,13 +316,13 @@ impl GitCore {
         let branch = self.current_branch_name(repository)?;
         let local_reference = format!("refs/heads/{branch}");
         let (destination, set_upstream) = match self.branch_upstream(repository, &branch)? {
-            Some((configured_remote, upstream_reference))
-                if configured_remote == remote_name
-                    && upstream_reference.starts_with("refs/heads/") =>
+            Some(upstream)
+                if upstream.remote == remote_name
+                    && upstream.remote_reference.starts_with("refs/heads/") =>
             {
-                (upstream_reference, false)
+                (upstream.remote_reference, false)
             }
-            Some((configured_remote, _)) if configured_remote == remote_name => {
+            Some(upstream) if upstream.remote == remote_name => {
                 return Err(AppError::new(
                     "push_upstream_not_a_branch",
                     "当前分支上游不是远程分支。",
@@ -241,14 +340,14 @@ impl GitCore {
         &self,
         repository: &Path,
         branch: &str,
-    ) -> Result<Option<(String, String)>, AppError> {
+    ) -> Result<Option<BranchUpstream>, AppError> {
         let branch_reference = format!("refs/heads/{branch}");
         let output = self.execute(
             Some(repository),
             &[
                 OsString::from("for-each-ref"),
                 OsString::from(
-                    "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)",
+                    "--format=%(refname)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(upstream)",
                 ),
                 OsString::from(&branch_reference),
             ],
@@ -288,20 +387,30 @@ impl GitCore {
                 ));
             }
         };
-        let separator = record
-            .iter()
-            .position(|byte| *byte == b'\0')
-            .ok_or_else(pull_upstream_not_configured_error)?;
-        let configured_remote = std::str::from_utf8(&record[..separator])
+        let fields = record.split(|byte| *byte == b'\0').collect::<Vec<_>>();
+        if fields.len() != 3 {
+            return Err(AppError::new("git_parse_error", "无法读取当前分支上游。"));
+        }
+        let configured_remote = std::str::from_utf8(fields[0])
             .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
-        let refspec = std::str::from_utf8(&record[separator + 1..])
+        let remote_reference = std::str::from_utf8(fields[1])
             .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
-        if configured_remote.is_empty() || refspec.is_empty() {
+        let tracking_reference = std::str::from_utf8(fields[2])
+            .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
+        if configured_remote.is_empty() || remote_reference.is_empty() {
             return Ok(None);
         }
         validate_remote_name(configured_remote)?;
-        validate_refspec(refspec)?;
-        Ok(Some((configured_remote.to_owned(), refspec.to_owned())))
+        validate_refspec(remote_reference)?;
+        if !tracking_reference.is_empty() {
+            validate_refspec(tracking_reference)?;
+        }
+        Ok(Some(BranchUpstream {
+            remote: configured_remote.to_owned(),
+            remote_reference: remote_reference.to_owned(),
+            tracking_reference: (!tracking_reference.is_empty())
+                .then(|| tracking_reference.to_owned()),
+        }))
     }
 
     /// Pulls from an immutable, previously validated operation URL.
@@ -407,7 +516,9 @@ impl GitCore {
             return Ok((options.refspecs.clone(), None));
         }
         let local_branch = self.current_branch_name(repository)?;
-        let upstream_branch = self.pull_refspec_for_remote(repository, &options.remote)?;
+        let upstream_branch = self
+            .upstream_for_remote(repository, &options.remote)?
+            .remote_reference;
         let refspec = format!("refs/heads/{local_branch}:{upstream_branch}");
         validate_refspec(&refspec)?;
         Ok((vec![refspec], None))
@@ -511,6 +622,70 @@ impl GitCore {
         } else {
             Err(AppError::new("remote_not_found", "找不到该 remote。"))
         }
+    }
+}
+
+fn pull_upstream_fetch_mapping_unavailable_error() -> AppError {
+    AppError::new(
+        "pull_upstream_fetch_mapping_unavailable",
+        "当前分支上游没有可用的远程跟踪引用映射。",
+    )
+}
+
+pub(super) fn parse_repository_config_values(output: &[u8]) -> Result<Vec<String>, AppError> {
+    let mut fields = output.split(|byte| *byte == b'\0').collect::<Vec<_>>();
+    if fields.last() == Some(&&[][..]) {
+        fields.pop();
+    }
+    if fields.len() % 2 != 0 {
+        return Err(AppError::new(
+            "git_parse_error",
+            "无法读取远程分支获取规则。",
+        ));
+    }
+
+    fields
+        .chunks_exact(2)
+        .filter(|fields| fields[0] == b"local" || fields[0] == b"worktree")
+        .map(|fields| {
+            std::str::from_utf8(fields[1])
+                .map(str::to_owned)
+                .map_err(|_| AppError::new("git_parse_error", "无法读取远程分支获取规则。"))
+        })
+        .collect()
+}
+
+fn refspec_source_capture(pattern: &str, reference: &str) -> Option<Option<String>> {
+    let Some(wildcard_index) = pattern.find('*') else {
+        return (pattern == reference).then_some(None);
+    };
+    if pattern[wildcard_index + 1..].contains('*') {
+        return None;
+    }
+    let prefix = &pattern[..wildcard_index];
+    let suffix = &pattern[wildcard_index + 1..];
+    if !reference.starts_with(prefix)
+        || !reference.ends_with(suffix)
+        || reference.len() < prefix.len() + suffix.len()
+    {
+        return None;
+    }
+    Some(Some(
+        reference[prefix.len()..reference.len() - suffix.len()].to_owned(),
+    ))
+}
+
+fn expand_refspec_destination(pattern: &str, capture: Option<&str>) -> Option<String> {
+    match (pattern.find('*'), capture) {
+        (None, None) => Some(pattern.to_owned()),
+        (Some(wildcard_index), Some(capture)) if !pattern[wildcard_index + 1..].contains('*') => {
+            Some(format!(
+                "{}{capture}{}",
+                &pattern[..wildcard_index],
+                &pattern[wildcard_index + 1..]
+            ))
+        }
+        _ => None,
     }
 }
 
