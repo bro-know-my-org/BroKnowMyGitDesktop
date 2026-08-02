@@ -355,11 +355,18 @@
   white-space: nowrap;
 }
 
-.middle-ellipsis-prefix {
+.middle-ellipsis-prefix,
+.middle-ellipsis-tail {
   min-width: 0;
   overflow: hidden;
-  flex: 1 1 0;
+  margin-block: -2px;
+  padding-block: 2px;
+  line-height: normal;
   text-overflow: ellipsis;
+}
+
+.middle-ellipsis-prefix {
+  flex: 0 1 auto;
 }
 
 .middle-ellipsis-separator {
@@ -368,12 +375,9 @@
 
 .middle-ellipsis-tail {
   max-width: 68%;
-  min-width: 0;
-  overflow: hidden;
   direction: rtl;
   flex: 0 0 auto;
   text-align: left;
-  text-overflow: ellipsis;
 }
 
 .topbar-select-group {

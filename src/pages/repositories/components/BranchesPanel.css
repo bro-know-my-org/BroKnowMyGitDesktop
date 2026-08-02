@@ -13,7 +13,6 @@
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  overflow: hidden;
 }
 
 .branch-table-name-button .n-button__content {
@@ -21,7 +20,6 @@
   max-width: 100%;
   min-width: 0;
   justify-content: flex-start;
-  overflow: hidden;
 }
 
 .branch-table-reference {
@@ -30,15 +28,21 @@
   min-width: 0;
   max-width: 100%;
   align-items: baseline;
-  overflow: hidden;
   white-space: nowrap;
 }
 
-.branch-table-reference-prefix {
+.branch-table-reference-prefix,
+.branch-table-reference-tail {
   min-width: 0;
   overflow: hidden;
-  flex: 1 1 0;
+  margin-block: -2px;
+  padding-block: 2px;
+  line-height: normal;
   text-overflow: ellipsis;
+}
+
+.branch-table-reference-prefix {
+  flex: 0 1 auto;
 }
 
 .branch-table-reference-separator {
@@ -47,10 +51,7 @@
 
 .branch-table-reference-tail {
   max-width: 68%;
-  min-width: 0;
-  overflow: hidden;
   direction: rtl;
   flex: 0 0 auto;
   text-align: left;
-  text-overflow: ellipsis;
 }
