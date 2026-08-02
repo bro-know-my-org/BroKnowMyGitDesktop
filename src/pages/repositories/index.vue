@@ -37,7 +37,7 @@ export default defineComponent({
               </n-space>
             </n-alert>
 
-            <n-tabs v-model:value="activeTab" type="line" :tabs-padding="8" class="repository-tabs">
+            <n-tabs v-model:value="activeTab" type="line" :tabs-padding="8" :pane-style="{ padding: '0' }" class="repository-tabs">
               <n-tab-pane name="changes" :tab="t('repository.page.changes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('changes', event) }" display-directive="show:lazy"><RepositoryChangesPanel /></n-tab-pane>
               <n-tab-pane name="history" :tab="t('repository.page.history')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('history', event) }" display-directive="show:lazy">
                 <RepositoryHistoryPanel v-if="repositoryTabContentReady.history" />

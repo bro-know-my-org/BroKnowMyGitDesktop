@@ -5,6 +5,7 @@
   min-height: 420px;
   overflow: hidden;
   border: 1px solid var(--app-divider);
+  border-top: 0;
   border-radius: 0;
   background: var(--app-surface);
   box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%);
@@ -209,6 +210,7 @@
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
+  padding: 0 !important;
 }
 
 .changes-diff-panel {

@@ -23,10 +23,6 @@
   overflow-wrap: anywhere;
 }
 
-.repository-tabs > .n-tab-pane {
-  padding-top: 0 !important;
-}
-
 .repository-tabs > .n-tabs-nav {
   min-height: 32px;
   border: 1px solid var(--app-divider);
@@ -80,6 +76,8 @@
   }
 
   .is-fixed-repository-content .changes-workspace {
+    height: auto;
     min-height: 0;
+    flex: 1 1 0;
   }
 }
