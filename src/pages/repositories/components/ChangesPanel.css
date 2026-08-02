@@ -64,7 +64,7 @@
 }
 
 .changes-bulk-control .n-checkbox__label {
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
 }
 
 .changes-file-list {
@@ -124,8 +124,8 @@
 .change-file-path {
   overflow: hidden;
   color: var(--app-text-body);
-  font-size: 12px;
-  font-weight: 620;
+  font-size: calc(12px * var(--app-font-scale));
+  font-weight: clamp(100, calc(620 + var(--app-font-weight-offset)), 900);
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -134,7 +134,7 @@
 .change-file-state {
   overflow: hidden;
   color: var(--app-text-tertiary);
-  font-size: 10px;
+  font-size: calc(10px * var(--app-font-scale));
   line-height: 1.35;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -182,7 +182,7 @@
 .commit-message-label {
   margin-bottom: 4px;
   color: var(--app-text-body);
-  font-size: 13px;
+  font-size: calc(13px * var(--app-font-scale));
   line-height: 1.4;
 }
 
@@ -193,7 +193,7 @@
 .commit-selection-summary {
   display: block;
   margin: 0 0 9px;
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
   line-height: 1.5;
 }
 

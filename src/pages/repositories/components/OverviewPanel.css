@@ -7,13 +7,13 @@
 
 .metric strong {
   color: var(--app-text-strong);
-  font-size: 31px;
+  font-size: calc(31px * var(--app-font-scale));
   line-height: 1;
 }
 
 .metric span {
   color: var(--app-text-secondary);
-  font-size: 13px;
+  font-size: calc(13px * var(--app-font-scale));
 }
 
 .platform-card {

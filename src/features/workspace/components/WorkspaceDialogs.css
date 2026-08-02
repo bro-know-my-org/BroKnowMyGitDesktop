@@ -58,6 +58,8 @@
 
 .settings-tabs > .n-tabs-pane-wrapper {
   min-width: 0;
+  max-height: min(680px, calc(100vh - 190px));
+  overflow-y: auto;
 }
 
 .settings-section,
@@ -75,7 +77,7 @@
 .settings-section-heading strong,
 .settings-about-heading strong {
   color: var(--app-text-strong);
-  font-size: 16px;
+  font-size: calc(16px * var(--app-font-scale));
 }
 
 .settings-form {
@@ -84,6 +86,24 @@
 
 .settings-form .n-form-item:last-child {
   margin-bottom: 0;
+}
+
+.settings-form > .n-divider {
+  margin: 4px 0 20px;
+}
+
+.font-setting {
+  width: 100%;
+}
+
+.font-setting-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.font-setting-hint {
+  line-height: 1.45;
 }
 
 .theme-color-setting {
@@ -117,8 +137,8 @@
   place-items: center;
   background: linear-gradient(135deg, #24a878, #2976d2);
   color: white;
-  font-size: 18px;
-  font-weight: 760;
+  font-size: calc(18px * var(--app-font-scale));
+  font-weight: clamp(100, calc(760 + var(--app-font-weight-offset)), 900);
   letter-spacing: -0.04em;
   box-shadow: 0 5px 16px rgb(24 124 91 / 20%);
 }
@@ -142,12 +162,12 @@
   padding-top: 16px;
   border-top: 1px solid var(--app-divider);
   color: var(--app-text-tertiary);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
 }
 
 .settings-about-details strong {
   color: var(--app-text-body);
-  font-weight: 600;
+  font-weight: clamp(100, calc(600 + var(--app-font-weight-offset)), 900);
 }
 
 @media (width <= 600px) {

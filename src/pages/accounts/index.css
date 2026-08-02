@@ -6,7 +6,7 @@
 .accounts-page .eyebrow {
   overflow: hidden;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
   letter-spacing: 0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -23,7 +23,7 @@
 .page-heading h1 {
   margin: 3px 0 7px;
   color: var(--app-text-strong);
-  font-size: 28px;
+  font-size: calc(28px * var(--app-font-scale));
   letter-spacing: -0.035em;
   line-height: 1.18;
 }

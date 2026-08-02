@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import hljs from "highlight.js/lib/common";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { resolvedDiffLineHeight } from "../../../shared/fonts";
 
 const props = defineProps<{
   lines: string[];
@@ -14,7 +15,6 @@ defineSlots<{
   "line-action"?(props: { line: string; index: number }): unknown;
 }>();
 
-const diffLineHeight = 19.44;
 const diffLineOverscan = 24;
 const maximumMeasuredColumns = 10_000;
 const maximumHighlightedHunkCharacters = 100_000;
@@ -280,7 +280,7 @@ const maximumLineColumns = computed(() => {
 });
 
 const spacerStyle = computed(() => ({
-  height: `${props.lines.length * diffLineHeight}px`,
+  height: `${props.lines.length * resolvedDiffLineHeight.value}px`,
   minWidth: `max(100%, calc(${maximumLineColumns.value + (lineNumberColumns.value * 2) + 8}ch + 28px))`,
 }));
 
@@ -292,8 +292,8 @@ function updateVisibleLines(): void {
   viewportAnimationFrame = null;
   const element = scroller.value;
   if (!element) return;
-  const firstVisible = Math.floor(element.scrollTop / diffLineHeight);
-  const visibleCount = Math.ceil(element.clientHeight / diffLineHeight);
+  const firstVisible = Math.floor(element.scrollTop / resolvedDiffLineHeight.value);
+  const visibleCount = Math.ceil(element.clientHeight / resolvedDiffLineHeight.value);
   visibleStart.value = Math.max(0, firstVisible - diffLineOverscan);
   visibleEnd.value = Math.min(props.lines.length, firstVisible + visibleCount + diffLineOverscan);
 }
@@ -306,6 +306,19 @@ function scheduleVisibleLineUpdate(): void {
 
 watch(() => props.lines.length, () => {
   void nextTick(scheduleVisibleLineUpdate);
+});
+
+watch(resolvedDiffLineHeight, (lineHeight, previousLineHeight) => {
+  const element = scroller.value;
+  const logicalScrollPosition = element && previousLineHeight > 0
+    ? element.scrollTop / previousLineHeight
+    : null;
+  void nextTick(() => {
+    if (element && logicalScrollPosition !== null) {
+      element.scrollTop = logicalScrollPosition * lineHeight;
+    }
+    scheduleVisibleLineUpdate();
+  });
 });
 
 watch(() => props.lines, clearHighlightCache);
@@ -346,7 +359,7 @@ onBeforeUnmount(() => {
         :key="entry.index"
         class="diff-line virtual-diff-line"
         :class="lineClass(entry.line)"
-        :style="{ top: `${entry.index * diffLineHeight}px` }"
+        :style="{ top: `${entry.index * resolvedDiffLineHeight}px` }"
       >
         <span class="diff-line-numbers" :style="lineNumberStyle" aria-hidden="true">
           <span>{{ entry.oldLineNumber ?? '' }}</span>

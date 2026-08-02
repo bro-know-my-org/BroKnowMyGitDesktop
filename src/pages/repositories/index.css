@@ -16,7 +16,7 @@
 .detail-label {
   margin-bottom: 4px;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
 }
 
 .remote-url {

@@ -87,8 +87,8 @@
 
 .sidebar-heading {
   color: var(--app-text-muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: calc(10px * var(--app-font-scale));
+  font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -101,7 +101,7 @@
 .repository-add-button {
   justify-content: flex-start;
   gap: 5px;
-  font-weight: 650;
+  font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
 }
 
 .sidebar-repository-list {
@@ -125,8 +125,8 @@
   gap: 8px;
   padding: 0 5px;
   color: var(--app-text-muted);
-  font-size: 10px;
-  font-weight: 700;
+  font-size: calc(10px * var(--app-font-scale));
+  font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
   letter-spacing: 0.045em;
   line-height: 1.35;
   text-transform: uppercase;
@@ -180,7 +180,7 @@
 .sidebar-repository.active {
   background: var(--app-row-selected);
   color: var(--app-accent-strong);
-  font-weight: 650;
+  font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
 }
 
 .repository-name {
@@ -195,8 +195,8 @@
   padding: 1px 4px;
   border: 1px dashed var(--app-accent-strong);
   color: var(--app-accent-strong);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: calc(9px * var(--app-font-scale));
+  font-weight: clamp(100, calc(800 + var(--app-font-weight-offset)), 900);
   letter-spacing: 0.08em;
   line-height: 1.35;
   text-transform: uppercase;
@@ -205,7 +205,7 @@
 .repository-alias-name {
   color: var(--app-accent-strong);
   font-style: italic;
-  font-weight: 720;
+  font-weight: clamp(100, calc(720 + var(--app-font-weight-offset)), 900);
 }
 
 .repository-canonical-name,
@@ -213,9 +213,11 @@
   min-width: 0;
   overflow: hidden;
   color: var(--app-text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 10px;
-  font-weight: 400;
+  font-family: var(--app-monospace-font-family);
+  font-feature-settings: var(--app-code-font-feature-settings);
+  font-size: calc(10px * var(--app-code-font-scale));
+  font-weight: var(--app-code-font-weight);
+  font-variant-ligatures: var(--app-code-font-variant-ligatures);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -227,13 +229,13 @@
 
 .topbar-repository-canonical-name {
   max-width: 140px;
-  font-size: 11px;
+  font-size: calc(11px * var(--app-code-font-scale));
 }
 
 .sidebar-empty {
   display: block;
   padding: 8px;
-  font-size: 13px;
+  font-size: calc(13px * var(--app-font-scale));
 }
 
 .topbar {
@@ -276,7 +278,7 @@
 .topbar .eyebrow {
   overflow: hidden;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
   letter-spacing: 0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -286,8 +288,8 @@
   min-width: 0;
   overflow: hidden;
   color: var(--app-text-heading);
-  font-size: 16px;
-  font-weight: 720;
+  font-size: calc(16px * var(--app-font-scale));
+  font-weight: clamp(100, calc(720 + var(--app-font-weight-offset)), 900);
   letter-spacing: -0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -324,7 +326,7 @@
 .repository-switcher-caret {
   flex: 0 0 auto;
   color: var(--app-text-muted);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
   line-height: 1;
 }
 
@@ -334,7 +336,7 @@
 
 .sync-summary {
   flex: 0 0 auto;
-  font-size: 12px;
+  font-size: calc(12px * var(--app-font-scale));
 }
 
 .branch-status-tag {
@@ -387,7 +389,7 @@
 
 .topbar-reference-separator {
   color: var(--app-text-muted);
-  font-size: 16px;
+  font-size: calc(16px * var(--app-font-scale));
   line-height: 1;
 }
 

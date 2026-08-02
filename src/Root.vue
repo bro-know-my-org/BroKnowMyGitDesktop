@@ -2,6 +2,11 @@
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { NConfigProvider, NDialogProvider, NGlobalStyle, NMessageProvider, darkTheme, type GlobalThemeOverrides } from "naive-ui";
 import App from "./App.vue";
+import {
+  interfaceFontFamily,
+  resolvedInterfaceFontSize,
+  resolvedInterfaceFontWeight,
+} from "./shared/fonts";
 import { naiveUiDateLocale, naiveUiLocale } from "./shared/i18n";
 import { isDarkTheme, themePalette } from "./shared/theme";
 
@@ -22,7 +27,10 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => ({
     primaryColorPressed: themePalette.value.pressed,
     primaryColorSuppl: themePalette.value.hover,
     borderRadius: "0px",
-    fontSize: "14px",
+    fontSize: `${resolvedInterfaceFontSize.value}px`,
+    fontFamily: interfaceFontFamily.value,
+    fontWeight: String(resolvedInterfaceFontWeight.value),
+    fontWeightStrong: String(Math.min(900, resolvedInterfaceFontWeight.value + 200)),
   },
   Card: {
     ...(isDarkTheme.value ? darkCardOverrides : lightCardOverrides),

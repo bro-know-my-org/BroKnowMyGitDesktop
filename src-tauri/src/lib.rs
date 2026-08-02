@@ -112,6 +112,8 @@ pub fn run() {
             commands::create_pull_request,
             commands::list_github_publish_owners,
             commands::publish_github_repository,
+            commands::list_system_fonts,
+            commands::get_system_font_preferences,
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

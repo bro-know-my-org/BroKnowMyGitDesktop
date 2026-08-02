@@ -1,13 +1,41 @@
 <script lang="ts">
-import { defineComponent, onBeforeUnmount, ref } from "vue";
+import { computed, defineComponent, onBeforeUnmount, ref, watch } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
 import packageMetadata from "../../../../package.json";
+import {
+  codeFont,
+  codeFontSize,
+  codeFontWeight,
+  codeLigatures,
+  interfaceFont,
+  interfaceFontSize,
+  interfaceFontWeight,
+  loadSystemFonts,
+  resetFonts,
+  setCodeFont,
+  setCodeFontSize,
+  setCodeFontWeight,
+  setCodeLigatures,
+  setInterfaceFont,
+  setInterfaceFontSize,
+  setInterfaceFontWeight,
+  systemFontSelection,
+  systemCodeFontName,
+  systemCodeFontSize,
+  systemCodeFontWeight,
+  systemFonts,
+  systemFontsLoading,
+  systemInterfaceFontName,
+  systemInterfaceFontSize,
+  systemInterfaceFontWeight,
+} from "../../../shared/fonts";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
   components: { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
+    const workspace = useWorkspaceControllerContext();
     const narrowSettingsViewport = typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? null
       : window.matchMedia("(max-width: 600px)");
@@ -17,9 +45,85 @@ export default defineComponent({
     }
     narrowSettingsViewport?.addEventListener("change", updateSettingsTabsPlacement);
     onBeforeUnmount(() => narrowSettingsViewport?.removeEventListener("change", updateSettingsTabsPlacement));
+    watch(workspace.settingsModalShown, (shown) => {
+      if (shown) void loadSystemFonts();
+    });
+    const interfaceSystemFontOption = computed(() => ({
+      label: systemInterfaceFontName.value
+        ? workspace.t("workspace.dialogs.systemDefaultFont", { font: systemInterfaceFontName.value })
+        : workspace.t("workspace.dialogs.systemDefault"),
+      value: systemFontSelection,
+    }));
+    const codeSystemFontOption = computed(() => ({
+      label: systemCodeFontName.value
+        ? workspace.t("workspace.dialogs.systemDefaultFont", { font: systemCodeFontName.value })
+        : workspace.t("workspace.dialogs.systemDefault"),
+      value: systemFontSelection,
+    }));
+    const interfaceFontOptions = computed(() => [
+      interfaceSystemFontOption.value,
+      ...systemFonts.value.map((font) => ({ label: font.family, value: font.family })),
+    ]);
+    const codeFontOptions = computed(() => [
+      codeSystemFontOption.value,
+      ...systemFonts.value
+        .filter((font) => font.monospaced)
+        .map((font) => ({ label: font.family, value: font.family })),
+    ]);
+    function sizeOptions(systemValue: number | null, minimum: number, maximum: number) {
+      const systemLabel = systemValue
+        ? workspace.t("workspace.dialogs.systemDefaultValue", { value: `${systemValue.toFixed(1)} px` })
+        : workspace.t("workspace.dialogs.systemDefault");
+      return [
+        { label: systemLabel, value: systemFontSelection },
+        ...Array.from({ length: maximum - minimum + 1 }, (_, index) => {
+          const value = String(minimum + index);
+          return { label: `${value} px`, value };
+        }),
+      ];
+    }
+    const weightLabels = new Map([
+      [100, "Thin"], [200, "ExtraLight"], [300, "Light"], [400, "Regular"], [500, "Medium"],
+      [600, "SemiBold"], [700, "Bold"], [800, "ExtraBold"], [900, "Black"],
+    ]);
+    function weightOptions(systemValue: number | null) {
+      const systemLabel = systemValue
+        ? workspace.t("workspace.dialogs.systemDefaultValue", { value: `${systemValue} · ${weightLabels.get(systemValue) ?? "Custom"}` })
+        : workspace.t("workspace.dialogs.systemDefault");
+      return [
+        { label: systemLabel, value: systemFontSelection },
+        ...Array.from(weightLabels, ([weight, label]) => ({ label: `${weight} · ${label}`, value: String(weight) })),
+      ];
+    }
+    const interfaceFontSizeOptions = computed(() => sizeOptions(systemInterfaceFontSize.value, 10, 24));
+    const codeFontSizeOptions = computed(() => sizeOptions(systemCodeFontSize.value, 9, 24));
+    const interfaceFontWeightOptions = computed(() => weightOptions(systemInterfaceFontWeight.value));
+    const codeFontWeightOptions = computed(() => weightOptions(systemCodeFontWeight.value));
     return {
-      ...useWorkspaceControllerContext(),
+      ...workspace,
       appVersion: packageMetadata.version,
+      interfaceFont,
+      codeFont,
+      interfaceFontSize,
+      codeFontSize,
+      interfaceFontWeight,
+      codeFontWeight,
+      codeLigatures,
+      systemFontsLoading,
+      interfaceFontOptions,
+      codeFontOptions,
+      interfaceFontSizeOptions,
+      codeFontSizeOptions,
+      interfaceFontWeightOptions,
+      codeFontWeightOptions,
+      setInterfaceFont,
+      setCodeFont,
+      setInterfaceFontSize,
+      setCodeFontSize,
+      setInterfaceFontWeight,
+      setCodeFontWeight,
+      setCodeLigatures,
+      resetFonts,
       settingsSection: ref<"general" | "about">("general"),
       settingsTabsPlacement,
     };
@@ -64,6 +168,52 @@ export default defineComponent({
                 </div>
               </n-space>
             </n-form-item>
+            <n-divider />
+            <n-form-item :label="t('workspace.dialogs.interfaceFont')">
+              <n-select
+                filterable
+                :loading="systemFontsLoading"
+                :value="interfaceFont"
+                :options="interfaceFontOptions"
+                @update:value="setInterfaceFont"
+              />
+            </n-form-item>
+            <div class="font-setting-grid">
+              <n-form-item :label="t('workspace.dialogs.interfaceFontSize')">
+                <n-select :value="interfaceFontSize" :options="interfaceFontSizeOptions" @update:value="setInterfaceFontSize" />
+              </n-form-item>
+              <n-form-item :label="t('workspace.dialogs.interfaceFontWeight')">
+                <n-select :value="interfaceFontWeight" :options="interfaceFontWeightOptions" @update:value="setInterfaceFontWeight" />
+              </n-form-item>
+            </div>
+            <n-form-item :label="t('workspace.dialogs.codeFont')">
+              <n-select
+                filterable
+                :loading="systemFontsLoading"
+                :value="codeFont"
+                :options="codeFontOptions"
+                @update:value="setCodeFont"
+              />
+            </n-form-item>
+            <div class="font-setting-grid">
+              <n-form-item :label="t('workspace.dialogs.codeFontSize')">
+                <n-select :value="codeFontSize" :options="codeFontSizeOptions" @update:value="setCodeFontSize" />
+              </n-form-item>
+              <n-form-item :label="t('workspace.dialogs.codeFontWeight')">
+                <n-select :value="codeFontWeight" :options="codeFontWeightOptions" @update:value="setCodeFontWeight" />
+              </n-form-item>
+            </div>
+            <n-form-item :label="t('workspace.dialogs.programmingLigatures')">
+              <n-space vertical class="font-setting">
+                <n-checkbox :checked="codeLigatures" @update:checked="setCodeLigatures">
+                  {{ t('workspace.dialogs.enableProgrammingLigatures') }}
+                </n-checkbox>
+                <n-text depth="3" class="font-setting-hint">
+                  {{ t('workspace.dialogs.programmingLigaturesRequireAFontThatSupportsThem') }}
+                </n-text>
+              </n-space>
+            </n-form-item>
+            <n-button size="small" quaternary @click="resetFonts">{{ t('workspace.dialogs.resetFonts') }}</n-button>
           </n-form>
         </section>
       </n-tab-pane>

@@ -30,11 +30,14 @@
 .error-diagnostic-code {
   margin-top: 8px;
   color: var(--app-text-secondary);
-  font-size: 12px;
+  font-size: calc(12px * var(--app-code-font-scale));
 }
 
 .error-diagnostic-code code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--app-monospace-font-family);
+  font-weight: var(--app-code-font-weight);
+  font-feature-settings: var(--app-code-font-feature-settings);
+  font-variant-ligatures: var(--app-code-font-variant-ligatures);
 }
 
 .error-diagnostic-guidance {

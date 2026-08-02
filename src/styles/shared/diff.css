@@ -11,7 +11,10 @@
   border-radius: 0;
   background: var(--app-diff-bg);
   color: var(--app-diff-text);
-  font: 12px/1.62 ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  font: var(--app-code-font-weight) calc(12px * var(--app-code-font-scale)) var(--app-monospace-font-family);
+  font-feature-settings: var(--app-code-font-feature-settings);
+  font-variant-ligatures: var(--app-code-font-variant-ligatures);
+  line-height: var(--app-diff-line-height);
   white-space: pre;
 }
 
@@ -20,7 +23,7 @@
   width: max-content;
   min-width: calc(100% + 28px);
   box-sizing: border-box;
-  min-height: 1.62em;
+  min-height: var(--app-diff-line-height);
   margin: 0 -14px;
   padding: 0 14px;
 }
@@ -42,10 +45,10 @@
   align-items: center;
   width: 100%;
   min-width: 100%;
-  height: 19.44px;
+  height: var(--app-diff-line-height);
   margin: 0;
   padding: 0 14px;
-  line-height: 19.44px;
+  line-height: var(--app-diff-line-height);
   white-space: normal;
 }
 
@@ -99,15 +102,15 @@
 }
 
 .virtual-diff-line-action .n-button {
-  height: 18px;
+  height: calc(18px * var(--app-code-font-scale));
   padding: 0 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--app-code-font-scale));
 }
 
 .diff-line.is-file-header {
   background: rgb(56 139 253 / 14%);
   color: #79c0ff;
-  font-weight: 650;
+  font-weight: clamp(100, calc(650 + var(--app-code-font-weight-offset)), 900);
 }
 
 .diff-line.is-meta {
@@ -133,7 +136,7 @@
 
 .diff-line.is-add-file,
 .diff-line.is-remove-file {
-  font-weight: 620;
+  font-weight: clamp(100, calc(620 + var(--app-code-font-weight-offset)), 900);
 }
 
 .diff-line.is-no-newline {
