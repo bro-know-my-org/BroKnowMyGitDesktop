@@ -8,11 +8,8 @@
     <style>
       :root {
         --bkm-startup-bg: #f6f8fb;
-        --bkm-startup-bar: rgb(255 255 255 / 94%);
-        --bkm-startup-border: #edf0f4;
         --bkm-startup-text: #1d2635;
-        --bkm-startup-accent: #4b0082;
-        --bkm-startup-spinner-track: rgb(75 0 130 / 16%);
+        --bkm-startup-muted: #8994a6;
 
         color-scheme: light;
         background: var(--bkm-startup-bg);
@@ -27,69 +24,45 @@
         display: grid;
         width: 100vw;
         height: 100vh;
-        grid-template-rows: 52px 1fr;
+        place-items: center;
         overflow: hidden;
         background: var(--bkm-startup-bg);
         color: var(--bkm-startup-text);
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
 
-      .bkm-startup-bar {
+      .bkm-startup-content {
         display: flex;
+        flex-direction: column;
         align-items: center;
-        border-bottom: 1px solid var(--bkm-startup-border);
-        padding: 0 20px;
-        background: var(--bkm-startup-bar);
+        gap: 14px;
+        transform: translateY(-12px);
       }
 
-      .bkm-startup-brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        font-size: 14px;
+      .bkm-startup-logo {
+        display: block;
+        width: 72px;
+        height: 72px;
+      }
+
+      .bkm-startup-title {
+        margin: 2px 0 0;
+        font-size: 15px;
         font-weight: 650;
         letter-spacing: 0.01em;
       }
 
-      .bkm-startup-mark {
-        display: grid;
-        width: 24px;
-        height: 24px;
-        border-radius: 6px;
-        background: var(--bkm-startup-accent);
-        color: #fff;
-        font-size: 13px;
-        place-items: center;
-      }
-
-      .bkm-startup-content {
-        display: grid;
-        place-items: center;
-      }
-
-      .bkm-startup-indicator {
-        width: 24px;
-        height: 24px;
-        border: 2px solid var(--bkm-startup-spinner-track);
-        border-top-color: var(--bkm-startup-accent);
-        border-radius: 50%;
-        animation: bkm-startup-spin 720ms linear infinite;
-      }
-
-      @keyframes bkm-startup-spin {
-        to {
-          transform: rotate(360deg);
-        }
+      .bkm-startup-status {
+        margin: -6px 0 0;
+        color: var(--bkm-startup-muted);
+        font-size: 12px;
       }
 
       @media (prefers-color-scheme: dark) {
         :root {
           --bkm-startup-bg: #161b22;
-          --bkm-startup-bar: rgb(28 33 40 / 96%);
-          --bkm-startup-border: #30363d;
           --bkm-startup-text: #c9d1d9;
-          --bkm-startup-accent: #8c5cad;
-          --bkm-startup-spinner-track: rgb(140 92 173 / 22%);
+          --bkm-startup-muted: #8b949e;
 
           color-scheme: dark;
         }
@@ -97,30 +70,18 @@
 
       :root[data-startup-theme="light"] {
         --bkm-startup-bg: #f6f8fb;
-        --bkm-startup-bar: rgb(255 255 255 / 94%);
-        --bkm-startup-border: #edf0f4;
         --bkm-startup-text: #1d2635;
-        --bkm-startup-accent: #4b0082;
-        --bkm-startup-spinner-track: rgb(75 0 130 / 16%);
+        --bkm-startup-muted: #8994a6;
 
         color-scheme: light;
       }
 
       :root[data-startup-theme="dark"] {
         --bkm-startup-bg: #161b22;
-        --bkm-startup-bar: rgb(28 33 40 / 96%);
-        --bkm-startup-border: #30363d;
         --bkm-startup-text: #c9d1d9;
-        --bkm-startup-accent: #8c5cad;
-        --bkm-startup-spinner-track: rgb(140 92 173 / 22%);
+        --bkm-startup-muted: #8b949e;
 
         color-scheme: dark;
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        .bkm-startup-indicator {
-          animation-duration: 1.5s;
-        }
       }
     </style>
   </head>
@@ -128,14 +89,10 @@
   <body>
     <div id="app">
       <div id="bkm-startup" role="status" aria-label="Starting BroKnowMyGitDesktop">
-        <header class="bkm-startup-bar">
-          <div class="bkm-startup-brand">
-            <span class="bkm-startup-mark" aria-hidden="true">B</span>
-            <span>BroKnowMyGitDesktop</span>
-          </div>
-        </header>
         <main class="bkm-startup-content">
-          <div class="bkm-startup-indicator" aria-hidden="true"></div>
+          <img class="bkm-startup-logo" src="./src-tauri/icons/icon.png" alt="" aria-hidden="true" />
+          <p class="bkm-startup-title">BroKnowMyGitDesktop</p>
+          <p class="bkm-startup-status" data-startup-status>Starting...</p>
         </main>
       </div>
     </div>

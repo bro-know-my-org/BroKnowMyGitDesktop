@@ -15,6 +15,10 @@ const startupStatusMessages: Record<AppLocale, string> = {
   "zh-CN": "正在启动 BroKnowMyGitDesktop",
   "en-US": "Starting BroKnowMyGitDesktop",
 };
+const startupVisibleMessages: Record<AppLocale, string> = {
+  "zh-CN": "正在启动…",
+  "en-US": "Starting…",
+};
 
 function browserPreferredLanguages(): readonly string[] {
   if (typeof navigator === "undefined") return [];
@@ -46,6 +50,8 @@ const startupLocale = initialStartupLocale();
 document.documentElement.lang = startupLocale;
 document.documentElement.dataset.startupTheme = resolveStartupTheme();
 document.querySelector<HTMLElement>("#bkm-startup")?.setAttribute("aria-label", startupStatusMessages[startupLocale]);
+const startupStatus = document.querySelector<HTMLElement>("[data-startup-status]");
+if (startupStatus) startupStatus.textContent = startupVisibleMessages[startupLocale];
 
 function showStartupFailure(): void {
   const startup = document.querySelector<HTMLElement>("#bkm-startup");
