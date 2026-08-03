@@ -1,20 +1,18 @@
 # BroKnowMyGitDesktop
 
-轻量的多账号 Git 与代码托管桌面客户端，基于 Tauri 2、Vue 3、TypeScript、Naive UI 和 Rust 构建。内建 GitHub、GitLab、Gitee 优化，同时可为任意 Git host 添加“通用 Git 服务” Endpoint。
+轻量的多账号 Git 与代码托管桌面客户端，基于 Tauri 2、Vue 3、TypeScript、Naive UI 和 Rust 构建。内建 GitHub、GitLab、Gitee 优化，同时可为任意 Git host 添加“通用 Git 服务” Endpoint。支持简体中文与 English，并在 Linux、Windows、macOS 上使用各平台的系统能力。
 
 Git 操作使用系统 `git`，保留 SSH、LFS、正常系统 Git hook 与既有 credential helper 行为。任意 HTTPS Git host 可显式绑定系统钥匙串 PAT；SSH 身份始终由 Git/SSH 配置选择，不能假称固定到某个账号资料。系统 Git credential helper 也始终按 remote URL 自动选择，不伪装成某个已选账号。为防止 repository hook 窃取 askpass capability，使用应用管理的 PAT 的网络操作会禁用 hook。`git://` 与本地 `file://` remote 沿用无凭据的系统 Git 行为。GitHub、GitLab、Gitee 通过独立的 CodeHostAdapter 模型接入；PAT 仅保存在系统钥匙串中，不写入仓库配置或应用元数据。
 
-界面提供简体中文和 English 切换，并会记住本机选择。
+界面默认跟随系统深浅色与系统字体。设置中可分别选择已安装的界面字体和等宽代码字体，调整字号、字重和编程连字，也可恢复平台系统值；Diff 行高会随代码字号同步计算。
 
-## 当前状态（2026-07-23）
+## 当前状态
 
-核心的本地 Git 工作流已可用并已做过真机回归：查看改动与 diff、按文件或按代码块暂存、取消暂存、创建提交、分支/remote 管理，以及 fetch / pull / push。分支页会展示已获取的远程跟踪分支；点击可切换到已有同名本地分支，或创建对应的本地跟踪分支。工作区有未提交改动时，会明确提供“暂存后切换 / 直接切换 / 取消”选择。新建但尚未首次提交的仓库也支持暂存和取消暂存。本地仓库侧栏支持手动分组、按远端组织/用户和按最近使用切换；分组只保存在应用元数据中，不会改写 Git 配置。
+核心的本地 Git 工作流已可用：查看改动与带行号、语法高亮的 Diff，按文件或代码块暂存/取消暂存，创建提交，浏览 History 与 Stash，以及管理分支、remote、tag、worktree、子模块和 Git LFS。Fetch / Pull / Push 会在后端解析 remote、上游和凭据；固定凭据 URL 的 Pull 仍遵循仓库 local/worktree scope 的 fetch refspec、自定义远程跟踪命名空间和排除规则。
 
-改动页遵循“先审查、再选择、后提交”的交互：文件勾选框表示是否纳入下一次提交，部分暂存使用三态勾选；文件列表独立滚动，提交表单固定可见，右侧始终保留当前文件的 diff。支持单文件 Blame、Reflog 恢复记录，以及预览后清理未跟踪（非忽略）文件。发生冲突时，可配置外部编辑器打开所有冲突文件，完成后回到应用刷新、暂存并继续或中止。危险的丢弃、Clean 与 force push 都需要确认。
+改动页遵循“先审查、再选择、后提交”的交互：文件勾选框表示是否纳入下一次提交，部分暂存使用三态勾选；文件列表独立滚动，提交表单固定可见，右侧始终保留当前文件的 Diff。支持 Blame、Reflog、未跟踪文件 Clean 预览和外部冲突编辑器；丢弃、Clean 与 force push 等破坏性操作均需要确认。仓库侧栏支持手动分组、按远端组织/用户和按最近使用切换，元数据不会改写 Git 配置。
 
-当前验证结果：`pnpm build` 通过、Rust 测试 105/105 通过、`cargo clippy -- -D warnings` 无告警，且已完成 Windows `x86_64-pc-windows-msvc` 的凭据 / 进程树 API 编译检查；完整 Tauri Windows 包仍须在带 Windows SDK（`llvm-rc`）的 Windows CI 或主机上构建。新增真实仓库测试覆盖 Blame、Reflog、Clean 和外部编辑器冲突路径；已在本项目的无首个提交仓库中验证单文件与批量“暂存 → 取消暂存”，测试未创建提交且暂存区已清空。
-
-功能边界、维护入口、回归步骤和后续待办见 [docs/development-status.md](docs/development-status.md)。
+功能边界、当前验证基线、回归步骤和后续待办见 [开发状态与交接说明](docs/development-status.md)；模块和安全边界见 [架构说明](docs/architecture.md)，前端目录职责见 [前端架构](docs/frontend-architecture.md)。
 
 ## 开发
 
@@ -24,8 +22,8 @@ pnpm tauri dev
 ```
 
 ```bash
-pnpm build
-cd src-tauri && cargo test
+pnpm check
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
-
-详细模块边界、多账号选择和凭据安全规则见 [docs/architecture.md](docs/architecture.md)。

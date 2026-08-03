@@ -18,12 +18,15 @@ Commands ── AppState（安全的账号、绑定、Endpoint 与本地仓库�
                                   └── 各平台 API 或官方 CLI
 ```
 
+前端入口由 `src/Root.vue` 装配主题、字体和 i18n provider，由 `src/App.vue` 创建并提供工作区控制器；`src/app/` 负责应用壳，`src/pages/` 负责编排页面，`src/features/` 承载工作区业务。Rust command 位于 `src-tauri/src/commands/`；GitCore 按 changes、history、branches、remotes、network、workspace 等职责拆在 `src-tauri/src/git_core/`，不再集中于单文件。
+
 ### GitCore
 
 - 只以 `std::process::Command` 加参数数组启动系统 `git`，从不拼接 shell 命令。
 - 覆盖仓库发现、clone、status、diff、暂存/取消暂存、commit、分支、merge、fetch/pull/push、tag 和 remote 管理。
 - 不使用 libgit2，因此保留用户的 SSH、Git LFS、正常 hook 与 credential helper 行为；使用应用管理 PAT 或固定 gh bearer token 的网络命令会以命令级 `core.hooksPath` 禁用 hook，避免认证信息被仓库代码读取。
 - GitCore 不知道平台令牌，也不读写 Git 全局配置。
+- 凭据解析后使用固定 URL 执行 Fetch / Pull / Push，避免 remote 在解析与执行之间被替换。URL 形式的 Pull 不采用服务器默认分支，而是捕获当前分支的 remote source ref 与实际 tracking ref，验证仓库 local/worktree scope 的 fetch refspec 后构造明确的 source:destination。system/global scope 的同名 mapping 不参与该仓库决策，negative exclusion 与 force 标记保持 Git 原有语义。
 
 ### CredentialBroker
 
@@ -95,6 +98,10 @@ Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL �
 ## 国际化
 
 前端使用应用级 `appLocale` 保存简体中文 / English 选择，并同步 Naive UI 的组件与日期语言。所有页面、弹窗、操作反馈和稳定后端错误码都由前端翻译；后端继续只返回不含密钥的稳定错误 code 与安全的 fallback 文案。
+
+## 主题与字体
+
+`src/shared/theme/` 负责深浅色、系统主题监听和自定义主题色；`src/shared/fonts/` 负责系统字体偏好、已安装字体、字号、字重和连字，并从代码字号派生 Diff 行高。Rust 的 `commands/system.rs` 分平台读取系统值，前端将结果与本地覆盖合并后写入共享 CSS token。组件只消费 token，不直接假设某个操作系统字体存在；保存的字体在另一台机器不存在时必须安全回退。
 
 ## MVP 边界
 

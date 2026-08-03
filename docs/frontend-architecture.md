@@ -14,6 +14,7 @@ src/
 ├─ shared/
 │  ├─ api/                      # Tauri IPC 适配
 │  ├─ i18n/
+│  ├─ fonts/                    # 系统字体与排版偏好
 │  ├─ theme/
 │  └─ types/
 └─ styles/                      # 全局设计 token 与跨组件布局样式
@@ -27,12 +28,15 @@ src/
 - `features/workspace/composables/useWorkspaceController.ts` 只负责装配公开工作区接口、生命周期和跨域刷新。
 - 工作区业务按职责拆到 `useRepositoryCatalog`、`useRepositoryChanges`、`useRepositoryHistory`、`useRepositoryOperations`、`useRepositoryAuxiliary`、`useRepositoryPlatform` 和 `useWorkspaceAccounts`；模块通过窄依赖回调协作，不建立全局单例。
 - `shared/api/tauri.ts` 保持稳定的 IPC facade；运行时请求、内建 Endpoint、浏览器 Demo fixture 与 diff 解析分别位于同目录的小模块中。
+- `features/repository/components/RepositoryDiffViewer.vue` 负责 Diff 行号与语法 token 展示；Diff 获取、暂存和刷新状态仍由工作区 composable 编排。
+- `shared/fonts/index.ts` 统一解析系统值与本地覆盖，并向 CSS 写入界面/代码字体、字号、字重、连字及由代码字号派生的 Diff 行高 token。组件不能自行读取字体存储键。
 - 展示无关的格式化逻辑放在 `features/repository/utils/`。
 - `shared/api/tauri.ts` 是前端访问 Rust command 的唯一入口，禁止组件直接调用 Tauri IPC。
 
 ## 样式规则
 
 - 设计变量和跨组件布局规则放在 `styles/app.css`。
+- 字体族、字号、字重、连字和 Diff 行高必须使用 `styles/tokens.css` 中的 `--app-*` token；代码、SHA、分支名和 Diff 使用代码字体 token。
 - 新增局部视觉规则优先放在所属组件的 `<style scoped>`；只有多个同级页面共享时才提升到页面或全局样式。
 - 不为单行或一次性样式单独创建 CSS 文件。
 
