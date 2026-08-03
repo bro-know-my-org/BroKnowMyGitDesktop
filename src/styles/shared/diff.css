@@ -43,7 +43,7 @@
   left: 0;
   display: flex;
   align-items: center;
-  width: 100%;
+  width: max-content;
   min-width: 100%;
   height: var(--app-diff-line-height);
   margin: 0;
@@ -55,6 +55,52 @@
 .virtual-diff-line-text {
   flex: 0 0 auto;
   white-space: pre;
+}
+
+.wrapped-diff-output {
+  overflow-x: hidden;
+}
+
+.wrapped-diff-lines {
+  min-width: 100%;
+}
+
+.wrapped-diff-line {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  min-width: 100%;
+  min-height: var(--app-diff-line-height);
+  margin: 0;
+  padding: 0 14px;
+  line-height: var(--app-diff-line-height);
+  white-space: normal;
+}
+
+.wrapped-diff-line-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.wrapped-diff-line-text > :not(.diff-line-prefix) {
+  min-width: 0;
+}
+
+.wrapped-diff-line-action {
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  height: var(--app-diff-line-height);
+  flex: 0 0 auto;
+}
+
+.wrapped-diff-render-sentinel {
+  display: block;
+  height: 1px;
 }
 
 .diff-line-numbers {

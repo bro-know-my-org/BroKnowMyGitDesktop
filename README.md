@@ -4,7 +4,7 @@
 
 Git 操作使用系统 `git`，保留 SSH、LFS、正常系统 Git hook 与既有 credential helper 行为。任意 HTTPS Git host 可显式绑定系统钥匙串 PAT；SSH 身份始终由 Git/SSH 配置选择，不能假称固定到某个账号资料。系统 Git credential helper 也始终按 remote URL 自动选择，不伪装成某个已选账号。为防止 repository hook 窃取 askpass capability，使用应用管理的 PAT 的网络操作会禁用 hook。`git://` 与本地 `file://` remote 沿用无凭据的系统 Git 行为。GitHub、GitLab、Gitee 通过独立的 CodeHostAdapter 模型接入；PAT 仅保存在系统钥匙串中，不写入仓库配置或应用元数据。
 
-界面默认跟随系统深浅色与系统字体。设置中可分别选择已安装的界面字体和等宽代码字体，调整字号、字重和编程连字，也可恢复平台系统值；Diff 行高会随代码字号同步计算。
+界面默认跟随系统深浅色与系统字体。设置中可分别选择已安装的界面字体和等宽代码字体，调整字号、字重和编程连字，也可恢复平台系统值；Diff 行高会随代码字号同步计算，并可选择是否自动换行显示过长的行。
 
 ## 当前状态
 

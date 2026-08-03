@@ -21,7 +21,7 @@
 
 - 界面支持跟随系统、浅色和深色主题，自定义主题色会持久化并同步 Tauri 原生窗口主题。
 - 默认读取当前平台的系统界面字体、等宽字体、字号与字重：Linux 兼容 GNOME/GSettings、KDE 和 fontconfig，Windows 使用原生 UI 字体并提供系统等宽回退，macOS 使用 Core Text 系统字体。
-- 设置页只列出本机已安装字体，可分别覆盖界面/代码字体、字号和字重，并控制编程连字。Diff 行高从代码字号派生；恢复系统字体会重新使用平台值；关闭连字时必须同时关闭 `font-feature-settings` 和 `font-variant-ligatures`。
+- 设置页只列出本机已安装字体，可分别覆盖界面/代码字体、字号和字重，并控制编程连字。Diff 行高从代码字号派生；恢复系统字体会重新使用平台值；关闭连字时必须同时关闭 `font-feature-settings` 和 `font-variant-ligatures`。Diff 自动换行是独立的本机显示偏好：关闭时保留固定行高虚拟滚动，开启时使用浏览器正常文档流计算可变行高，不能改变 Git 行号或 hunk 索引。
 - 所有字体设置通过共享 CSS token 作用于 Naive UI、Diff、SHA、分支名等代码区域；禁止组件另写固定字体族绕过设置。
 
 ### 认证与代码托管
@@ -61,7 +61,7 @@
 - `src/pages/repositories/components/ChangesPanel.vue`：Changes 页面与文件选择交互。
 - `src/features/repository/components/RepositoryDiffViewer.vue`：Diff 行模型、行号与语法高亮展示。
 - `src/features/workspace/composables/useRepositoryChanges.ts`：暂存、取消暂存和 Diff 刷新编排。
-- `src/shared/theme/index.ts`、`src/shared/fonts/index.ts`：系统外观、字体探测结果和持久化偏好。
+- `src/shared/theme/index.ts`、`src/shared/fonts/index.ts`、`src/shared/diffPreferences/index.ts`：系统外观、字体探测结果及 Diff 显示等持久化偏好。
 - `src-tauri/src/git_core/changes.rs` 与 `src-tauri/src/git_core/changes/`：状态、Diff、暂存、丢弃和 Clean。
 - `src-tauri/src/git_core/network.rs`：Fetch / Pull / Push 的 URL 固定、上游和 refspec 处理。
 - `src-tauri/src/commands/system.rs`：Linux、Windows、macOS 系统字体探测与已安装字体枚举。

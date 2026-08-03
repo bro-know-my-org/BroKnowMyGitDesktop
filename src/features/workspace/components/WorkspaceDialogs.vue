@@ -2,6 +2,7 @@
 import { computed, defineComponent, onBeforeUnmount, ref, watch } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
 import packageMetadata from "../../../../package.json";
+import { diffLineWrapping, setDiffLineWrapping } from "../../../shared/diffPreferences";
 import {
   codeFont,
   codeFontSize,
@@ -109,6 +110,7 @@ export default defineComponent({
       interfaceFontWeight,
       codeFontWeight,
       codeLigatures,
+      diffLineWrapping,
       systemFontsLoading,
       interfaceFontOptions,
       codeFontOptions,
@@ -123,6 +125,7 @@ export default defineComponent({
       setInterfaceFontWeight,
       setCodeFontWeight,
       setCodeLigatures,
+      setDiffLineWrapping,
       resetFonts,
       settingsSection: ref<"general" | "about">("general"),
       settingsTabsPlacement,
@@ -214,6 +217,17 @@ export default defineComponent({
               </n-space>
             </n-form-item>
             <n-button size="small" quaternary @click="resetFonts">{{ t('workspace.dialogs.resetFonts') }}</n-button>
+            <n-divider />
+            <n-form-item :label="t('workspace.dialogs.diffDisplay')">
+              <n-space vertical class="font-setting">
+                <n-checkbox :checked="diffLineWrapping" @update:checked="setDiffLineWrapping">
+                  {{ t('workspace.dialogs.wrapLongDiffLines') }}
+                </n-checkbox>
+                <n-text depth="3" class="font-setting-hint">
+                  {{ t('workspace.dialogs.wrapLongDiffLinesHint') }}
+                </n-text>
+              </n-space>
+            </n-form-item>
           </n-form>
         </section>
       </n-tab-pane>

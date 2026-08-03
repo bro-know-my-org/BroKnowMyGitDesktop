@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import hljs from "highlight.js/lib/common";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { diffLineWrapping } from "../../../shared/diffPreferences";
 import { resolvedDiffLineHeight } from "../../../shared/fonts";
 
 const props = defineProps<{
@@ -20,11 +21,21 @@ const maximumMeasuredColumns = 10_000;
 const maximumHighlightedHunkCharacters = 100_000;
 const maximumHighlightCacheCharacters = 500_000;
 const maximumHighlightCacheEntries = 128;
+const wrappedLineChunkSize = 500;
 const scroller = ref<HTMLElement | null>(null);
+const wrappedLinesContainer = ref<HTMLElement | null>(null);
+const wrappedRenderSentinel = ref<HTMLElement | null>(null);
 const visibleStart = ref(0);
 const visibleEnd = ref(0);
+const wrappedRenderedLineCount = ref(wrappedLineChunkSize);
+const wrappedHighlightHtml = ref<ReadonlyMap<number, string | null>>(new Map());
 let viewportAnimationFrame: number | null = null;
 let viewportResizeObserver: ResizeObserver | null = null;
+let wrappedHighlightObserver: IntersectionObserver | null = null;
+let wrappedRenderObserver: IntersectionObserver | null = null;
+let wrappedHighlightObserverGeneration = 0;
+let wrappedRenderObserverGeneration = 0;
+let wrappedLineElements: HTMLElement[] = [];
 let viewerMounted = false;
 let highlightCacheCharacters = 0;
 
@@ -260,6 +271,8 @@ const visibleLines = computed(() => presentedLines.value
     ...entry,
     highlightedContent: entry.highlightable ? highlightedCode(entry, language.value) : null,
   })));
+const wrappedPresentedLines = computed(() => presentedLines.value.slice(0, wrappedRenderedLineCount.value));
+const canRenderMoreWrappedLines = computed(() => wrappedRenderedLineCount.value < presentedLines.value.length);
 
 const lineNumberColumns = computed(() => {
   const maximumLineNumber = presentedLines.value.reduce((maximum, line) => Math.max(
@@ -270,10 +283,28 @@ const lineNumberColumns = computed(() => {
   return Math.max(3, String(maximumLineNumber).length);
 });
 
+function estimatedLineColumns(line: string): number {
+  let columns = 0;
+  for (const character of line) {
+    if (character === "\t") {
+      columns += 8 - (columns % 8);
+    } else if (character.codePointAt(0)! > 0x7f) {
+      // Monospace fallbacks commonly render CJK and emoji at two cells. Treat
+      // all non-ASCII characters conservatively so the diff canvas never ends
+      // before the browser's actual glyph run.
+      columns += 2;
+    } else {
+      columns += 1;
+    }
+    if (columns >= maximumMeasuredColumns) return maximumMeasuredColumns;
+  }
+  return columns;
+}
+
 const maximumLineColumns = computed(() => {
   let maximum = 0;
   for (const line of props.lines) {
-    maximum = Math.max(maximum, Math.min(line.length, maximumMeasuredColumns));
+    maximum = Math.max(maximum, estimatedLineColumns(line));
     if (maximum >= maximumMeasuredColumns) break;
   }
   return maximum;
@@ -298,9 +329,166 @@ function updateVisibleLines(): void {
   visibleEnd.value = Math.min(props.lines.length, firstVisible + visibleCount + diffLineOverscan);
 }
 
+function highlightWrappedIndexes(indexes: Iterable<number>): void {
+  const highlighted = new Map(wrappedHighlightHtml.value);
+  let changed = false;
+  for (const index of indexes) {
+    const entry = presentedLines.value[index];
+    if (!entry || highlighted.has(index)) continue;
+    highlighted.set(index, entry.highlightable ? highlightedCode(entry, language.value) : null);
+    changed = true;
+  }
+  if (changed) wrappedHighlightHtml.value = highlighted;
+}
+
+function updateFallbackWrappedHighlights(): void {
+  viewportAnimationFrame = null;
+  const element = scroller.value;
+  if (!element || typeof IntersectionObserver !== "undefined") return;
+  const overscan = diffLineOverscan * resolvedDiffLineHeight.value;
+  const viewportTop = Math.max(0, element.scrollTop - overscan);
+  const viewportBottom = element.scrollTop + element.clientHeight + overscan;
+  const indexes: number[] = [];
+  let low = 0;
+  let high = wrappedLineElements.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (wrappedLineElements[middle].offsetTop < viewportTop) low = middle + 1;
+    else high = middle;
+  }
+  const firstCandidate = Math.max(0, low - 1);
+  for (let position = firstCandidate; position < wrappedLineElements.length; position += 1) {
+    const line = wrappedLineElements[position];
+    if (line.offsetTop > viewportBottom) break;
+    if (line.offsetTop + line.offsetHeight < viewportTop) continue;
+    const index = Number(line.dataset.diffLineIndex);
+    if (Number.isInteger(index)) indexes.push(index);
+  }
+  highlightWrappedIndexes(indexes);
+  if (canRenderMoreWrappedLines.value && element.scrollTop + element.clientHeight >= element.scrollHeight - overscan) {
+    renderMoreWrappedLines();
+  }
+}
+
 function scheduleVisibleLineUpdate(): void {
-  if (viewerMounted && viewportAnimationFrame === null) {
-    viewportAnimationFrame = window.requestAnimationFrame(updateVisibleLines);
+  if (!viewerMounted || viewportAnimationFrame !== null) return;
+  if (!diffLineWrapping.value) viewportAnimationFrame = window.requestAnimationFrame(updateVisibleLines);
+  else if (typeof IntersectionObserver === "undefined") {
+    viewportAnimationFrame = window.requestAnimationFrame(updateFallbackWrappedHighlights);
+  }
+}
+
+function disconnectWrappedHighlightObserver(): void {
+  wrappedHighlightObserverGeneration += 1;
+  wrappedHighlightObserver?.disconnect();
+  wrappedHighlightObserver = null;
+}
+
+function disconnectWrappedRenderObserver(): void {
+  wrappedRenderObserverGeneration += 1;
+  wrappedRenderObserver?.disconnect();
+  wrappedRenderObserver = null;
+}
+
+function observeWrappedRenderSentinel(): void {
+  disconnectWrappedRenderObserver();
+  const element = scroller.value;
+  const sentinel = wrappedRenderSentinel.value;
+  if (
+    !viewerMounted
+    || !diffLineWrapping.value
+    || !canRenderMoreWrappedLines.value
+    || !element
+    || !sentinel
+    || typeof IntersectionObserver === "undefined"
+  ) return;
+  const observerGeneration = wrappedRenderObserverGeneration;
+  wrappedRenderObserver = new IntersectionObserver((entries) => {
+    if (
+      observerGeneration === wrappedRenderObserverGeneration
+      && entries.some((entry) => entry.isIntersecting)
+    ) renderMoreWrappedLines();
+  }, {
+    root: element,
+    rootMargin: "800px 0px",
+  });
+  wrappedRenderObserver.observe(sentinel);
+}
+
+function renderMoreWrappedLines(): void {
+  if (!viewerMounted || !diffLineWrapping.value || !canRenderMoreWrappedLines.value) return;
+  wrappedRenderedLineCount.value = Math.min(
+    presentedLines.value.length,
+    wrappedRenderedLineCount.value + wrappedLineChunkSize,
+  );
+  const observerGeneration = wrappedRenderObserverGeneration;
+  void nextTick(() => {
+    if (observerGeneration !== wrappedRenderObserverGeneration) return;
+    observeWrappedHighlightTargets();
+    observeWrappedRenderSentinel();
+  });
+}
+
+function observeWrappedHighlightTargets(recreateObserver = false): void {
+  const element = scroller.value;
+  const linesContainer = wrappedLinesContainer.value;
+  if (!viewerMounted || !diffLineWrapping.value || !element || !linesContainer) return;
+  const previousLineCount = wrappedLineElements.length;
+  const renderedLineCount = wrappedPresentedLines.value.length;
+  for (let index = previousLineCount; index < renderedLineCount; index += 1) {
+    const line = linesContainer.children.item(index);
+    if (line instanceof HTMLElement) wrappedLineElements.push(line);
+  }
+  if (typeof IntersectionObserver === "undefined") {
+    updateFallbackWrappedHighlights();
+    return;
+  }
+
+  if (recreateObserver) disconnectWrappedHighlightObserver();
+  if (!wrappedHighlightObserver) {
+    const observerGeneration = wrappedHighlightObserverGeneration;
+    wrappedHighlightObserver = new IntersectionObserver((entries, observer) => {
+      if (observerGeneration !== wrappedHighlightObserverGeneration) return;
+      const indexes: number[] = [];
+      for (const observed of entries) {
+        if (!observed.isIntersecting) continue;
+        const index = Number((observed.target as HTMLElement).dataset.diffLineIndex);
+        if (Number.isInteger(index)) indexes.push(index);
+        observer.unobserve(observed.target);
+      }
+      highlightWrappedIndexes(indexes);
+    }, {
+      root: element,
+      rootMargin: `${diffLineOverscan * resolvedDiffLineHeight.value}px 0px`,
+    });
+  }
+
+  const firstTarget = recreateObserver ? 0 : previousLineCount;
+  wrappedLineElements.slice(firstTarget).forEach((line) => {
+    const index = Number(line.dataset.diffLineIndex);
+    if (Number.isInteger(index) && !wrappedHighlightHtml.value.has(index)) {
+      wrappedHighlightObserver?.observe(line);
+    }
+  });
+}
+
+function resetWrappedHighlights(resetRenderedLines = true): void {
+  wrappedHighlightHtml.value = new Map();
+  wrappedLineElements = [];
+  disconnectWrappedHighlightObserver();
+  disconnectWrappedRenderObserver();
+  if (resetRenderedLines) wrappedRenderedLineCount.value = wrappedLineChunkSize;
+  if (diffLineWrapping.value) {
+    const highlightGeneration = wrappedHighlightObserverGeneration;
+    const renderGeneration = wrappedRenderObserverGeneration;
+    void nextTick(() => {
+      if (
+        highlightGeneration !== wrappedHighlightObserverGeneration
+        || renderGeneration !== wrappedRenderObserverGeneration
+      ) return;
+      observeWrappedHighlightTargets();
+      observeWrappedRenderSentinel();
+    });
   }
 }
 
@@ -310,21 +498,58 @@ watch(() => props.lines.length, () => {
 
 watch(resolvedDiffLineHeight, (lineHeight, previousLineHeight) => {
   const element = scroller.value;
-  const logicalScrollPosition = element && previousLineHeight > 0
+  const logicalScrollPosition = element && !diffLineWrapping.value && previousLineHeight > 0
     ? element.scrollTop / previousLineHeight
     : null;
   void nextTick(() => {
     if (element && logicalScrollPosition !== null) {
       element.scrollTop = logicalScrollPosition * lineHeight;
     }
-    scheduleVisibleLineUpdate();
+    if (diffLineWrapping.value) {
+      observeWrappedHighlightTargets(true);
+    }
+    else scheduleVisibleLineUpdate();
   });
 });
 
-watch(() => props.lines, clearHighlightCache);
+watch(() => props.lines, () => {
+  clearHighlightCache();
+  resetWrappedHighlights(false);
+});
+
+watch(language, () => {
+  clearHighlightCache();
+  wrappedHighlightHtml.value = new Map();
+  disconnectWrappedHighlightObserver();
+  const observerGeneration = wrappedHighlightObserverGeneration;
+  if (diffLineWrapping.value) {
+    void nextTick(() => {
+      if (observerGeneration === wrappedHighlightObserverGeneration) observeWrappedHighlightTargets(true);
+    });
+  }
+});
+
+watch(diffLineWrapping, (wrapping) => {
+  const element = scroller.value;
+  if (element) element.scrollTop = 0;
+  if (wrapping) {
+    resetWrappedHighlights();
+  } else {
+    wrappedHighlightHtml.value = new Map();
+    wrappedLineElements = [];
+    disconnectWrappedHighlightObserver();
+    disconnectWrappedRenderObserver();
+    if (viewportAnimationFrame !== null) {
+      window.cancelAnimationFrame(viewportAnimationFrame);
+      viewportAnimationFrame = null;
+    }
+    void nextTick(scheduleVisibleLineUpdate);
+  }
+});
 
 watch(() => props.resetKey, () => {
   clearHighlightCache();
+  resetWrappedHighlights();
   const element = scroller.value;
   if (element) element.scrollTop = 0;
   void nextTick(scheduleVisibleLineUpdate);
@@ -335,11 +560,19 @@ onMounted(() => {
   viewportResizeObserver = new ResizeObserver(scheduleVisibleLineUpdate);
   if (scroller.value) viewportResizeObserver.observe(scroller.value);
   scheduleVisibleLineUpdate();
+  if (diffLineWrapping.value) {
+    void nextTick(() => {
+      observeWrappedHighlightTargets();
+      observeWrappedRenderSentinel();
+    });
+  }
 });
 
 onBeforeUnmount(() => {
   viewerMounted = false;
   viewportResizeObserver?.disconnect();
+  disconnectWrappedHighlightObserver();
+  disconnectWrappedRenderObserver();
   if (viewportAnimationFrame !== null) window.cancelAnimationFrame(viewportAnimationFrame);
 });
 </script>
@@ -348,12 +581,13 @@ onBeforeUnmount(() => {
   <div
     ref="scroller"
     class="diff-output virtual-diff-output"
+    :class="{ 'wrapped-diff-output': diffLineWrapping }"
     role="region"
     tabindex="0"
     :aria-label="label"
     @scroll="scheduleVisibleLineUpdate"
   >
-    <div class="virtual-diff-spacer" :style="spacerStyle">
+    <div v-if="!diffLineWrapping" class="virtual-diff-spacer" :style="spacerStyle">
       <span
         v-for="entry in visibleLines"
         :key="entry.index"
@@ -374,6 +608,38 @@ onBeforeUnmount(() => {
           <slot name="line-action" :line="entry.line" :index="entry.index" />
         </span>
       </span>
+    </div>
+    <div v-else ref="wrappedLinesContainer" class="wrapped-diff-lines">
+      <span
+        v-for="entry in wrappedPresentedLines"
+        :key="entry.index"
+        class="diff-line wrapped-diff-line"
+        :class="lineClass(entry.line)"
+        :data-diff-line-index="entry.index"
+      >
+        <span class="diff-line-numbers" :style="lineNumberStyle" aria-hidden="true">
+          <span>{{ entry.oldLineNumber ?? '' }}</span>
+          <span>{{ entry.newLineNumber ?? '' }}</span>
+        </span>
+        <span class="wrapped-diff-line-text">
+          <span v-if="entry.highlightable" class="diff-line-prefix">{{ entry.prefix }}</span>
+          <span
+            v-if="wrappedHighlightHtml.has(entry.index) && wrappedHighlightHtml.get(entry.index) !== null"
+            class="diff-line-code"
+            v-html="wrappedHighlightHtml.get(entry.index) || ''"
+          />
+          <span v-else>{{ entry.content }}</span>
+        </span>
+        <span v-if="$slots['line-action']" class="virtual-diff-line-action wrapped-diff-line-action">
+          <slot name="line-action" :line="entry.line" :index="entry.index" />
+        </span>
+      </span>
+      <span
+        v-if="canRenderMoreWrappedLines"
+        ref="wrappedRenderSentinel"
+        class="wrapped-diff-render-sentinel"
+        aria-hidden="true"
+      />
     </div>
   </div>
 </template>

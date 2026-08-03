@@ -29,7 +29,7 @@ src/
 - 工作区业务按职责拆到 `useRepositoryCatalog`、`useRepositoryChanges`、`useRepositoryHistory`、`useRepositoryOperations`、`useRepositoryAuxiliary`、`useRepositoryPlatform` 和 `useWorkspaceAccounts`；模块通过窄依赖回调协作，不建立全局单例。
 - `shared/api/tauri.ts` 保持稳定的 IPC facade；运行时请求、内建 Endpoint、浏览器 Demo fixture 与 diff 解析分别位于同目录的小模块中。
 - `features/repository/components/RepositoryDiffViewer.vue` 负责 Diff 行号与语法 token 展示；Diff 获取、暂存和刷新状态仍由工作区 composable 编排。
-- `shared/fonts/index.ts` 统一解析系统值与本地覆盖，并向 CSS 写入界面/代码字体、字号、字重、连字及由代码字号派生的 Diff 行高 token。组件不能自行读取字体存储键。
+- `shared/fonts/index.ts` 统一解析系统值与本地覆盖，并向 CSS 写入界面/代码字体、字号、字重、连字及由代码字号派生的 Diff 行高 token。组件不能自行读取字体存储键。`shared/diffPreferences/index.ts` 管理 Diff 自动换行偏好；关闭时使用固定行高虚拟滚动，开启时由浏览器正常文档流计算可变行高。
 - 展示无关的格式化逻辑放在 `features/repository/utils/`。
 - `shared/api/tauri.ts` 是前端访问 Rust command 的唯一入口，禁止组件直接调用 Tauri IPC。
 
