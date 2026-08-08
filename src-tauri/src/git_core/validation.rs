@@ -593,7 +593,6 @@ pub(super) fn is_unsafe_network_config_key(key: &str) -> bool {
     key == "core.sshcommand"
         || key == "core.askpass"
         || key == "core.gitproxy"
-        || key == "core.hookspath"
         || key == "core.editor"
         || key == "sequence.editor"
         || key == "core.fsmonitor"

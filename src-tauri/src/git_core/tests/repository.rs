@@ -672,7 +672,6 @@ fn network_configuration_rejects_executable_extensions() {
         "core.askPass",
         "sequence.editor",
         "core.fsmonitor",
-        "core.hooksPath",
         "merge.payload.driver",
     ] {
         assert!(
@@ -680,6 +679,11 @@ fn network_configuration_rejects_executable_extensions() {
             "{key} must not run beside an app-selected askpass capability"
         );
     }
+}
+
+#[test]
+fn repository_hooks_path_is_allowed_for_network_preflight() {
+    assert!(!is_unsafe_network_config_key("core.hooksPath"));
 }
 
 #[test]

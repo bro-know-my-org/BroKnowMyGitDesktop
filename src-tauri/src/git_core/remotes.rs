@@ -255,9 +255,10 @@ impl GitCore {
                     .unwrap_or(true)
             });
             return if unsafe_key {
-                Err(AppError::new(
+                Err(AppError::with_safe_details(
                     "unsafe_git_config",
-                    "仓库本地 Git 配置包含不安全的凭据或网络设置；请移除后再执行网络操作。",
+                    "应用的网络安全检查拒绝了该仓库的本地 Git 配置。",
+                    "这不是 SSH 不支持。请检查仓库级 credential.*、core.sshCommand、core.gitProxy、remote.*、http.* 或 url.*.insteadOf 等设置；普通 Husky 的 core.hooksPath 不会触发此错误。",
                 ))
             } else {
                 Ok(())

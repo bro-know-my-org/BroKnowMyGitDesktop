@@ -26,13 +26,46 @@ fn local_credential_helper_configuration_is_rejected_before_network_git() {
         .unwrap();
     assert!(configured.success());
 
-    assert_eq!(
-        GitCore::new()
-            .ensure_network_configuration_is_safe(&repository)
-            .expect_err("repository-local helper must not run for a selected account")
-            .code(),
-        "unsafe_git_config"
-    );
+    let error = GitCore::new()
+        .ensure_network_configuration_is_safe(&repository)
+        .expect_err("repository-local helper must not run for a selected account");
+    assert_eq!(error.code(), "unsafe_git_config");
+    assert!(error.details().is_some());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn repository_hooks_path_does_not_block_network_preflight() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-hooks-path-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+    let configured = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "config",
+            "core.hooksPath",
+            ".husky/_",
+        ])
+        .status()
+        .unwrap();
+    assert!(configured.success());
+
+    assert!(GitCore::new()
+        .ensure_network_configuration_is_safe(&repository)
+        .is_ok());
 
     let _ = fs::remove_dir_all(repository);
 }
@@ -1062,4 +1095,3 @@ fn squash_commits_the_tree_produced_by_commit_hooks() {
 
     let _ = fs::remove_dir_all(repository);
 }
-
