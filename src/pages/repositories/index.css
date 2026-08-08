@@ -24,14 +24,24 @@
 }
 
 .repository-tabs > .n-tabs-nav {
+  box-sizing: border-box;
   min-height: 32px;
   border: 1px solid var(--app-divider);
+  border-bottom: 0;
   background: var(--app-surface);
 }
 
 .repository-tabs .n-tabs-nav-scroll-content {
   min-height: 30px;
-  border-bottom: 0 !important;
+}
+
+.repository-tabs > .n-tabs-pane-wrapper {
+  box-sizing: border-box;
+  min-height: 0;
+  border: 1px solid var(--app-divider);
+  border-top: 0;
+  background: var(--app-surface);
+  box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%);
 }
 
 .repository-tabs .n-tabs-tab {
@@ -39,6 +49,7 @@
 }
 
 .repository-tab-loading {
+  box-sizing: border-box;
   display: grid;
   min-height: 160px;
   flex: 1 1 auto;
@@ -50,7 +61,7 @@
     overflow-y: hidden;
   }
 
-  .is-fixed-repository-content .content-inner {
+  .is-repository-panel-content .content-inner {
     box-sizing: border-box;
     display: flex;
     height: 100%;
@@ -58,16 +69,16 @@
     flex-direction: column;
   }
 
-  .is-fixed-repository-content .repository-page,
-  .is-fixed-repository-content .repository-tabs {
+  .is-repository-panel-content .repository-page,
+  .is-repository-panel-content .repository-tabs {
     display: flex;
     min-height: 0;
     flex: 1 1 0;
     flex-direction: column;
   }
 
-  .is-fixed-repository-content .repository-tabs > .n-tabs-pane-wrapper,
-  .is-fixed-repository-content .repository-tabs .n-tab-pane {
+  .is-repository-panel-content .repository-tabs > .n-tabs-pane-wrapper,
+  .is-repository-panel-content .repository-tabs .n-tab-pane {
     display: flex;
     min-height: 0;
     flex: 1 1 0;
@@ -75,9 +86,23 @@
     overflow: hidden;
   }
 
-  .is-fixed-repository-content .changes-workspace {
-    height: auto;
+  .is-repository-panel-content .changes-workspace,
+  .is-repository-panel-content .history-workspace {
     min-height: 0;
     flex: 1 1 0;
+  }
+}
+
+@media (width <= 1120px) {
+  .repository-tabs > .n-tabs-pane-wrapper {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .repository-tab-loading {
+    border: 1px solid var(--app-divider);
+    border-top: 0;
+    background: var(--app-surface);
   }
 }

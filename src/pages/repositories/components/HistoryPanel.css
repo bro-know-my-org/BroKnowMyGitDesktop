@@ -1,12 +1,13 @@
 .history-workspace {
   box-sizing: border-box;
+  display: grid;
+  flex: 1 1 0;
   min-height: 420px;
   align-items: stretch;
   overflow: hidden;
-  border: 1px solid var(--app-divider);
-  border-top: 0;
-  background: var(--app-surface);
-  box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .history-commit-card,
@@ -112,6 +113,7 @@
 }
 
 .history-commit-row {
+  box-sizing: border-box;
   display: grid;
   width: 100%;
   min-width: 0;
@@ -259,6 +261,7 @@
 }
 
 .history-file-row {
+  box-sizing: border-box;
   display: flex;
   width: 100%;
   min-width: 0;
@@ -398,16 +401,6 @@
   margin: auto;
 }
 
-@media (width >= 1121px) {
-  .history-workspace {
-    flex: 1 1 0;
-  }
-
-  .is-fixed-repository-content .history-workspace {
-    min-height: 0;
-  }
-}
-
 @media (width <= 1120px) {
   .history-workspace > .repository-column-resizer {
     display: none;
@@ -417,6 +410,7 @@
     grid-template-columns: 1fr;
     min-height: 0;
     overflow: visible;
+    row-gap: 16px;
     border: 0;
     background: transparent;
     box-shadow: none;

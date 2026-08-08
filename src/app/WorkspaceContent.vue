@@ -17,7 +17,10 @@ export default defineComponent({
 <template>
 <n-layout-content
   class="content-area"
-  :class="{ 'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo && !lastError }"
+  :class="{
+    'is-repository-panel-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history'),
+    'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo && !lastError,
+  }"
 >
   <main class="content-inner">
 <n-alert v-if="browserDemo" type="info" class="demo-alert" :bordered="false">
