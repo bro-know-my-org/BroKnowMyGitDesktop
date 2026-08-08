@@ -4,13 +4,13 @@ import { api } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
 import type { CommitSummary, GitStatusEntry, RepositorySnapshot } from "../../../shared/types/domain";
 import type { DiffHunk } from "../../repository/utils/presentation";
+import { acquireRepositoryOperation } from "./repositoryOperationLock";
 
 interface RepositoryChangesDependencies {
   activeRepositoryPath: Ref<string | null>;
   snapshot: Ref<RepositorySnapshot | null>;
   currentBranch: ComputedRef<string>;
   commits: Ref<CommitSummary[]>;
-  mutationBusy: Ref<boolean>;
   getSelectionGeneration: () => number;
   repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
@@ -29,7 +29,6 @@ export function useRepositoryChanges({
   snapshot,
   currentBranch,
   commits,
-  mutationBusy,
   getSelectionGeneration,
   repositorySelectionIsCurrent,
   applySnapshot,
@@ -52,6 +51,17 @@ export function useRepositoryChanges({
   const commitMessage = ref("");
   const amendLastCommit = ref(false);
   let diffRequestGeneration = 0;
+
+  function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
+    const releaseOperation = acquireRepositoryOperation(repositoryPath);
+    if (!releaseOperation) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return null;
+    }
+    return () => {
+      releaseOperation();
+    };
+  }
 
   const stagedChanges = computed(() =>
     snapshot.value?.status.entries.filter((entry) => Boolean(entry.indexStatus)) ?? []);
@@ -166,6 +176,14 @@ export function useRepositoryChanges({
     else clearDiffSelection();
   }
 
+  async function syncCurrentSelectedDiff(
+    nextSnapshot: RepositorySnapshot,
+    repositoryPath = activeRepositoryPath.value,
+  ): Promise<void> {
+    const currentSelectedPath = selectedChange.value?.path;
+    if (currentSelectedPath) await syncSelectedDiff(nextSnapshot, currentSelectedPath, false, repositoryPath);
+  }
+
   async function openFileBlame(): Promise<void> {
     if (!activeRepositoryPath.value || !selectedChange.value) return;
     blameModalShown.value = true;
@@ -187,20 +205,22 @@ export function useRepositoryChanges({
     const selectionGeneration = getSelectionGeneration();
     const selectedPath = selectedChange.value.path;
     const reverse = selectedDiffStaged.value;
-    mutationBusy.value = true;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
       const nextSnapshot = await api.applyPatch(repositoryPath, selectedPath, hunk.patch, reverse);
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
-      const nextEntry = nextSnapshot.status.entries.find((entry) => entry.path === selectedPath);
-      if (nextEntry) await loadDiff(nextEntry, repositoryPath);
-      else clearDiffSelection();
+      await syncCurrentSelectedDiff(nextSnapshot, repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(reverse ? t("workspace.controller.hunkUnstaged") : t("workspace.controller.hunkStaged"));
     } catch (error) {
-      reportError(error, reverse
-        ? t("workspace.controller.couldNotUnstageHunk")
-        : t("workspace.controller.couldNotStageHunk"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, reverse
+          ? t("workspace.controller.couldNotUnstageHunk")
+          : t("workspace.controller.couldNotStageHunk"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -223,76 +243,94 @@ export function useRepositoryChanges({
 
   async function setChangeIncluded(entry: GitStatusEntry, included: boolean): Promise<void> {
     if (!activeRepositoryPath.value) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      const wasSelected = selectedChange.value?.path === entry.path;
       const nextSnapshot = included
-        ? await api.stagePaths(activeRepositoryPath.value, [entry.path])
-        : await api.unstagePaths(activeRepositoryPath.value, [entry.path]);
-      applySnapshot(nextSnapshot);
-      if (wasSelected) await syncSelectedDiff(nextSnapshot, entry.path);
+        ? await api.stagePaths(repositoryPath, [entry.path])
+        : await api.unstagePaths(repositoryPath, [entry.path]);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
+      await syncCurrentSelectedDiff(nextSnapshot, repositoryPath);
     } catch (error) {
-      reportError(error, included
-        ? t("workspace.controller.couldNotStageChanges")
-        : t("workspace.controller.couldNotUnstageChanges"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, included
+          ? t("workspace.controller.couldNotStageChanges")
+          : t("workspace.controller.couldNotUnstageChanges"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   async function stageAll(): Promise<void> {
     if (!activeRepositoryPath.value || !workingChanges.value.length) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      const selectedPath = selectedChange.value?.path;
       const nextSnapshot = await api.stagePaths(
-        activeRepositoryPath.value,
+        repositoryPath,
         workingChanges.value.map((entry) => entry.path),
       );
-      applySnapshot(nextSnapshot);
-      if (selectedPath) await syncSelectedDiff(nextSnapshot, selectedPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
+      await syncCurrentSelectedDiff(nextSnapshot, repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.allWorkingTreeChangesAreStaged"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotStageChanges"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotStageChanges"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   async function unstageAll(): Promise<void> {
     if (!activeRepositoryPath.value || !stagedChanges.value.length) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      const selectedPath = selectedChange.value?.path;
       const nextSnapshot = await api.unstagePaths(
-        activeRepositoryPath.value,
+        repositoryPath,
         stagedChanges.value.map((entry) => entry.path),
       );
-      applySnapshot(nextSnapshot);
-      if (selectedPath) await syncSelectedDiff(nextSnapshot, selectedPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
+      await syncCurrentSelectedDiff(nextSnapshot, repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.allFilesAreRemovedFromTheStagingArea"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotUnstageChanges"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotUnstageChanges"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   async function confirmDiscardChanges(paths: string[]): Promise<void> {
     if (!activeRepositoryPath.value || !paths.length) return;
     const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     const uniquePaths = [...new Set(paths)];
-    mutationBusy.value = true;
+    const finishPreview = beginRepositoryMutation(repositoryPath);
+    if (!finishPreview) return;
     let discardPreview: Awaited<ReturnType<typeof api.previewDiscardChanges>>;
     try {
       discardPreview = await api.previewDiscardChanges(repositoryPath, uniquePaths);
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotPrepareToDiscardChanges"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotPrepareToDiscardChanges"));
+      }
       return;
     } finally {
-      mutationBusy.value = false;
+      finishPreview();
     }
-    if (activeRepositoryPath.value !== repositoryPath) return;
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     dialog.error({
       title: t("workspace.controller.discardChanges"),
       content: t(
@@ -307,19 +345,23 @@ export function useRepositoryChanges({
       positiveText: t("workspace.controller.discardChanges"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        if (activeRepositoryPath.value !== repositoryPath) {
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
           message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
           return;
         }
-        mutationBusy.value = true;
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.discardChanges(repositoryPath, discardPreview.confirmation));
+          const nextSnapshot = await api.discardChanges(repositoryPath, discardPreview.confirmation);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           if (selectedChange.value && uniquePaths.includes(selectedChange.value.path)) clearDiffSelection();
           message.success(t("workspace.controller.changesDiscarded"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotDiscardChanges"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotDiscardChanges"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -331,16 +373,22 @@ export function useRepositoryChanges({
 
   async function confirmCleanUntracked(): Promise<void> {
     if (!activeRepositoryPath.value) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishPreview = beginRepositoryMutation(repositoryPath);
+    if (!finishPreview) return;
     let cleanPreview: Awaited<ReturnType<typeof api.previewCleanUntracked>>;
     try {
-      cleanPreview = await api.previewCleanUntracked(activeRepositoryPath.value);
+      cleanPreview = await api.previewCleanUntracked(repositoryPath);
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotPreviewUntrackedFileCleanup"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotPreviewUntrackedFileCleanup"));
+      }
       return;
     } finally {
-      mutationBusy.value = false;
+      finishPreview();
     }
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     const entries = cleanPreview.preview.split(/\r?\n/u).filter(Boolean);
     if (!entries.length) {
       message.info(t("workspace.controller.thereAreNoUntrackedFilesToClean"));
@@ -355,19 +403,26 @@ export function useRepositoryChanges({
       positiveText: t("workspace.controller.deletePermanently"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
           const selectedPath = selectedChange.value?.path;
-          const nextSnapshot = await api.cleanUntracked(activeRepositoryPath.value!, cleanPreview.confirmation);
-          applySnapshot(nextSnapshot);
+          const nextSnapshot = await api.cleanUntracked(repositoryPath, cleanPreview.confirmation);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           if (selectedPath && !nextSnapshot.status.entries.some((entry) => entry.path === selectedPath)) {
             clearDiffSelection();
           }
           message.success(t("workspace.controller.untrackedFilesCleaned"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotCleanUntrackedFiles"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotCleanUntrackedFiles"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -393,27 +448,34 @@ export function useRepositoryChanges({
       message.warning(t("workspace.controller.enterACommitMessage"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      const selectedPath = selectedChange.value?.path;
       const nextSnapshot = await api.commitChanges(
-        activeRepositoryPath.value,
+        repositoryPath,
         commitMessage.value.trim(),
         amendLastCommit.value,
       );
-      applySnapshot(nextSnapshot);
-      await syncSelectedDiff(nextSnapshot, selectedPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
+      await syncCurrentSelectedDiff(nextSnapshot, repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       commitMessage.value = "";
       const amended = amendLastCommit.value;
       amendLastCommit.value = false;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(amended
         ? t("workspace.controller.latestCommitAmended")
         : t("workspace.controller.commitCreated"));
     } catch (error) {
-      reportError(error, t("workspace.controller.commitFailed"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.commitFailed"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 

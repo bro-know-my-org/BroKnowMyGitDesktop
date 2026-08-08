@@ -1,4 +1,4 @@
-import { computed, reactive, ref, type ComputedRef, type Ref } from "vue";
+import { computed, reactive, ref, watch, type ComputedRef, type Ref } from "vue";
 import type { MessageApi } from "naive-ui";
 import { api, isAppError } from "../../../shared/api/tauri";
 import { authenticationStatusLabel, localizedErrorMessage, t } from "../../../shared/i18n";
@@ -14,6 +14,7 @@ import type {
   RemoteProfile,
   RepositorySnapshot,
 } from "../../../shared/types/domain";
+import { acquireRepositoryOperation } from "./repositoryOperationLock";
 
 interface RepositoryPlatformDependencies {
   activeRepositoryPath: Ref<string | null>;
@@ -24,12 +25,24 @@ interface RepositoryPlatformDependencies {
   accounts: Ref<AccountProfile[]>;
   selectedCommit: Ref<CommitSummary | null>;
   commits: Ref<CommitSummary[]>;
-  mutationBusy: Ref<boolean>;
+  getSelectionGeneration: () => number;
+  repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   capabilityForEndpoint: (endpointId: string | null) => CodeHostCapabilities;
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
-  loadCapabilities: () => Promise<void>;
+  loadCapabilities: (repositoryPath?: string, selectionGeneration?: number) => Promise<void>;
   reportError: (error: unknown, action: string) => void;
   message: MessageApi;
+}
+
+function getRemoteIdentity(remote: RemoteProfile | null): string | null {
+  if (!remote) return null;
+  return [
+    remote.name,
+    remote.fetchUrl,
+    remote.pushUrl,
+    remote.endpointId ?? "",
+    remote.codeHostKind,
+  ].join("\u0000");
 }
 
 export function useRepositoryPlatform({
@@ -41,7 +54,8 @@ export function useRepositoryPlatform({
   accounts,
   selectedCommit,
   commits,
-  mutationBusy,
+  getSelectionGeneration,
+  repositorySelectionIsCurrent,
   capabilityForEndpoint,
   applySnapshot,
   loadCapabilities,
@@ -66,6 +80,25 @@ export function useRepositoryPlatform({
   const publishOwners = ref<GitHubPublishOwner[]>([]);
   const publishOwnersError = ref("");
   let publishOwnersRequestGeneration = 0;
+  let repositoryInfoRequestGeneration = 0;
+  let pullRequestsRequestGeneration = 0;
+  const pullRequestRepositoryPath = ref<string | null>(null);
+  const pullRequestRemoteName = ref<string | null>(null);
+  const pullRequestRemoteIdentity = ref<string | null>(null);
+  const pullRequestSelectionGeneration = ref<number | null>(null);
+  const publishRepositoryPath = ref<string | null>(null);
+  const publishSelectionGeneration = ref<number | null>(null);
+
+  function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
+    const releaseOperation = acquireRepositoryOperation(repositoryPath);
+    if (!releaseOperation) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return null;
+    }
+    return () => {
+      releaseOperation();
+    };
+  }
 
   const pullRequestBaseOptions = computed(() => {
     const branches = snapshot.value?.branches
@@ -103,33 +136,95 @@ export function useRepositoryPlatform({
       owner.login === publishForm.ownerLogin && owner.canCreateRepositories));
 
   async function loadRepositoryInfo(): Promise<void> {
-    if (!activeRepositoryPath.value || !activeRemote.value || !activeCapabilities.value.repositoryInfo) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const remote = activeRemote.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath || !remote || !activeCapabilities.value.repositoryInfo) return;
+    const remoteName = remote.name;
+    const remoteIdentity = getRemoteIdentity(remote);
+    const requestGeneration = ++repositoryInfoRequestGeneration;
     platformLoading.value = true;
     try {
-      repositoryInfo.value = await api.getCodeHostRepositoryInfo(
-        activeRepositoryPath.value,
-        activeRemote.value.name,
-      );
+      const nextRepositoryInfo = await api.getCodeHostRepositoryInfo(repositoryPath, remoteName);
+      if (
+        requestGeneration !== repositoryInfoRequestGeneration
+        || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || getRemoteIdentity(activeRemote.value) !== remoteIdentity
+      ) return;
+      repositoryInfo.value = nextRepositoryInfo;
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"));
+      if (
+        requestGeneration === repositoryInfoRequestGeneration
+        && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && getRemoteIdentity(activeRemote.value) === remoteIdentity
+      ) reportError(error, t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"));
     } finally {
-      platformLoading.value = false;
+      if (requestGeneration === repositoryInfoRequestGeneration) platformLoading.value = false;
     }
   }
 
   async function loadPullRequests(): Promise<void> {
-    if (!activeRepositoryPath.value || !activeRemote.value || !activeCapabilities.value.pullRequestsRead) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const remote = activeRemote.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath || !remote || !activeCapabilities.value.pullRequestsRead) return;
+    const remoteName = remote.name;
+    const remoteIdentity = getRemoteIdentity(remote);
+    const requestGeneration = ++pullRequestsRequestGeneration;
     pullRequestsLoading.value = true;
     try {
-      pullRequests.value = await api.listPullRequests(activeRepositoryPath.value, activeRemote.value.name);
+      const nextPullRequests = await api.listPullRequests(repositoryPath, remoteName);
+      if (
+        requestGeneration !== pullRequestsRequestGeneration
+        || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || getRemoteIdentity(activeRemote.value) !== remoteIdentity
+      ) return;
+      pullRequests.value = nextPullRequests;
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotLoadPullRequests"));
+      if (
+        requestGeneration === pullRequestsRequestGeneration
+        && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && getRemoteIdentity(activeRemote.value) === remoteIdentity
+      ) reportError(error, t("workspace.controller.couldNotLoadPullRequests"));
     } finally {
-      pullRequestsLoading.value = false;
+      if (requestGeneration === pullRequestsRequestGeneration) pullRequestsLoading.value = false;
     }
   }
 
+  function invalidatePlatformRequests(): void {
+    repositoryInfoRequestGeneration += 1;
+    pullRequestsRequestGeneration += 1;
+    platformLoading.value = false;
+    pullRequestsLoading.value = false;
+  }
+
+  watch(
+    () => getRemoteIdentity(activeRemote.value),
+    (nextIdentity, previousIdentity) => {
+      if (nextIdentity === previousIdentity) return;
+      invalidatePlatformRequests();
+      repositoryInfo.value = null;
+      pullRequests.value = [];
+      if (pullRequestModalShown.value) {
+        pullRequestModalShown.value = false;
+        pullRequestRepositoryPath.value = null;
+        pullRequestRemoteName.value = null;
+        pullRequestRemoteIdentity.value = null;
+        pullRequestSelectionGeneration.value = null;
+      }
+    },
+  );
+
   function openCreatePullRequest(): void {
+    const repositoryPath = activeRepositoryPath.value;
+    const remote = activeRemote.value;
+    const remoteName = remote?.name;
+    const remoteIdentity = getRemoteIdentity(remote);
+    if (!repositoryPath || !remoteName || !remoteIdentity) return;
+    pullRequestRepositoryPath.value = repositoryPath;
+    pullRequestRemoteName.value = remoteName;
+    pullRequestRemoteIdentity.value = remoteIdentity;
+    pullRequestSelectionGeneration.value = getSelectionGeneration();
     const suggestedBase = repositoryInfo.value?.defaultBranch || pullRequestBaseOptions.value[0]?.value || "";
     pullRequestForm.title = selectedCommit.value?.summary || commits.value[0]?.summary || "";
     pullRequestForm.body = "";
@@ -139,7 +234,27 @@ export function useRepositoryPlatform({
   }
 
   async function createPullRequest(): Promise<void> {
-    if (!activeRepositoryPath.value || !activeRemote.value || !snapshot.value?.status.branch) {
+    const repositoryPath = pullRequestRepositoryPath.value;
+    const remoteName = pullRequestRemoteName.value;
+    const remoteIdentity = pullRequestRemoteIdentity.value;
+    const selectionGeneration = pullRequestSelectionGeneration.value;
+    if (
+      !repositoryPath
+      || !remoteName
+      || !remoteIdentity
+      || selectionGeneration === null
+      || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+      || getRemoteIdentity(activeRemote.value) !== remoteIdentity
+    ) {
+      pullRequestModalShown.value = false;
+      pullRequestRepositoryPath.value = null;
+      pullRequestRemoteName.value = null;
+      pullRequestRemoteIdentity.value = null;
+      pullRequestSelectionGeneration.value = null;
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    if (!snapshot.value?.status.branch) {
       message.warning(t("workspace.controller.switchToALocalBranchBeforeCreatingAPullRequest"));
       return;
     }
@@ -151,22 +266,44 @@ export function useRepositoryPlatform({
       message.warning(t("workspace.controller.theHeadBranchAndBaseBranchCannotBeTheSame"));
       return;
     }
-    mutationBusy.value = true;
+    const headBranch = snapshot.value.status.branch;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      const pullRequest = await api.createPullRequest(activeRepositoryPath.value, activeRemote.value.name, {
+      const pullRequest = await api.createPullRequest(repositoryPath, remoteName, {
         title: pullRequestForm.title.trim(),
         body: pullRequestForm.body,
-        head: snapshot.value.status.branch,
+        head: headBranch,
         base: pullRequestForm.base.trim(),
         draft: pullRequestForm.draft,
       });
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || getRemoteIdentity(activeRemote.value) !== remoteIdentity
+      ) {
+        pullRequestModalShown.value = false;
+        pullRequestRepositoryPath.value = null;
+        pullRequestRemoteName.value = null;
+        pullRequestRemoteIdentity.value = null;
+        pullRequestSelectionGeneration.value = null;
+        return;
+      }
+      pullRequestsRequestGeneration += 1;
+      pullRequestsLoading.value = false;
       pullRequests.value = [pullRequest, ...pullRequests.value.filter((item) => item.number !== pullRequest.number)];
       pullRequestModalShown.value = false;
+      pullRequestRepositoryPath.value = null;
+      pullRequestRemoteName.value = null;
+      pullRequestRemoteIdentity.value = null;
+      pullRequestSelectionGeneration.value = null;
       message.success(t("workspace.controller.pullRequestNumberCreated", { number: pullRequest.number }));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotCreatePullRequest"));
+      if (
+        repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && getRemoteIdentity(activeRemote.value) === remoteIdentity
+      ) reportError(error, t("workspace.controller.couldNotCreatePullRequest"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -213,6 +350,10 @@ export function useRepositoryPlatform({
   }
 
   function openPublishModal(): void {
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath) return;
+    publishRepositoryPath.value = repositoryPath;
+    publishSelectionGeneration.value = getSelectionGeneration();
     publishForm.endpointId = publishEndpoints.value[0]?.id || "github.com";
     publishForm.accountId = publishAccounts.value[0]?.id || "";
     publishForm.ownerLogin = publishAccounts.value[0]?.login || "";
@@ -222,9 +363,21 @@ export function useRepositoryPlatform({
   }
 
   async function publishGitHubRepository(): Promise<void> {
+    const repositoryPath = publishRepositoryPath.value;
+    const selectionGeneration = publishSelectionGeneration.value;
     if (
-      !activeRepositoryPath.value
-      || !publishForm.endpointId
+      !repositoryPath
+      || selectionGeneration === null
+      || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+    ) {
+      publishModalShown.value = false;
+      publishRepositoryPath.value = null;
+      publishSelectionGeneration.value = null;
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    if (
+      !publishForm.endpointId
       || !publishForm.accountId
       || !canPublishToSelectedOwner.value
       || !publishForm.name.trim()
@@ -236,23 +389,34 @@ export function useRepositoryPlatform({
       message.warning(t("workspace.controller.enterOnlyTheRepositoryNameChooseItsOwnerAbove"));
       return;
     }
-    mutationBusy.value = true;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.publishGitHubRepository(
-        activeRepositoryPath.value,
+      const nextSnapshot = await api.publishGitHubRepository(
+        repositoryPath,
         publishForm.endpointId,
         publishForm.accountId,
         publishForm.ownerLogin,
         publishForm.name.trim(),
         publishForm.isPrivate,
-      ));
+      );
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) {
+        publishModalShown.value = false;
+        publishRepositoryPath.value = null;
+        publishSelectionGeneration.value = null;
+        return;
+      }
       publishModalShown.value = false;
-      await loadCapabilities();
+      publishRepositoryPath.value = null;
+      publishSelectionGeneration.value = null;
       message.success(t("workspace.controller.repositoryPublishedToGithubAndOriginConfigured"));
+      await loadCapabilities(repositoryPath, selectionGeneration).catch(() => undefined);
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotPublishGithubRepository"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotPublishGithubRepository"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -281,6 +445,7 @@ export function useRepositoryPlatform({
     canPublishToSelectedOwner,
     loadRepositoryInfo,
     loadPullRequests,
+    invalidatePlatformRequests,
     openCreatePullRequest,
     createPullRequest,
     loadPublishOwners,

@@ -46,6 +46,18 @@
   outline-offset: 2px;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .repository-picker {
   display: flex;
   width: 270px;
@@ -163,7 +175,7 @@
   align-items: center;
   gap: 8px;
   overflow: hidden;
-  padding: 6px 5px;
+  padding: 6px 7px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -190,21 +202,25 @@
   white-space: nowrap;
 }
 
-.repository-alias-mark {
+.repository-alias-indicator {
   flex: 0 0 auto;
-  padding: 1px 4px;
-  border: 1px dashed var(--app-accent-strong);
-  color: var(--app-accent-strong);
-  font-size: calc(9px * var(--app-font-scale));
-  font-weight: clamp(100, calc(800 + var(--app-font-weight-offset)), 900);
-  letter-spacing: 0.08em;
-  line-height: 1.35;
-  text-transform: uppercase;
+  width: 3px;
+  height: 24px;
+  border-radius: 0;
+  background: var(--app-accent-strong);
+  opacity: 0.55;
+}
+
+.sidebar-repository-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  line-height: 1.2;
 }
 
 .repository-alias-name {
   color: var(--app-accent-strong);
-  font-style: italic;
+  font-style: normal;
   font-weight: clamp(100, calc(720 + var(--app-font-weight-offset)), 900);
 }
 
@@ -225,6 +241,10 @@
 .repository-canonical-name::before,
 .topbar-repository-canonical-name::before {
   content: "· ";
+}
+
+.sidebar-repository-copy .repository-canonical-name::before {
+  content: none;
 }
 
 .topbar-repository-canonical-name {
@@ -255,15 +275,22 @@
 
 .repository-topbar-context {
   display: flex;
+  height: 100%;
   min-width: 0;
   align-items: center;
 }
 
+.repository-topbar-content .topbar-leading,
 .repository-title-row,
 .topbar-actions {
   display: flex;
   min-width: 0;
   align-items: center;
+}
+
+.repository-topbar-content .topbar-leading,
+.repository-title-row {
+  height: 100%;
 }
 
 .repository-title-row {
@@ -272,7 +299,72 @@
 }
 
 .topbar-actions {
-  flex: 0 0 auto;
+  height: 100%;
+  flex: 0 1 auto;
+  overflow: auto hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+.topbar-actions::-webkit-scrollbar {
+  height: 4px;
+}
+
+.topbar-actions::-webkit-scrollbar-thumb {
+  background: var(--app-divider);
+}
+
+.topbar-select-group {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+}
+
+.topbar-reference-group,
+.topbar-action-group,
+.topbar-utility-group {
+  display: flex;
+  align-items: center;
+}
+
+.topbar-reference-group {
+  box-sizing: border-box;
+  height: 32px;
+  overflow: visible;
+}
+
+.topbar-action-group {
+  box-sizing: border-box;
+  height: 32px;
+  overflow: visible;
+  border: 1px solid var(--app-divider);
+  border-radius: 0;
+  background: var(--app-surface);
+}
+
+.topbar-utility-group {
+  height: 32px;
+  gap: 4px;
+}
+
+.topbar-actions .n-base-selection {
+  --n-height: 32px !important;
+
+  height: 32px;
+  min-height: 32px;
+  border-radius: 0;
+}
+
+.topbar-actions .n-button {
+  --n-height: 32px !important;
+
+  height: 32px;
+  min-height: 32px;
+  border-radius: 0;
+}
+
+.topbar-action-group .n-button + .n-button {
+  border-left: 1px solid var(--app-divider);
 }
 
 .topbar .eyebrow {
@@ -297,12 +389,13 @@
 
 .repository-switcher {
   display: inline-flex;
+  height: 100%;
   min-width: 0;
   max-width: min(360px, 42vw);
   align-items: center;
   gap: 5px;
-  margin: -3px -5px;
-  padding: 3px 5px;
+  margin: 0;
+  padding: 0 8px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -320,7 +413,7 @@
 
 .repository-switcher:focus-visible {
   outline: 2px solid var(--app-focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .repository-switcher-caret {
@@ -335,8 +428,17 @@
 }
 
 .sync-summary {
+  display: inline-flex;
+  align-items: center;
   flex: 0 0 auto;
   font-size: calc(12px * var(--app-font-scale));
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.sync-summary-behind {
+  color: var(--app-accent-strong);
+  font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
 }
 
 .branch-status-tag {
@@ -353,7 +455,8 @@
   display: flex;
   min-width: 0;
   max-width: 100%;
-  align-items: baseline;
+  align-items: center;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
@@ -361,9 +464,9 @@
 .middle-ellipsis-tail {
   min-width: 0;
   overflow: hidden;
-  margin-block: -2px;
-  padding-block: 2px;
-  line-height: normal;
+  margin-block: 0;
+  padding-block: 0;
+  line-height: inherit;
   text-overflow: ellipsis;
 }
 
@@ -382,14 +485,11 @@
   text-align: left;
 }
 
-.topbar-select-group {
-  display: inline-flex;
-  align-items: center;
-}
-
 .topbar-reference-separator {
+  align-self: center;
+  padding-inline: 6px;
   color: var(--app-text-muted);
-  font-size: calc(16px * var(--app-font-scale));
+  font-size: calc(14px * var(--app-font-scale));
   line-height: 1;
 }
 

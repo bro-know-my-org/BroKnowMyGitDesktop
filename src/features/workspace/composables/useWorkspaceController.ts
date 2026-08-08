@@ -1,5 +1,5 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useDialog, useMessage } from "naive-ui";
+import { useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
@@ -21,6 +21,7 @@ import { useRepositoryAuxiliary } from "./useRepositoryAuxiliary";
 import { useRepositoryHistory } from "./useRepositoryHistory";
 import { useRepositoryOperations } from "./useRepositoryOperations";
 import { useRepositoryChanges } from "./useRepositoryChanges";
+import { acquireRepositoryOperation, repositoryOperationsBusy } from "./repositoryOperationLock";
 import { handleDevtoolsShortcut, localeOptions, updateAppLocale, updateColorMode, updateThemeColor, useWorkspaceUiOptions } from "./workspaceUiActions";
 import { useWorkspaceTables } from "./useWorkspaceTables";
 import {
@@ -51,6 +52,7 @@ import {
 export function useWorkspaceController() {
 const message = useMessage();
 const dialog = useDialog();
+const notification = useNotification();
 const browserDemo = isBrowserDemo();
 const {
   authenticationTagType,
@@ -86,16 +88,20 @@ let snapshotRefreshRequestGeneration = 0;
 const snapshot = ref<RepositorySnapshot | null>(null);
 const selectedRemoteName = ref("");
 const activeCapabilities = ref<CodeHostCapabilities>(emptyCapabilities);
-const lastError = ref<AppError | null>(null);
-const lastErrorAction = ref("");
+let activeErrorNotification: NotificationReactive | null = null;
 
 const workspaceInitializing = ref(true);
 const snapshotLoading = ref(false);
 let repositoryTabLoadGeneration = 0;
 const networkBusy = ref<NetworkAction | null>(null);
 let networkOperationGeneration = 0;
-const networkOperationsInFlight = new Set<string>();
-const mutationBusy = ref(false);
+const nonRepositoryMutationBusy = ref(false);
+const mutationBusy = computed({
+  get: () => nonRepositoryMutationBusy.value || repositoryOperationsBusy.value,
+  set: (value: boolean) => {
+    nonRepositoryMutationBusy.value = value;
+  },
+});
 const {
   repositories,
   repositoryGrouping,
@@ -189,6 +195,7 @@ const {
   repositorySelectionIsCurrent,
   applySnapshot,
   loadRepositories,
+  refreshSnapshot,
   reportError,
   message,
   dialog,
@@ -250,7 +257,11 @@ const initForm = reactive({ destinationPath: "", initialBranch: "main" });
 const discoverForm = reactive({ rootPath: "" });
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
+const remoteEditorRepositoryPath = ref<string | null>(null);
+const remoteEditorSelectionGeneration = ref<number | null>(null);
 const bindingForm = reactive({ endpointId: "", accountId: "auto" });
+const bindingRepositoryPath = ref<string | null>(null);
+const bindingSelectionGeneration = ref<number | null>(null);
 const automaticRefreshDebounceMs = 500;
 const automaticRefreshRetryMs = 750;
 const repositoryWatcherMaxRetryDelayMs = 12_000;
@@ -303,6 +314,7 @@ const {
   canPublishToSelectedOwner,
   loadRepositoryInfo,
   loadPullRequests,
+  invalidatePlatformRequests,
   openCreatePullRequest,
   createPullRequest,
   loadPublishOwners,
@@ -318,7 +330,8 @@ const {
   accounts,
   selectedCommit,
   commits,
-  mutationBusy,
+  getSelectionGeneration: () => repositorySelectionGeneration,
+  repositorySelectionIsCurrent,
   capabilityForEndpoint,
   applySnapshot,
   loadCapabilities,
@@ -375,7 +388,6 @@ const {
   snapshot,
   currentBranch,
   commits,
-  mutationBusy,
   getSelectionGeneration: () => repositorySelectionGeneration,
   repositorySelectionIsCurrent,
   applySnapshot,
@@ -437,7 +449,6 @@ const {
   conflictedChanges,
   currentBranch,
   commits,
-  mutationBusy,
   getSelectionGeneration: () => repositorySelectionGeneration,
   repositorySelectionIsCurrent,
   applySnapshot,
@@ -584,18 +595,19 @@ function reportError(error: unknown, action: string): void {
     : { code: "unexpected_error", message: t("workspace.controller.anUnexpectedErrorOccurred"), details: null };
   appError.message = localizedErrorMessage(appError.code);
   appError.details = localizedErrorDetails(appError.code) || null;
-  lastError.value = appError;
-  lastErrorAction.value = action;
-  message.error(t("workspace.controller.actionMessage", { action, message: appError.message }));
+  activeErrorNotification?.destroy();
+  activeErrorNotification = notification.error({
+    title: action,
+    content: appError.message,
+    meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
+    description: appError.details || undefined,
+    duration: 0,
+    closable: true,
+  });
   if (appError.code === "account_selection_required" && activeRemote.value) {
     message.warning(t("workspace.controller.thisRemoteHasMultipleOrNoUsableAccountsSelectOneExplicitlyAndRetry"));
     openBindingDrawer(activeRemote.value);
   }
-}
-
-function clearLastError(): void {
-  lastError.value = null;
-  lastErrorAction.value = "";
 }
 
 async function refreshBrowserDemoLocalizedData(): Promise<void> {
@@ -613,8 +625,6 @@ async function refreshBrowserDemoLocalizedData(): Promise<void> {
   const refreshIsCurrent = () => refreshGeneration === browserDemoLocaleRefreshGeneration
     && controllerMounted
     && activeRepositoryPath.value === repositoryPath;
-  clearLastError();
-
   try {
     const [localizedRepositories, localizedAccounts] = await Promise.all([
       api.listRepositories(false),
@@ -767,15 +777,28 @@ function applySnapshot(nextSnapshot: RepositorySnapshot, invalidateRefreshReques
   return true;
 }
 
-async function loadCapabilities(): Promise<void> {
-  if (!activeRemote.value?.endpointId) {
+async function loadCapabilities(
+  capturedRepositoryPath = activeRepositoryPath.value,
+  capturedSelectionGeneration = repositorySelectionGeneration,
+): Promise<void> {
+  const endpointId = activeRemote.value?.endpointId;
+  if (!capturedRepositoryPath || !repositorySelectionIsCurrent(capturedRepositoryPath, capturedSelectionGeneration)) return;
+  if (!endpointId) {
     activeCapabilities.value = emptyCapabilities;
     return;
   }
   try {
-    activeCapabilities.value = await api.getCodeHostCapabilities(activeRemote.value.endpointId);
+    const capabilities = await api.getCodeHostCapabilities(endpointId);
+    if (
+      !repositorySelectionIsCurrent(capturedRepositoryPath, capturedSelectionGeneration)
+      || activeRemote.value?.endpointId !== endpointId
+    ) return;
+    activeCapabilities.value = capabilities;
   } catch {
-    activeCapabilities.value = emptyCapabilities;
+    if (
+      repositorySelectionIsCurrent(capturedRepositoryPath, capturedSelectionGeneration)
+      && activeRemote.value?.endpointId === endpointId
+    ) activeCapabilities.value = emptyCapabilities;
   }
 }
 
@@ -833,6 +856,11 @@ async function selectRepository(
   reportOpenError = true,
   deferWatcherUntilInteractive = false,
 ): Promise<void> {
+  invalidatePlatformRequests();
+  remoteModalShown.value = false;
+  bindingDrawerShown.value = false;
+  pullRequestModalShown.value = false;
+  publishModalShown.value = false;
   if (repositoryWatcherRetryTimer) clearTimeout(repositoryWatcherRetryTimer);
   repositoryWatcherRetryTimer = null;
   repositoryWatcherRetryAttempt = 0;
@@ -854,7 +882,6 @@ async function selectRepository(
   const selectionGeneration = ++repositorySelectionGeneration;
   section.value = "repositories";
   snapshotLoading.value = true;
-  clearLastError();
   try {
     clearDiffSelection();
     const nextSnapshot = await api.getRepositorySnapshot(repositoryPath);
@@ -1262,6 +1289,8 @@ async function refreshAfterGitConflict(error: unknown): Promise<void> {
 }
 
 function openRemoteEditor(remote?: RemoteProfile): void {
+  remoteEditorRepositoryPath.value = activeRepositoryPath.value;
+  remoteEditorSelectionGeneration.value = repositorySelectionGeneration;
   editedRemoteName.value = remote?.name ?? null;
   remoteForm.name = remote?.name ?? "";
   remoteForm.fetchUrl = remote?.fetchUrl ?? "";
@@ -1270,38 +1299,63 @@ function openRemoteEditor(remote?: RemoteProfile): void {
 }
 
 async function saveRemote(): Promise<void> {
-  if (!activeRepositoryPath.value || !remoteForm.name.trim() || !remoteForm.fetchUrl.trim()) {
+  const repositoryPath = remoteEditorRepositoryPath.value;
+  const selectionGeneration = remoteEditorSelectionGeneration.value;
+  if (
+    !repositoryPath
+    || selectionGeneration === null
+    || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+  ) {
+    message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+    return;
+  }
+  if (!remoteForm.name.trim() || !remoteForm.fetchUrl.trim()) {
     message.warning(t("workspace.controller.enterARemoteNameAndFetchUrl"));
     return;
   }
 
-  mutationBusy.value = true;
+  const originalRemoteName = editedRemoteName.value;
+  const nextRemoteName = remoteForm.name.trim();
+  const fetchUrl = remoteForm.fetchUrl.trim();
+  const pushUrl = remoteForm.pushUrl.trim();
+  const releaseOperation = acquireRepositoryOperation(repositoryPath);
+  if (!releaseOperation) {
+    message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+    return;
+  }
   try {
-    const repositoryPath = activeRepositoryPath.value;
-    let currentName = editedRemoteName.value;
+    let currentName = originalRemoteName;
     if (!currentName) {
-      await api.addRemote(repositoryPath, remoteForm.name.trim(), remoteForm.fetchUrl.trim());
-      currentName = remoteForm.name.trim();
-    } else if (currentName !== remoteForm.name.trim()) {
-      await api.renameRemote(repositoryPath, currentName, remoteForm.name.trim());
-      currentName = remoteForm.name.trim();
+      await api.addRemote(repositoryPath, nextRemoteName, fetchUrl);
+      currentName = nextRemoteName;
+    } else if (currentName !== nextRemoteName) {
+      await api.renameRemote(repositoryPath, currentName, nextRemoteName);
+      currentName = nextRemoteName;
     }
-    await api.setRemoteUrl(repositoryPath, currentName, remoteForm.fetchUrl.trim(), "fetch");
-    if (remoteForm.pushUrl.trim()) {
-      await api.setRemoteUrl(repositoryPath, currentName, remoteForm.pushUrl.trim(), "push");
+    await api.setRemoteUrl(repositoryPath, currentName, fetchUrl, "fetch");
+    if (pushUrl) {
+      await api.setRemoteUrl(repositoryPath, currentName, pushUrl, "push");
     }
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     remoteModalShown.value = false;
+    remoteEditorRepositoryPath.value = null;
+    remoteEditorSelectionGeneration.value = null;
     await refreshSnapshot();
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     message.success(t("workspace.controller.remoteSaved"));
   } catch (error) {
-    reportError(error, t("workspace.controller.couldNotSaveRemote"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      reportError(error, t("workspace.controller.couldNotSaveRemote"));
+    }
   } finally {
-    mutationBusy.value = false;
+    releaseOperation();
   }
 }
 
 function confirmRemoveRemote(): void {
-  if (!activeRepositoryPath.value || !editedRemoteName.value) return;
+  const repositoryPath = remoteEditorRepositoryPath.value;
+  const selectionGeneration = remoteEditorSelectionGeneration.value;
+  if (!repositoryPath || selectionGeneration === null || !editedRemoteName.value) return;
   const name = editedRemoteName.value;
   dialog.warning({
     title: t("workspace.controller.removeRemote"),
@@ -1309,16 +1363,30 @@ function confirmRemoveRemote(): void {
     positiveText: t("workspace.controller.remove"),
     negativeText: t("workspace.controller.cancel"),
     onPositiveClick: async () => {
-      mutationBusy.value = true;
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+        return;
+      }
+      const releaseOperation = acquireRepositoryOperation(repositoryPath);
+      if (!releaseOperation) {
+        message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+        return;
+      }
       try {
-        await api.removeRemote(activeRepositoryPath.value!, name);
+        await api.removeRemote(repositoryPath, name);
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
         remoteModalShown.value = false;
+        remoteEditorRepositoryPath.value = null;
+        remoteEditorSelectionGeneration.value = null;
         await refreshSnapshot();
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
         message.success(t("workspace.controller.remoteRemoved"));
       } catch (error) {
-        reportError(error, t("workspace.controller.couldNotRemoveRemote"));
+        if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          reportError(error, t("workspace.controller.couldNotRemoveRemote"));
+        }
       } finally {
-        mutationBusy.value = false;
+        releaseOperation();
       }
     },
   });
@@ -1343,14 +1411,13 @@ async function runNetworkAction(
     message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
     return;
   }
-  if (networkOperationsInFlight.has(repositoryPath)) {
-    message.warning(t("workspace.controller.aNetworkOperationIsAlreadyInProgressWaitForItToFinish"));
+  const releaseOperation = acquireRepositoryOperation(repositoryPath);
+  if (!releaseOperation) {
+    message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
     return;
   }
-  networkOperationsInFlight.add(repositoryPath);
   networkBusy.value = action;
   const operationGeneration = ++networkOperationGeneration;
-  clearLastError();
   try {
     await (action === "fetch"
       ? api.fetchRemote(repositoryPath, remoteName)
@@ -1383,7 +1450,7 @@ async function runNetworkAction(
       );
     }
   } finally {
-    networkOperationsInFlight.delete(repositoryPath);
+    releaseOperation();
     if (operationGeneration === networkOperationGeneration) {
       networkBusy.value = null;
     }
@@ -1409,6 +1476,8 @@ function confirmForcePush(): void {
 }
 
 function openBindingDrawer(remote: RemoteProfile): void {
+  bindingRepositoryPath.value = activeRepositoryPath.value;
+  bindingSelectionGeneration.value = repositorySelectionGeneration;
   bindingRemote.value = remote;
   const binding = getBinding(remote.name);
   bindingForm.endpointId = binding?.endpointId || remote.endpointId || "gitee.com";
@@ -1421,9 +1490,23 @@ function openBindingDrawer(remote: RemoteProfile): void {
 }
 
 async function saveBinding(): Promise<void> {
-  if (!snapshot.value || !bindingRemote.value || !bindingForm.endpointId) return;
-  const selectedAccount = accounts.value.find((account) => account.id === bindingForm.accountId);
-  if (bindingForm.accountId !== "auto" && (!selectedAccount || selectedAccount.endpointId !== bindingForm.endpointId)) {
+  const repositoryPath = bindingRepositoryPath.value;
+  const selectionGeneration = bindingSelectionGeneration.value;
+  const remote = bindingRemote.value;
+  if (
+    !repositoryPath
+    || selectionGeneration === null
+    || !remote
+    || !bindingForm.endpointId
+    || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+  ) {
+    message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+    return;
+  }
+  const endpointId = bindingForm.endpointId;
+  const accountId = bindingForm.accountId;
+  const selectedAccount = accounts.value.find((account) => account.id === accountId);
+  if (accountId !== "auto" && (!selectedAccount || selectedAccount.endpointId !== endpointId)) {
     message.warning(t("workspace.controller.selectAnAccountThatBelongsToThisGitServiceEndpoint"));
     return;
   }
@@ -1431,22 +1514,32 @@ async function saveBinding(): Promise<void> {
     message.warning(t("workspace.controller.anAccountBoundRemoteSupportsOnlyAnAppManagedPatSshAgentAndTheSystemGitCredentialHelperWorkAutoma"));
     return;
   }
+  const releaseOperation = acquireRepositoryOperation(repositoryPath);
+  if (!releaseOperation) {
+    message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+    return;
+  }
   const binding: RemoteBinding = {
-    repositoryPath: snapshot.value.repository.path,
-    remoteName: bindingRemote.value.name,
-    endpointId: bindingForm.endpointId,
-    accountSelection: bindingForm.accountId === "auto" ? { mode: "auto" } : { mode: "profile", accountProfileId: bindingForm.accountId },
+    repositoryPath,
+    remoteName: remote.name,
+    endpointId,
+    accountSelection: accountId === "auto" ? { mode: "auto" } : { mode: "profile", accountProfileId: accountId },
   };
-  mutationBusy.value = true;
   try {
     await api.saveRemoteBinding(binding);
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     bindingDrawerShown.value = false;
+    bindingRepositoryPath.value = null;
+    bindingSelectionGeneration.value = null;
     await refreshSnapshot();
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
     message.success(t("workspace.controller.remoteAccountBindingSavedFutureNetworkOperationsWillPreferIt"));
   } catch (error) {
-    reportError(error, t("workspace.controller.couldNotSaveBinding"));
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      reportError(error, t("workspace.controller.couldNotSaveBinding"));
+    }
   } finally {
-    mutationBusy.value = false;
+    releaseOperation();
   }
 }
 
@@ -1511,6 +1604,7 @@ watch(appLocale, () => {
 });
 
 watch(selectedRemoteName, () => {
+  invalidatePlatformRequests();
   repositoryInfo.value = null;
   pullRequests.value = [];
   void loadCapabilities();
@@ -1740,8 +1834,6 @@ onBeforeUnmount(() => {
     commitDiffCanExpand,
     commitDiffLimitedAtMaximum,
     commitDiffLineLimitReached,
-    lastError,
-    lastErrorAction,
     workspaceInitializing,
     repositoriesLoading,
     snapshotLoading,
@@ -1887,7 +1979,6 @@ onBeforeUnmount(() => {
     remoteBindingLabel,
     remoteAuthenticationLabel,
     reportError,
-    clearLastError,
     updateAppLocale,
     updateColorMode,
     updateThemeColor,

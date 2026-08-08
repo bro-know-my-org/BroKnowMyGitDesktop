@@ -507,18 +507,18 @@ export default defineComponent({
 
   <n-modal v-model:show="remoteModalShown" preset="card" :title="editedRemoteName ? t('workspace.dialogs.editRemote') : t('workspace.dialogs.addRemote')" class="dialog-card" :mask-closable="!mutationBusy">
     <n-form label-placement="top">
-      <n-form-item :label="t('workspace.dialogs.remoteName')"><n-input v-model:value="remoteForm.name" :placeholder="t('workspace.dialogs.placeholderRemoteName')" /></n-form-item>
-      <n-form-item :label="t('workspace.dialogs.fetchUrl')"><n-input v-model:value="remoteForm.fetchUrl" :placeholder="t('workspace.dialogs.placeholderRemoteFetchUrl')" /></n-form-item>
-      <n-form-item :label="t('workspace.dialogs.pushUrlOptional')"><n-input v-model:value="remoteForm.pushUrl" :placeholder="t('workspace.dialogs.leaveEmptyToKeepTheExistingPushUrl')" /></n-form-item>
+      <n-form-item :label="t('workspace.dialogs.remoteName')"><n-input v-model:value="remoteForm.name" :disabled="mutationBusy" :placeholder="t('workspace.dialogs.placeholderRemoteName')" /></n-form-item>
+      <n-form-item :label="t('workspace.dialogs.fetchUrl')"><n-input v-model:value="remoteForm.fetchUrl" :disabled="mutationBusy" :placeholder="t('workspace.dialogs.placeholderRemoteFetchUrl')" /></n-form-item>
+      <n-form-item :label="t('workspace.dialogs.pushUrlOptional')"><n-input v-model:value="remoteForm.pushUrl" :disabled="mutationBusy" :placeholder="t('workspace.dialogs.leaveEmptyToKeepTheExistingPushUrl')" /></n-form-item>
     </n-form>
     <n-alert type="info" :bordered="false">{{ t('workspace.dialogs.remoteUrlsCannotContainTokensOrPasswordsUseARemoteAccountBindingForAuthentication') }}</n-alert>
     <template #action>
       <n-space justify="space-between">
-        <n-button v-if="editedRemoteName" type="error" tertiary :loading="mutationBusy" @click="confirmRemoveRemote">{{ t('workspace.dialogs.removeRemote') }}</n-button>
+        <n-button v-if="editedRemoteName" type="error" tertiary :loading="mutationBusy" :disabled="mutationBusy" @click="confirmRemoveRemote">{{ t('workspace.dialogs.removeRemote') }}</n-button>
         <span v-else />
         <n-space>
-          <n-button @click="remoteModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button>
-          <n-button type="primary" :loading="mutationBusy" @click="saveRemote">{{ t('workspace.dialogs.saveRemote') }}</n-button>
+          <n-button :disabled="mutationBusy" @click="remoteModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button>
+          <n-button type="primary" :loading="mutationBusy" :disabled="mutationBusy" @click="saveRemote">{{ t('workspace.dialogs.saveRemote') }}</n-button>
         </n-space>
       </n-space>
     </template>

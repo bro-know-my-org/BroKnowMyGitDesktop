@@ -44,7 +44,7 @@ export default defineComponent({
                   <n-grid-item span="2">
                     <n-card size="small" :title="t('repository.branches.remoteBranches')">
                       <template #header-extra>
-                        <n-button size="tiny" tertiary :disabled="!activeRemote" :loading="networkBusy === 'fetch'" @click="runNetworkAction('fetch')">
+                        <n-button size="tiny" tertiary :disabled="mutationBusy || Boolean(networkBusy) || !activeRemote" :loading="networkBusy === 'fetch'" @click="runNetworkAction('fetch')">
                           {{ activeRemote ? t('repository.branches.fetchRemote', { remote: activeRemote.name }) : t('repository.branches.fetch') }}
                         </n-button>
                       </template>

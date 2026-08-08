@@ -52,6 +52,13 @@ export default defineComponent({
       const branch = workspace.snapshot.value?.status.branch;
       return branch ? `local:${branch}` : null;
     });
+    const repositorySwitcherAriaLabel = computed(() => {
+      const repository = workspace.snapshot.value?.repository;
+      const label = repository?.alias
+        ? `${workspace.t("workspace.header.alias")}: ${repository.alias} (${repository.name})`
+        : repository?.name || workspace.t("workspace.header.repository");
+      return `${workspace.t("workspace.header.switchRepository")}: ${label}`;
+    });
     const currentBranchLabelParts = computed(() => splitReferenceLabel(workspace.currentBranch.value));
     const upstreamLabelParts = computed(() => splitReferenceLabel(workspace.snapshot.value?.status.upstream ?? ""));
     const renderBranchLabel: SelectRenderLabel = (option, selected) => {
@@ -167,6 +174,7 @@ export default defineComponent({
       branchSwitcherOptions,
       branchSwitcherStyle,
       branchSwitcherValue,
+      repositorySwitcherAriaLabel,
       currentBranchLabelParts,
       upstreamLabelParts,
       renderBranchLabel,
@@ -204,12 +212,13 @@ export default defineComponent({
                   <button
                     class="repository-switcher"
                     type="button"
-                    :aria-label="t('workspace.header.switchRepository')"
+                    :aria-label="repositorySwitcherAriaLabel"
                     :aria-expanded="repositoryPickerOpen"
-                    :title="t('workspace.header.switchRepository')"
+                    :title="repositorySwitcherAriaLabel"
                   >
                     <template v-if="snapshot?.repository.alias">
-                      <span class="repository-alias-mark">{{ t('workspace.header.alias') }}</span>
+                      <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
+                      <span class="repository-alias-indicator" aria-hidden="true" />
                       <span class="topbar-title repository-alias-name">{{ snapshot.repository.alias }}</span>
                       <span class="topbar-repository-canonical-name">{{ snapshot.repository.name }}</span>
                     </template>
@@ -250,9 +259,12 @@ export default defineComponent({
                                 @contextmenu="openRepositoryContextMenu($event, repository)"
                               >
                                 <template v-if="repository.alias">
-                                  <span class="repository-alias-mark">{{ t('workspace.header.alias') }}</span>
-                                  <span class="repository-name repository-alias-name">{{ repository.alias }}</span>
-                                  <span class="repository-canonical-name">{{ repository.name }}</span>
+                                  <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
+                                  <span class="repository-alias-indicator" aria-hidden="true" />
+                                  <span class="sidebar-repository-copy">
+                                    <span class="repository-name repository-alias-name">{{ repository.alias }}</span>
+                                    <span class="repository-canonical-name">{{ repository.name }}</span>
+                                  </span>
                                 </template>
                                 <span v-else class="repository-name">{{ repository.name }}</span>
                               </button>
@@ -291,46 +303,99 @@ export default defineComponent({
                     <span class="middle-ellipsis-tail">{{ upstreamLabelParts.tail }}</span>
                   </span>
                 </n-tag>
-                <n-text v-if="snapshot.status.ahead || snapshot.status.behind" depth="3" class="sync-summary">↑ {{ snapshot.status.ahead }} · ↓ {{ snapshot.status.behind }}</n-text>
+                <n-text
+                  v-if="snapshot.status.ahead || snapshot.status.behind"
+                  depth="3"
+                  class="sync-summary"
+                  :class="{ 'sync-summary-behind': snapshot.status.behind > 0 }"
+                  :title="snapshot.status.upstream"
+                  :aria-label="t('workspace.header.syncSummary', {
+                    ahead: snapshot.status.ahead,
+                    behind: snapshot.status.behind,
+                  })"
+                  aria-live="polite"
+                >
+                  <span aria-hidden="true">↑ {{ snapshot.status.ahead }} · ↓ {{ snapshot.status.behind }}</span>
+                </n-text>
               </template>
               </div>
             </div>
           </div>
-          <n-space align="center" :wrap="false" class="topbar-actions">
-            <div v-if="snapshot?.remotes.length" class="topbar-select-group">
-              <n-select
-                v-model:value="selectedRemoteName"
-                size="small"
-                :options="snapshot.remotes.map((remote) => ({ label: remote.name, value: remote.name }))"
-                :placeholder="t('workspace.header.selectRemote')"
-                :aria-label="t('workspace.header.selectRemote')"
-                :title="t('workspace.header.selectRemote')"
-                class="remote-select"
-              />
+          <n-space align="center" :size="8" :wrap="false" class="topbar-actions">
+            <div v-if="snapshot?.remotes.length || snapshot?.branches.length" class="topbar-reference-group">
+              <div v-if="snapshot?.remotes.length" class="topbar-select-group">
+                <n-select
+                  v-model:value="selectedRemoteName"
+                  size="small"
+                  :disabled="mutationBusy || Boolean(networkBusy)"
+                  :options="snapshot.remotes.map((remote) => ({ label: remote.name, value: remote.name }))"
+                  :placeholder="t('workspace.header.selectRemote')"
+                  :aria-label="t('workspace.header.selectRemote')"
+                  :title="t('workspace.header.selectRemote')"
+                  class="remote-select"
+                />
+              </div>
+              <span v-if="snapshot?.remotes.length && snapshot.branches.length" class="topbar-reference-separator" aria-hidden="true">/</span>
+              <div v-if="snapshot?.branches.length" class="topbar-select-group">
+                <n-select
+                  :value="branchSwitcherValue"
+                  size="small"
+                  :options="branchSwitcherOptions"
+                  :render-label="renderBranchLabel"
+                  :placeholder="t('workspace.header.selectBranch')"
+                  :disabled="mutationBusy || Boolean(networkBusy)"
+                  :consistent-menu-width="false"
+                  :menu-props="{ class: 'branch-select-menu' }"
+                  :aria-label="t('workspace.header.switchBranch')"
+                  :title="snapshot.status.branch || t('workspace.header.switchBranch')"
+                  :style="branchSwitcherStyle"
+                  class="branch-select"
+                  @update:value="selectBranch"
+                />
+              </div>
             </div>
-            <span v-if="snapshot?.remotes.length && snapshot.branches.length" class="topbar-reference-separator" aria-hidden="true">/</span>
-            <div v-if="snapshot?.branches.length" class="topbar-select-group">
-              <n-select
-                :value="branchSwitcherValue"
+            <div v-if="(snapshot && !snapshot.remotes.length && publishEndpoints.length) || activeRemote" class="topbar-action-group">
+              <n-button
+                v-if="snapshot && !snapshot.remotes.length && publishEndpoints.length"
                 size="small"
-                :options="branchSwitcherOptions"
-                :render-label="renderBranchLabel"
-                :placeholder="t('workspace.header.selectBranch')"
-                :disabled="mutationBusy"
-                :consistent-menu-width="false"
-                :menu-props="{ class: 'branch-select-menu' }"
-                :aria-label="t('workspace.header.switchBranch')"
-                :title="snapshot.status.branch || t('workspace.header.switchBranch')"
-                :style="branchSwitcherStyle"
-                class="branch-select"
-                @update:value="selectBranch"
-              />
+                type="primary"
+                :disabled="mutationBusy || Boolean(networkBusy)"
+                @click="openPublishModal"
+              >
+                {{ t('workspace.header.publishToGithub') }}
+              </n-button>
+              <n-button
+                v-if="activeRemote"
+                size="small"
+                :loading="networkBusy === 'fetch'"
+                :disabled="mutationBusy || Boolean(networkBusy)"
+                :aria-label="t('repository.branches.fetchRemote', { remote: activeRemote.name })"
+                :title="t('repository.branches.fetchRemote', { remote: activeRemote.name })"
+                @click="runNetworkAction('fetch')"
+              >
+                {{ t('repository.branches.fetch') }}
+              </n-button>
+              <n-button v-if="activeRemote" size="small" :loading="networkBusy === 'pull'" :disabled="mutationBusy || !canPullFromActiveRemote || Boolean(networkBusy)" @click="runNetworkAction('pull')">{{ t('workspace.header.pull') }}</n-button>
+              <n-button v-if="activeRemote" size="small" type="primary" :loading="networkBusy === 'push'" :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)" @click="runNetworkAction('push')">
+                {{ t('workspace.header.push') }}
+              </n-button>
             </div>
-            <n-button v-if="snapshot && !snapshot.remotes.length && publishEndpoints.length" size="small" type="primary" @click="openPublishModal">{{ t('workspace.header.publishToGithub') }}</n-button>
-            <n-button v-if="activeRemote" size="small" :loading="networkBusy === 'pull'" :disabled="!canPullFromActiveRemote || Boolean(networkBusy && networkBusy !== 'pull')" @click="runNetworkAction('pull')">{{ t('workspace.header.pull') }}</n-button>
-            <n-button v-if="activeRemote" size="small" type="primary" :loading="networkBusy === 'push'" :disabled="!snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy && networkBusy !== 'push')" @click="runNetworkAction('push')">{{ t('workspace.header.push') }}</n-button>
-            <n-button v-if="activeRemote" size="small" tertiary @click="activeTab = 'branches'">{{ t('workspace.header.repositorySettings') }}</n-button>
-            <n-button size="small" :loading="snapshotLoading" @click="refreshSnapshot">{{ t('workspace.header.refresh') }}</n-button>
+            <div v-if="snapshot" class="topbar-utility-group">
+              <n-button
+                size="small"
+                tertiary
+                :loading="snapshotLoading"
+                :disabled="mutationBusy || Boolean(networkBusy)"
+                :aria-label="t('repository.history.refresh')"
+                :title="t('repository.history.refresh')"
+                @click="refreshSnapshot"
+              >
+                {{ t('repository.history.refresh') }}
+              </n-button>
+              <n-button v-if="activeRemote" size="small" tertiary @click="activeTab = 'branches'">
+                {{ t('workspace.header.repositorySettings') }}
+              </n-button>
+            </div>
           </n-space>
         </div>
         <div v-else class="topbar-content">

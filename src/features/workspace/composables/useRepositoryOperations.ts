@@ -12,6 +12,7 @@ import type {
   ResetMode,
   StashEntry,
 } from "../../../shared/types/domain";
+import { acquireRepositoryOperation, isRepositoryOperationInFlight } from "./repositoryOperationLock";
 
 interface RepositoryOperationsDependencies {
   activeRepositoryPath: Ref<string | null>;
@@ -20,7 +21,6 @@ interface RepositoryOperationsDependencies {
   conflictedChanges: ComputedRef<GitStatusEntry[]>;
   currentBranch: ComputedRef<string>;
   commits: Ref<CommitSummary[]>;
-  mutationBusy: Ref<boolean>;
   getSelectionGeneration: () => number;
   repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
@@ -42,7 +42,6 @@ export function useRepositoryOperations({
   conflictedChanges,
   currentBranch,
   commits,
-  mutationBusy,
   getSelectionGeneration,
   repositorySelectionIsCurrent,
   applySnapshot,
@@ -71,6 +70,7 @@ export function useRepositoryOperations({
   const squashForm = reactive({ count: "2", message: "" });
   const tagForm = reactive({ name: "", target: "", message: "" });
   const tagRepositoryPath = ref<string | null>(null);
+  const tagRepositorySelectionGeneration = ref<number | null>(null);
 
   const rebaseBaseOptions = computed(() => snapshot.value?.branches
     .filter((branch) => !branch.isCurrent)
@@ -90,7 +90,36 @@ export function useRepositoryOperations({
     return options;
   });
 
-  function requestBranchSwitch(target: string, execute: (stashLocalChanges: boolean) => Promise<void>): void {
+  function currentRepositoryOperationInFlight(): boolean {
+    const repositoryPath = activeRepositoryPath.value;
+    return Boolean(repositoryPath && isRepositoryOperationInFlight(repositoryPath));
+  }
+
+  function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
+    const releaseOperation = acquireRepositoryOperation(repositoryPath);
+    if (!releaseOperation) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return null;
+    }
+    return () => {
+      releaseOperation();
+    };
+  }
+
+  function requestBranchSwitch(
+    target: string,
+    repositoryPath: string,
+    selectionGeneration: number,
+    execute: (stashLocalChanges: boolean) => Promise<void>,
+  ): void {
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    if (currentRepositoryOperationInFlight()) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return;
+    }
     if (snapshot.value?.operation || conflictedChanges.value.length) {
       message.warning(t("workspace.controller.finishOrAbortTheCurrentGitOperationBeforeSwitchingBranches"));
       return;
@@ -127,40 +156,74 @@ export function useRepositoryOperations({
     });
   }
 
-  async function switchLocalBranch(branch: BranchInfo, stashLocalChanges: boolean): Promise<void> {
-    if (!activeRepositoryPath.value || branch.isCurrent) return;
-    const repositoryPath = activeRepositoryPath.value;
-    mutationBusy.value = true;
+  async function switchLocalBranch(
+    branch: BranchInfo,
+    stashLocalChanges: boolean,
+    repositoryPath: string,
+    selectionGeneration: number,
+  ): Promise<void> {
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    if (branch.isCurrent) return;
+    if (currentRepositoryOperationInFlight()) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return;
+    }
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
       const selectedPath = selectedChange.value?.path;
       const nextSnapshot = await api.checkoutBranch(repositoryPath, branch.name, stashLocalChanges);
-      if (activeRepositoryPath.value !== repositoryPath) return;
-      applySnapshot(nextSnapshot);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       await syncSelectedDiff(nextSnapshot, selectedPath);
       if (stashLocalChanges) await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(stashLocalChanges
         ? t("workspace.controller.changesStashedAndSwitchedToBranch", { branch: branch.name })
         : t("workspace.controller.switchedToBranch", { branch: branch.name }));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       await reconcileSnapshotAfterMutationError(repositoryPath);
       if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
         await loadHistory().catch(() => undefined);
       }
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotSwitchBranch"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function checkoutBranch(branch: BranchInfo): void {
     if (!activeRepositoryPath.value || branch.isCurrent) return;
-    requestBranchSwitch(branch.name, (stashLocalChanges) => switchLocalBranch(branch, stashLocalChanges));
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    requestBranchSwitch(
+      branch.name,
+      repositoryPath,
+      selectionGeneration,
+      (stashLocalChanges) => switchLocalBranch(branch, stashLocalChanges, repositoryPath, selectionGeneration),
+    );
   }
 
-  async function switchRemoteBranch(remoteBranch: RemoteBranchInfo, stashLocalChanges: boolean): Promise<void> {
-    if (!activeRepositoryPath.value) return;
-    const repositoryPath = activeRepositoryPath.value;
-    mutationBusy.value = true;
+  async function switchRemoteBranch(
+    remoteBranch: RemoteBranchInfo,
+    stashLocalChanges: boolean,
+    repositoryPath: string,
+    selectionGeneration: number,
+  ): Promise<void> {
+    if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    if (currentRepositoryOperationInFlight()) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return;
+    }
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
       const selectedPath = selectedChange.value?.path;
       const nextSnapshot = await api.checkoutRemoteBranch(
@@ -169,32 +232,38 @@ export function useRepositoryOperations({
         remoteBranch.name,
         stashLocalChanges,
       );
-      if (activeRepositoryPath.value !== repositoryPath) return;
-      applySnapshot(nextSnapshot);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       await syncSelectedDiff(nextSnapshot, selectedPath);
       if (stashLocalChanges) await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       const branchLabel = `${remoteBranch.remoteName}/${remoteBranch.name}`;
       message.success(stashLocalChanges
         ? t("workspace.controller.changesStashedAndSwitchedToBranch", { branch: branchLabel })
         : t("workspace.controller.switchedToBranch", { branch: branchLabel }));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       await reconcileSnapshotAfterMutationError(repositoryPath);
       if (stashLocalChanges && isAppError(error) && error.code === "branch_switch_changes_stashed") {
         await loadHistory().catch(() => undefined);
       }
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotSwitchRemoteBranch"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function checkoutRemoteBranch(remoteBranch: RemoteBranchInfo): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
     const matchingLocalBranch = snapshot.value?.branches.find((branch) => branch.name === remoteBranch.name);
     if (matchingLocalBranch?.isCurrent) return;
+    const selectionGeneration = getSelectionGeneration();
     requestBranchSwitch(
       `${remoteBranch.remoteName}/${remoteBranch.name}`,
-      (stashLocalChanges) => switchRemoteBranch(remoteBranch, stashLocalChanges),
+      repositoryPath,
+      selectionGeneration,
+      (stashLocalChanges) => switchRemoteBranch(remoteBranch, stashLocalChanges, repositoryPath, selectionGeneration),
     );
   }
 
@@ -205,24 +274,26 @@ export function useRepositoryOperations({
     }
     const repositoryPath = activeRepositoryPath.value;
     const selectionGeneration = getSelectionGeneration();
-    mutationBusy.value = true;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
       const nextSnapshot = await api.createBranch({
         repositoryPath,
         name: branchForm.name.trim(),
         checkout: branchForm.checkout,
       });
-      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      applySnapshot(nextSnapshot);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       branchModalShown.value = false;
       branchForm.name = "";
       branchForm.checkout = true;
       message.success(t("workspace.controller.branchCreated"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       await reconcileSnapshotAfterMutationError(repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotCreateBranch"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -237,24 +308,33 @@ export function useRepositoryOperations({
       message.warning(t("workspace.controller.enterANewBranchName"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.renameBranch(
-        activeRepositoryPath.value,
+      const nextSnapshot = await api.renameBranch(
+        repositoryPath,
         renameBranchForm.oldName,
         renameBranchForm.newName.trim(),
-      ));
+      );
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       renameBranchModalShown.value = false;
       message.success(t("workspace.controller.branchRenamed"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotRenameBranch"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotRenameBranch"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmDeleteBranch(branch: BranchInfo): void {
     if (!activeRepositoryPath.value || branch.isCurrent) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.deleteBranch"),
       content: t(
@@ -264,14 +344,22 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.delete"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.deleteBranch(activeRepositoryPath.value!, branch.name, false));
+          const nextSnapshot = await api.deleteBranch(repositoryPath, branch.name, false);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           message.success(t("workspace.controller.branchDeleted"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotDeleteBranch"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotDeleteBranch"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -279,6 +367,8 @@ export function useRepositoryOperations({
 
   function confirmMergeBranch(branch: BranchInfo): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.mergeBranch"),
       content: t(
@@ -288,16 +378,24 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.merge"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          await api.mergeBranch(activeRepositoryPath.value!, branch.name);
+          await api.mergeBranch(repositoryPath, branch.name);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           await refreshSnapshot();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.mergedBranch", { branch: branch.name }));
         } catch (error) {
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           reportError(error, t("workspace.controller.couldNotMergeBranch"));
           await refreshAfterGitConflict(error);
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -313,19 +411,26 @@ export function useRepositoryOperations({
       message.warning(t("workspace.controller.selectALocalBranchToRebaseOnto"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.startRebase(activeRepositoryPath.value, rebaseForm.base));
+      const nextSnapshot = await api.startRebase(repositoryPath, rebaseForm.base);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       rebaseModalShown.value = false;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(snapshot.value?.operation
         ? t("workspace.controller.rebaseStartedContinueAfterResolvingAnyConflicts")
         : t("workspace.controller.rebaseCompleted"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotRebaseBranch"));
       await refreshAfterGitConflict(error);
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -339,17 +444,24 @@ export function useRepositoryOperations({
       message.warning(t("workspace.controller.enterACommitShaOrRevisionToCherryPick"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.cherryPickCommits(activeRepositoryPath.value, [cherryPickForm.revision.trim()]));
+      const nextSnapshot = await api.cherryPickCommits(repositoryPath, [cherryPickForm.revision.trim()]);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       cherryPickModalShown.value = false;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.commitCherryPicked"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotCherryPickCommit"));
       await refreshAfterGitConflict(error);
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -360,21 +472,30 @@ export function useRepositoryOperations({
       return;
     }
     const operation = snapshot.value.operation;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.continueGitOperation(activeRepositoryPath.value, operation.kind));
+      const nextSnapshot = await api.continueGitOperation(repositoryPath, operation.kind);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.gitOperationContinued"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotContinueGitOperation"));
       await refreshAfterGitConflict(error);
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmAbortGitOperation(): void {
     if (!activeRepositoryPath.value || !snapshot.value?.operation) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     const operation = snapshot.value.operation;
     dialog.error({
       title: t("workspace.controller.abortGitOperation"),
@@ -385,16 +506,24 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.abortOperation"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.abortGitOperation(activeRepositoryPath.value!, operation.kind));
+          const nextSnapshot = await api.abortGitOperation(repositoryPath, operation.kind);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           await loadHistory();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.gitOperationAborted"));
         } catch (error) {
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           reportError(error, t("workspace.controller.couldNotAbortGitOperation"));
           await refreshAfterGitConflict(error);
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -408,25 +537,33 @@ export function useRepositoryOperations({
 
   async function stashChanges(): Promise<void> {
     if (!activeRepositoryPath.value) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.stashChanges(
-        activeRepositoryPath.value,
+      const nextSnapshot = await api.stashChanges(
+        repositoryPath,
         stashForm.message.trim() || undefined,
         stashForm.includeUntracked,
-      ));
+      );
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       stashModalShown.value = false;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.changesSavedToStash"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotStashChanges"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmPopStash(stash: StashEntry): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.popStash"),
       content: t(
@@ -436,15 +573,24 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.pop"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.popStash(activeRepositoryPath.value!, stash.reference, stash.commitId));
+          const nextSnapshot = await api.popStash(repositoryPath, stash.reference, stash.commitId);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           await loadHistory();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.stashRestored"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotPopStash"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotPopStash"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -452,21 +598,32 @@ export function useRepositoryOperations({
 
   function confirmDropStash(stash: StashEntry): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.dropStash"),
       content: t("workspace.controller.permanentlyDeleteReferenceThisCannotBeUndone", { reference: stash.reference }),
       positiveText: t("workspace.controller.drop"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          await api.dropStash(activeRepositoryPath.value!, stash.reference, stash.commitId);
+          await api.dropStash(repositoryPath, stash.reference, stash.commitId);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           await loadHistory();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.stashDropped"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotDropStash"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotDropStash"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -474,6 +631,8 @@ export function useRepositoryOperations({
 
   function confirmResetCommit(commit: CommitSummary, mode: ResetMode): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     const modeLabel = mode === "soft"
       ? t("workspace.controller.softKeepIndexAndWorkingTree")
       : mode === "mixed"
@@ -488,15 +647,24 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.confirmResetBranch"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.resetBranch(activeRepositoryPath.value!, commit.sha, mode));
+          const nextSnapshot = await api.resetBranch(repositoryPath, commit.sha, mode);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           await loadHistory();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.branchReset"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotResetBranch"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotResetBranch"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -519,21 +687,30 @@ export function useRepositoryOperations({
       message.warning(t("workspace.controller.enterAValidCountAtLeast2WhileKeepingABaseCommitAndCommitMessage"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    if (!repositoryPath) return;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.squashRecentCommits(activeRepositoryPath.value, count, squashForm.message.trim()));
+      const nextSnapshot = await api.squashRecentCommits(repositoryPath, count, squashForm.message.trim());
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       squashModalShown.value = false;
       await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.recentCommitsSquashed"));
     } catch (error) {
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotSquashCommits"));
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmRevertCommit(commit: CommitSummary): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.revertCommit"),
       content: t(
@@ -543,15 +720,24 @@ export function useRepositoryOperations({
       positiveText: t("workspace.controller.createRevertCommit"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          applySnapshot(await api.revertCommit(activeRepositoryPath.value!, commit.sha));
+          const nextSnapshot = await api.revertCommit(repositoryPath, commit.sha);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
           await loadHistory();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.revertCommitCreated"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotRevertCommit"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotRevertCommit"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -560,6 +746,7 @@ export function useRepositoryOperations({
   function openTagModal(target = ""): void {
     if (!activeRepositoryPath.value) return;
     tagRepositoryPath.value = activeRepositoryPath.value;
+    tagRepositorySelectionGeneration.value = getSelectionGeneration();
     tagForm.name = "";
     tagForm.target = target;
     tagForm.message = "";
@@ -572,13 +759,20 @@ export function useRepositoryOperations({
       return;
     }
     const repositoryPath = tagRepositoryPath.value;
-    if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) {
+    const selectionGeneration = tagRepositorySelectionGeneration.value;
+    if (
+      !repositoryPath
+      || selectionGeneration === null
+      || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+    ) {
       tagModalShown.value = false;
       tagRepositoryPath.value = null;
+      tagRepositorySelectionGeneration.value = null;
       message.warning(t("workspace.controller.theRepositoryChangedSelectTheTagTargetAgain"));
       return;
     }
-    mutationBusy.value = true;
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
       await api.createTag(
         repositoryPath,
@@ -586,46 +780,65 @@ export function useRepositoryOperations({
         tagForm.target.trim() || undefined,
         tagForm.message.trim() || undefined,
       );
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       tagModalShown.value = false;
       tagRepositoryPath.value = null;
-      if (activeRepositoryPath.value === repositoryPath) {
-        await refreshSnapshot();
-        message.success(t("workspace.controller.tagCreated"));
-      }
+      tagRepositorySelectionGeneration.value = null;
+      await refreshSnapshot();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+      message.success(t("workspace.controller.tagCreated"));
     } catch (error) {
-      if (activeRepositoryPath.value === repositoryPath) {
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
         reportError(error, t("workspace.controller.couldNotCreateTag"));
       }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmDeleteTag(name: string): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.deleteLocalTag"),
       content: t("workspace.controller.deleteLocalTagTagThisDoesNotDeleteARemoteTag", { tag: name }),
       positiveText: t("workspace.controller.delete"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          await api.deleteTag(activeRepositoryPath.value!, name);
+          await api.deleteTag(repositoryPath, name);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           await refreshSnapshot();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.tagDeleted"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotDeleteTag"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotDeleteTag"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
   }
 
   function resetRepositoryOperations(): void {
+    branchModalShown.value = false;
+    renameBranchModalShown.value = false;
+    stashModalShown.value = false;
+    rebaseModalShown.value = false;
+    cherryPickModalShown.value = false;
+    squashModalShown.value = false;
     tagModalShown.value = false;
     tagRepositoryPath.value = null;
+    tagRepositorySelectionGeneration.value = null;
   }
 
   return {

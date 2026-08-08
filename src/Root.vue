@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted } from "vue";
-import { NConfigProvider, NDialogProvider, NGlobalStyle, NMessageProvider, darkTheme, type GlobalThemeOverrides } from "naive-ui";
+import { NConfigProvider, NDialogProvider, NGlobalStyle, NMessageProvider, NNotificationProvider, darkTheme, type GlobalThemeOverrides } from "naive-ui";
 import App from "./App.vue";
 import {
   interfaceFontFamily,
@@ -59,10 +59,12 @@ onBeforeUnmount(() => {
 <template>
   <n-config-provider :locale="naiveUiLocale" :date-locale="naiveUiDateLocale" :theme="isDarkTheme ? darkTheme : null" :theme-overrides="themeOverrides">
     <n-dialog-provider>
-      <n-message-provider placement="bottom-right">
-        <n-global-style />
-        <App />
-      </n-message-provider>
+      <n-notification-provider placement="bottom-right">
+        <n-message-provider placement="bottom-right">
+          <n-global-style />
+          <App />
+        </n-message-provider>
+      </n-notification-provider>
     </n-dialog-provider>
   </n-config-provider>
 </template>

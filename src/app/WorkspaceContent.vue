@@ -19,7 +19,7 @@ export default defineComponent({
   class="content-area"
   :class="{
     'is-repository-panel-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history'),
-    'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo && !lastError,
+    'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo,
   }"
 >
   <main class="content-inner">
@@ -27,15 +27,6 @@ export default defineComponent({
             {{ t('workspace.content.browserDemoModeThisUsesInteractiveLocalMockDataTauriCallsRustCommandsDemoPatsAreNeverSavedOrShown') }}
           </n-alert>
 
-          <n-alert v-if="lastError" type="error" closable class="error-alert" @close="clearLastError">
-            <template #header>
-              {{ lastErrorAction ? t('workspace.content.mostRecentOperationFailedAction', { action: lastErrorAction }) : t('workspace.content.mostRecentOperationFailed') }}
-            </template>
-            <strong>{{ lastError.message }}</strong>
-            <div class="error-diagnostic-code">{{ t('workspace.content.errorCode') }}: <code>{{ lastError.code }}</code></div>
-            <div v-if="lastError.details" class="error-diagnostic-guidance">{{ lastError.details }}</div>
-            <template v-if="lastError.code === 'account_selection_required'">{{ t('workspace.content.selectAnExplicitAccountInTheRemoteBindingThenRetry') }}</template>
-          </n-alert>
     <AccountsPage v-if="section === 'accounts'" />
 <n-spin v-else-if="!snapshot && (workspaceInitializing || snapshotLoading)" size="large" class="loading-state" />
 <section v-else-if="!snapshot" class="repository-empty-state">

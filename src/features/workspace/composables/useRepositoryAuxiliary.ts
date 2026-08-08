@@ -15,6 +15,7 @@ import {
   submodulesAreEqual,
   worktreesAreEqual,
 } from "./workspaceControllerSupport";
+import { acquireRepositoryOperation } from "./repositoryOperationLock";
 
 interface RepositoryAuxiliaryDependencies {
   activeRepositoryPath: Ref<string | null>;
@@ -24,6 +25,7 @@ interface RepositoryAuxiliaryDependencies {
   repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
   loadRepositories: () => Promise<void>;
+  refreshSnapshot: () => Promise<void>;
   reportError: (error: unknown, action: string) => void;
   message: MessageApi;
   dialog: DialogApi;
@@ -37,6 +39,7 @@ export function useRepositoryAuxiliary({
   repositorySelectionIsCurrent,
   applySnapshot,
   loadRepositories,
+  refreshSnapshot,
   reportError,
   message,
   dialog,
@@ -57,6 +60,17 @@ export function useRepositoryAuxiliary({
   let worktreesRequestGeneration = 0;
   let submodulesRequestGeneration = 0;
   let lfsRequestGeneration = 0;
+
+  function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
+    const releaseOperation = acquireRepositoryOperation(repositoryPath);
+    if (!releaseOperation) {
+      message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
+      return null;
+    }
+    return () => {
+      releaseOperation();
+    };
+  }
 
   async function loadWorktrees(reportErrors = true, showLoading = true): Promise<void> {
     const repositoryPath = activeRepositoryPath.value;
@@ -246,26 +260,42 @@ export function useRepositoryAuxiliary({
         : t("workspace.controller.enterAWorktreeFolderAndSelectAnExistingBranch"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      worktrees.value = await api.addWorktree(
-        activeRepositoryPath.value,
+      const nextWorktrees = await api.addWorktree(
+        repositoryPath,
         worktreeForm.path.trim(),
         worktreeForm.mode === "new" ? worktreeForm.branch.trim() : undefined,
         worktreeForm.mode === "existing" ? worktreeForm.branch.trim() : undefined,
       );
-      worktreeModalShown.value = false;
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        worktreesRequestGeneration += 1;
+        worktreesLoading.value = false;
+        worktrees.value = nextWorktrees;
+        worktreeModalShown.value = false;
+      }
       await loadRepositories();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+      await refreshSnapshot();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.worktreeCreatedYouCanOpenItFromTheList"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotCreateWorktree"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotCreateWorktree"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
   function confirmRemoveWorktree(worktree: WorktreeInfo): void {
     if (!activeRepositoryPath.value || worktree.isMain || worktree.path === snapshot.value?.repository.path) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.error({
       title: t("workspace.controller.removeWorktree"),
       content: t(
@@ -275,15 +305,28 @@ export function useRepositoryAuxiliary({
       positiveText: t("workspace.controller.removeWorktree"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          worktrees.value = await api.removeWorktree(activeRepositoryPath.value!, worktree.path, false);
+          const nextWorktrees = await api.removeWorktree(repositoryPath, worktree.path, false);
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            worktreesRequestGeneration += 1;
+            worktreesLoading.value = false;
+            worktrees.value = nextWorktrees;
+          }
           await loadRepositories();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.worktreeRemoved"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotRemoveWorktree"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotRemoveWorktree"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -291,20 +334,35 @@ export function useRepositoryAuxiliary({
 
   function confirmUpdateSubmodules(): void {
     if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
     dialog.warning({
       title: t("workspace.controller.initializeOrUpdateSubmodules"),
       content: t("workspace.controller.initializeOrUpdateAllSubmodulesRecursivelyUsingThisRepositorySCurrentConfigurationThisMayDownloa"),
       positiveText: t("workspace.controller.initializeAndUpdate"),
       negativeText: t("workspace.controller.cancel"),
       onPositiveClick: async () => {
-        mutationBusy.value = true;
+        if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+          message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+          return;
+        }
+        const finishMutation = beginRepositoryMutation(repositoryPath);
+        if (!finishMutation) return;
         try {
-          submodules.value = await api.updateSubmodules(activeRepositoryPath.value!, true, true);
+          const nextSubmodules = await api.updateSubmodules(repositoryPath, true, true);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+          submodulesRequestGeneration += 1;
+          submodulesLoading.value = false;
+          submodules.value = nextSubmodules;
+          await refreshSnapshot();
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
           message.success(t("workspace.controller.submodulesInitializedOrUpdated"));
         } catch (error) {
-          reportError(error, t("workspace.controller.couldNotUpdateSubmodules"));
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotUpdateSubmodules"));
+          }
         } finally {
-          mutationBusy.value = false;
+          finishMutation();
         }
       },
     });
@@ -312,14 +370,23 @@ export function useRepositoryAuxiliary({
 
   async function initializeLfs(): Promise<void> {
     if (!activeRepositoryPath.value || !lfsStatus.value?.available) return;
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      lfsStatus.value = await api.installLfs(activeRepositoryPath.value);
+      const nextLfsStatus = await api.installLfs(repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+      lfsRequestGeneration += 1;
+      lfsLoading.value = false;
+      lfsStatus.value = nextLfsStatus;
       message.success(t("workspace.controller.gitLfsInitializedForThisRepository"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotInitializeGitLfs"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotInitializeGitLfs"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -333,16 +400,25 @@ export function useRepositoryAuxiliary({
       message.warning(t("workspace.controller.enterAFilePatternForGitLfsToTrack"));
       return;
     }
-    mutationBusy.value = true;
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
     try {
-      applySnapshot(await api.trackLfsPattern(activeRepositoryPath.value, lfsTrackForm.pattern.trim()));
+      const nextSnapshot = await api.trackLfsPattern(repositoryPath, lfsTrackForm.pattern.trim());
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+      applySnapshot(nextSnapshot);
       lfsTrackModalShown.value = false;
       await loadLfsStatus();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.success(t("workspace.controller.theGitLfsRuleWasWrittenToGitattributesReviewAndCommitThatChange"));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotAddGitLfsRule"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotAddGitLfsRule"));
+      }
     } finally {
-      mutationBusy.value = false;
+      finishMutation();
     }
   }
 
@@ -353,6 +429,8 @@ export function useRepositoryAuxiliary({
     worktreesLoading.value = false;
     submodulesLoading.value = false;
     lfsLoading.value = false;
+    worktreeModalShown.value = false;
+    lfsTrackModalShown.value = false;
     worktrees.value = [];
     submodules.value = [];
     lfsStatus.value = null;
