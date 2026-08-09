@@ -62,7 +62,7 @@ export function useRepositoryOperations({
   const cherryPickModalShown = ref(false);
   const squashModalShown = ref(false);
   const tagModalShown = ref(false);
-  const branchForm = reactive({ name: "", checkout: true });
+  const branchForm = reactive({ name: "", checkout: true, stashLocalChanges: false });
   const renameBranchForm = reactive({ oldName: "", newName: "" });
   const stashForm = reactive({ message: "", includeUntracked: true });
   const rebaseForm = reactive({ base: "" });
@@ -276,20 +276,37 @@ export function useRepositoryOperations({
     const selectionGeneration = getSelectionGeneration();
     const finishMutation = beginRepositoryMutation(repositoryPath);
     if (!finishMutation) return;
+    const branchName = branchForm.name.trim();
+    const checkedOutNewBranch = branchForm.checkout;
+    const stashedLocalChanges = checkedOutNewBranch && branchForm.stashLocalChanges;
     try {
-      const nextSnapshot = await api.createBranch({
+      const branchResult = await api.createBranch({
         repositoryPath,
-        name: branchForm.name.trim(),
-        checkout: branchForm.checkout,
+        name: branchName,
+        checkout: checkedOutNewBranch,
+        stashLocalChanges: stashedLocalChanges,
       });
+      const nextSnapshot = branchResult.snapshot;
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
       branchModalShown.value = false;
       branchForm.name = "";
       branchForm.checkout = true;
-      message.success(t("workspace.controller.branchCreated"));
+      branchForm.stashLocalChanges = false;
+      if (branchResult.stashedLocalChanges) await loadHistory();
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
+      let successMessage = t("workspace.controller.branchCreated");
+      if (branchResult.stashedLocalChanges) {
+        successMessage = t("workspace.controller.branchCreatedAndChangesStashed");
+      } else if (checkedOutNewBranch) {
+        successMessage = t("workspace.controller.branchCreatedAndSwitched");
+      }
+      message.success(successMessage);
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       await reconcileSnapshotAfterMutationError(repositoryPath);
+      if (isAppError(error) && error.code === "branch_switch_changes_stashed") {
+        await loadHistory().catch(() => undefined);
+      }
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       reportError(error, t("workspace.controller.couldNotCreateBranch"));
     } finally {

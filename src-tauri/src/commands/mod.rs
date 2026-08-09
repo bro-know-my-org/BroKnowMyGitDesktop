@@ -1,11 +1,11 @@
 use crate::app_error::AppError;
 use crate::codehost::{
     AdapterContext, CodeHostAdapter, CodeHostRepositoryInfo, CreatePullRequestInput,
-    GitHubPublishOwner, PullRequestSummary,
+    GitHubForkSummary, GitHubPublishOwner, PullRequestSummary,
 };
 use crate::command_models::{
-    CleanUntrackedPreview, DiscardChangesPreview, GitOperationState, NetworkOperationResult,
-    RepositorySnapshot,
+    CleanUntrackedPreview, CreateBranchResult, DiscardChangesPreview, GitOperationState,
+    NetworkOperationResult, RepositorySnapshot,
 };
 use crate::credential_broker::{
     default_pat_keychain_reference, delete_personal_access_token, gh_auth_status, glab_auth_status,
@@ -23,8 +23,8 @@ use crate::domain::{
     StashEntry, SubmoduleInfo, WorktreeInfo,
 };
 use crate::git_core::{
-    normalize_external_editor_config, validate_git_remote_url, CloneOptions, DiffOptions,
-    FetchOptions, GitCore, GitEnvironment, PullOptions, PushOptions, RemoteUrlKind,
+    normalize_external_editor_config, validate_git_remote_url, validate_ref_name, CloneOptions,
+    DiffOptions, FetchOptions, GitCore, GitEnvironment, PullOptions, PushOptions, RemoteUrlKind,
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{AppState, PendingClone, PendingPublish, ProfileStore};

@@ -12,10 +12,11 @@
 - 本地仓库侧栏可在手动分组、远端组织 / 用户、最近使用三种视图间切换。手动分组可逐仓库编辑并持久化；远端归属优先使用 `origin`，最近使用只在用户实际打开仓库时更新。
 - 工作区状态、带行号和语法高亮的文件 Diff、按文件暂存/取消暂存、全部加入/移出提交、按 hunk 暂存/取消暂存、丢弃改动（有确认）。Diff 的增删背景与每行高度绑定，不能因字体缩放或语法 token 造成相邻行颜色重叠。
 - 创建提交与 amend；无首个提交（unborn）仓库可正确取消暂存，不依赖 `HEAD`。
-- 历史与 Stash 操作、分支（包括已获取的远程跟踪分支；可创建本地跟踪分支并切换）、merge / rebase / cherry-pick / revert / reset、tag、worktree、子模块和 Git LFS 状态入口。切换分支前如有本地改动，会提供暂存后切换、直接切换或取消。
+- 历史与 Stash 操作、分支（包括已获取的远程跟踪分支；可创建本地跟踪分支并切换）、merge / rebase / cherry-pick / revert / reset、tag、worktree、子模块和 Git LFS 状态入口。创建并切换分支时，未提交改动默认随工作区保留，也可勾选先保存到 Stash；普通切换分支前如有本地改动，会提供暂存后切换、直接切换或取消。
 - 单文件 Blame、Reflog 恢复记录，以及预览后强确认的未跟踪文件清理（不会删除已忽略文件）。
 - 冲突文件可交给应用本地配置的外部编辑器处理；用户返回后刷新、暂存并继续或中止原 Git 操作。
 - remote 管理，以及按 ahead/behind 状态收敛为 Fetch / Pull / Push 的一个主按钮；force-with-lease 保留在次级确认入口。使用已验证 URL 固定凭据目标时，Pull 仍必须读取当前分支的实际上游和仓库 local/worktree scope 的 fetch refspec，保留自定义远程跟踪命名空间、force 标记与 negative exclusion，不得回退到 URL 的默认分支或继承 system/global 的同名 refspec。
+- 顶部「提交贡献」入口：可快速“新建分支并切换”；在 `main` / `master` / `trunk` 等默认分支上，GitHub 提交贡献流程会预选创建并切换到 `contrib/...` 分支（从当前 HEAD 携带已有提交），未提交改动可选择随工作区保留或先保存到 Stash。GitHub remote 可通过匹配的 gh 账号创建或复用个人 Fork，添加独立 `fork` remote，并使用现有 SSH、PAT 或系统 Git credential helper 推送贡献分支，源 remote 保持不变；推送后打开 PR 对话框，仍由用户确认并创建 PR。
 
 ### 外观与平台集成
 
@@ -28,7 +29,7 @@
 
 - GitHub、GitLab、Gitee、Gitea、Forgejo 和通用 Git Endpoint 的账号/remote binding 模型。
 - 显式绑定的系统钥匙串 PAT，以及按 remote URL 自动工作的 SSH 配置和系统 Git credential helper；SSH agent 账号资料只用于状态显示，不能把实际 SSH identity 固定到 Profile。PAT 不会写入前端状态、Git 配置、remote URL 或应用元数据。
-- GitHub 通过当前匹配的 `gh` 身份支持仓库信息、PR 列表、创建 PR 和发布仓库；发布前会自动读取个人账号与组织所有者，并标记当前身份能否在组织中创建仓库。所有者读取失败时发布按钮保持禁用，最终创建权限仍由 GitHub 的组织策略、仓库可见性和 SSO 授权判定。发布会通过 `gh auth token --user` 将所选账号固定到本次内存态操作，查询、创建和初次推送不受并发 `gh auth switch` 影响；令牌不进入参数、日志、IPC 或持久化，并通过禁用本次推送的 hooks、fsmonitor 和不受信任 Git 网络配置，避免仓库进程读取或重定向认证信息。这些 `gh` 网络命令在后台 worker 执行，有 45 秒超时，并以有限 pipe-operation permit 抑制异常后代长期持有输出管道时的重复读取线程。进程树终止后仍未关闭的 pipe 会在清理宽限期后释放 permit，不能永久把后续 GitHub 操作锁成 busy；Unix 用独立 process group，Windows 用 Job Object 保持进程树身份，避免直接子进程退出后以 PID 误杀复用进程。PR 和组织列表分页均共享各自命令的 45 秒总时限；超过上限会明确报错，绝不静默截断。
+- GitHub 通过当前匹配的 `gh` 身份支持仓库信息、PR 列表、创建 PR、Fork 和发布仓库；发布前会自动读取个人账号与组织所有者，并标记当前身份能否在组织中创建仓库。所有者读取失败时发布按钮保持禁用，最终创建权限仍由 GitHub 的组织策略、仓库可见性和 SSO 授权判定。Fork 会保留源 remote，只添加用户指定的独立 remote；Fork API 令牌不进入参数、日志、IPC 或持久化，Fork 后的 Git 推送继续通过现有 SSH、PAT 或系统 credential helper 执行。发布会通过 `gh auth token --user` 将所选账号固定到本次内存态操作，查询、创建和初次推送不受并发 `gh auth switch` 影响；令牌不进入参数、日志、IPC 或持久化，并通过禁用本次推送的 hooks、fsmonitor 和不受信任 Git 网络配置，避免仓库进程读取或重定向认证信息。这些 `gh` 网络命令在后台 worker 执行，有 45 秒超时，并以有限 pipe-operation permit 抑制异常后代长期持有输出管道时的重复读取线程。进程树终止后仍未关闭的 pipe 会在清理宽限期后释放 permit，不能永久把后续 GitHub 操作锁成 busy；Unix 用独立 process group，Windows 用 Job Object 保持进程树身份，避免直接子进程退出后以 PID 误杀复用进程。PR、Fork 和组织列表分页均共享各自命令的 45 秒总时限；超过上限会明确报错，绝不静默截断。
 - “账号与认证”路由先读取持久化的认证状态缓存，再在后台刷新 CLI、钥匙串和 SSH agent 状态；后台检测不持有应用状态锁，60 秒内避免重复触发，页面提供手动刷新入口。网络 Git 操作仍会在执行前即时校验账号，缓存不参与授权放行。
 
 完整的信任边界和账号选择规则见 [architecture.md](architecture.md)。
@@ -141,7 +142,7 @@ XDG_DATA_HOME=/tmp/bkm-e2e-data pnpm tauri dev
 1. 已有 `HEAD` 的仓库：修改文件、暂存、取消暂存、提交前确认 diff 来源正确。
 2. 无 `HEAD` 的新仓库：添加文件、暂存、取消暂存，确认文件仍在工作区。
 3. 有部分暂存的文件：确认三态勾选先补全暂存，再可取消全部暂存。
-4. 有 remote 的仓库：主按钮分别在落后、领先、同步时呈现 Pull、Push、Fetch；在“分支与远程”中获取远程分支后，确认 `remote/branch` 可创建对应本地跟踪分支，并在有本地改动时正确显示暂存 / 直接切换 / 取消；force push 仍需二次确认。
+4. 有 remote 的仓库：主按钮分别在落后、领先、同步时呈现 Pull、Push、Fetch；在“分支与远程”中获取远程分支后，确认 `remote/branch` 可创建对应本地跟踪分支，并在有本地改动时正确显示暂存 / 直接切换 / 取消；force push 仍需二次确认。GitHub 仓库还应验证“提交贡献”中的 Fork：源 remote 保持不变，Fork remote 可添加，当前分支按源 remote 的 SSH/HTTPS 传输方式推送；推送认证失败时 Fork remote 仍保留，可在绑定或凭据修复后重试。
 5. 破坏性操作：取消确认后不得改变 index 或工作区。
 6. 仓库侧栏：分别切换手动分组、远端组织 / 用户、最近使用；编辑分组、留空取消分组，重启后确认手动分组仍在。确认列表刷新不改变最近使用顺序；首次打开有 remote 的仓库后，组织归属与最近使用均正确更新。
 7. 冲突工作流：配置外部编辑器（例如 `code` 与单独一行的 `--wait`），制造 merge / rebase / cherry-pick 冲突；确认应用仅打开冲突文件，回到应用刷新、暂存后可继续或中止。

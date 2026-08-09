@@ -48,6 +48,12 @@ export default defineComponent({
       { type: "divider", key: "settings-divider" },
       { label: workspace.t('workspace.header.settings'), key: "settings" },
     ]);
+    const contributionMenuOptions = computed(() => [
+      { label: workspace.t('workspace.header.newBranchAndSwitch'), key: "new-branch" },
+      ...(workspace.activeRemote.value && workspace.activeCapabilities.value.repositoryFork && workspace.snapshot.value?.hasHead && workspace.snapshot.value.status.branch
+        ? [{ label: workspace.t('workspace.header.forkAndPushCurrentBranch'), key: "fork-and-push" }]
+        : []),
+    ]);
     const branchSwitcherValue = computed(() => {
       const branch = workspace.snapshot.value?.status.branch;
       return branch ? `local:${branch}` : null;
@@ -61,6 +67,40 @@ export default defineComponent({
     });
     const currentBranchLabelParts = computed(() => splitReferenceLabel(workspace.currentBranch.value));
     const upstreamLabelParts = computed(() => splitReferenceLabel(workspace.snapshot.value?.status.upstream ?? ""));
+    const branchTracksActiveRemote = computed(() => {
+      const upstream = workspace.snapshot.value?.status.upstream;
+      const remoteName = workspace.activeRemote.value?.name;
+      return Boolean(upstream && remoteName && upstream.startsWith(`${remoteName}/`));
+    });
+    const pushNeedsAttention = computed(() => {
+      const status = workspace.snapshot.value?.status;
+      return Boolean(status?.branch && (!branchTracksActiveRemote.value || status.ahead > 0));
+    });
+    const pushButtonLabel = computed(() => {
+      const status = workspace.snapshot.value?.status;
+      if (status?.branch && !branchTracksActiveRemote.value) {
+        return status.upstream
+          ? workspace.t("workspace.header.pushToSelectedRemote")
+          : workspace.t("workspace.header.pushFirst");
+      }
+      if (status && branchTracksActiveRemote.value && status.ahead > 0) {
+        return workspace.t("workspace.header.pushPending", { count: status.ahead });
+      }
+      return workspace.t("workspace.header.push");
+    });
+    const pushButtonTitle = computed(() => {
+      const status = workspace.snapshot.value?.status;
+      const remote = workspace.activeRemote.value?.name || workspace.t("workspace.header.selectRemote");
+      if (status?.branch && !branchTracksActiveRemote.value) {
+        return status.upstream
+          ? workspace.t("workspace.header.pushAdditionalToRemote", { remote, upstream: status.upstream })
+          : workspace.t("workspace.header.pushFirstToRemote", { remote });
+      }
+      if (status && branchTracksActiveRemote.value && status.ahead > 0) {
+        return workspace.t("workspace.header.pushPendingToRemote", { count: status.ahead, remote });
+      }
+      return workspace.t("workspace.header.pushToRemote", { remote });
+    });
     const renderBranchLabel: SelectRenderLabel = (option, selected) => {
       const label = typeof option.label === "string" ? option.label : String(option.label ?? "");
       return selected ? renderMiddleEllipsisLabel(label) : label;
@@ -108,6 +148,17 @@ export default defineComponent({
         workspace.updateSection(value);
       } else if (value === "settings") {
         workspace.settingsModalShown.value = true;
+      }
+    }
+
+    function selectContributionAction(value: string | number): void {
+      if (value === "new-branch") {
+        workspace.branchForm.name = "";
+        workspace.branchForm.checkout = true;
+        workspace.branchForm.stashLocalChanges = false;
+        workspace.branchModalShown.value = true;
+      } else if (value === "fork-and-push") {
+        workspace.openForkModal();
       }
     }
 
@@ -171,15 +222,21 @@ export default defineComponent({
       repositoryContextMenuY,
       repositoryContextMenuOptions,
       applicationMenuOptions,
+      contributionMenuOptions,
       branchSwitcherOptions,
       branchSwitcherStyle,
       branchSwitcherValue,
       repositorySwitcherAriaLabel,
       currentBranchLabelParts,
       upstreamLabelParts,
+      branchTracksActiveRemote,
+      pushNeedsAttention,
+      pushButtonLabel,
+      pushButtonTitle,
       renderBranchLabel,
       openRepositoryContextMenu,
       selectApplicationMenuItem,
+      selectContributionAction,
       selectBranch,
       selectRepositoryContextMenuAction,
     };
@@ -296,15 +353,25 @@ export default defineComponent({
                   </span>
                 </n-tag>
                 <n-tag v-if="isUnbornRepository" size="small" type="warning" :bordered="false">{{ t('workspace.header.noCommitsYet') }}</n-tag>
-                <n-tag v-else-if="snapshot.status.upstream" size="small" :bordered="false" class="branch-status-tag" :title="snapshot.status.upstream">
+                <n-tag v-else-if="snapshot.status.upstream && branchTracksActiveRemote" size="small" :bordered="false" class="branch-status-tag" :title="snapshot.status.upstream">
                   <span class="middle-ellipsis-label">
                     <span v-if="upstreamLabelParts.prefix" class="middle-ellipsis-prefix">{{ upstreamLabelParts.prefix }}</span>
                     <span v-if="upstreamLabelParts.prefix" class="middle-ellipsis-separator" aria-hidden="true">/</span>
                     <span class="middle-ellipsis-tail">{{ upstreamLabelParts.tail }}</span>
                   </span>
                 </n-tag>
+                <n-tag
+                  v-if="snapshot.status.branch && !branchTracksActiveRemote"
+                  size="small"
+                  type="warning"
+                  :bordered="false"
+                  class="branch-status-tag"
+                  :title="snapshot.status.upstream ? pushButtonTitle : t('workspace.header.branchOnlyLocalTitle')"
+                >
+                  {{ snapshot.status.upstream ? t('workspace.header.remoteNotTracked') : t('workspace.header.branchOnlyLocal') }}
+                </n-tag>
                 <n-text
-                  v-if="snapshot.status.ahead || snapshot.status.behind"
+                  v-if="branchTracksActiveRemote && (snapshot.status.ahead || snapshot.status.behind)"
                   depth="3"
                   class="sync-summary"
                   :class="{ 'sync-summary-behind': snapshot.status.behind > 0 }"
@@ -376,11 +443,30 @@ export default defineComponent({
                 {{ t('repository.branches.fetch') }}
               </n-button>
               <n-button v-if="activeRemote" size="small" :loading="networkBusy === 'pull'" :disabled="mutationBusy || !canPullFromActiveRemote || Boolean(networkBusy)" @click="runNetworkAction('pull')">{{ t('workspace.header.pull') }}</n-button>
-              <n-button v-if="activeRemote" size="small" type="primary" :loading="networkBusy === 'push'" :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)" @click="runNetworkAction('push')">
-                {{ t('workspace.header.push') }}
+              <n-button
+                v-if="activeRemote"
+                size="small"
+                :type="pushNeedsAttention ? 'warning' : 'primary'"
+                :loading="networkBusy === 'push'"
+                :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)"
+                :aria-label="pushButtonTitle"
+                :title="pushButtonTitle"
+                @click="runNetworkAction('push')"
+              >
+                {{ pushButtonLabel }}
               </n-button>
             </div>
             <div v-if="snapshot" class="topbar-utility-group">
+              <n-dropdown
+                trigger="click"
+                placement="bottom-end"
+                :options="contributionMenuOptions"
+                @select="selectContributionAction"
+              >
+                <n-button size="small" tertiary :disabled="mutationBusy || Boolean(networkBusy)">
+                  {{ t('workspace.header.contribute') }}
+                </n-button>
+              </n-dropdown>
               <n-button
                 size="small"
                 tertiary

@@ -651,6 +651,42 @@ fn generic_access_denied_is_not_misclassified_as_an_askpass_failure() {
     );
 }
 
+#[test]
+fn classifies_github_write_permission_denial() {
+    let error = git_error_from_diagnostic(
+        "推送改动",
+        "remote: permission to upstream/project.git denied to contributor.",
+    );
+    assert_eq!(error.code(), "git_push_permission_denied");
+}
+
+#[test]
+fn classifies_gitlab_push_permission_denial() {
+    let error = git_error_from_diagnostic(
+        "推送改动",
+        "remote: You are not allowed to push code to this project.",
+    );
+    assert_eq!(error.code(), "git_push_permission_denied");
+}
+
+#[test]
+fn ssh_publickey_permission_denial_remains_authentication_failure() {
+    let error = git_error_from_diagnostic(
+        "推送改动",
+        "permission denied (publickey).",
+    );
+    assert_eq!(error.code(), "git_authentication_failed");
+}
+
+#[test]
+fn read_permission_denial_is_not_classified_as_a_push_permission_failure() {
+    let error = git_error_from_diagnostic(
+        "获取远程更新",
+        "remote: permission to upstream/project.git denied to contributor.",
+    );
+    assert_eq!(error.code(), "git_command_failed");
+}
+
 #[cfg(unix)]
 #[test]
 fn network_runner_classifies_bounded_private_diagnostics() {

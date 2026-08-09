@@ -23,7 +23,7 @@ Commands ── AppState（安全的账号、绑定、Endpoint 与本地仓库�
 ### GitCore
 
 - 只以 `std::process::Command` 加参数数组启动系统 `git`，从不拼接 shell 命令。
-- 覆盖仓库发现、clone、status、diff、暂存/取消暂存、commit、分支、merge、fetch/pull/push、tag 和 remote 管理。
+- 覆盖仓库发现、clone、status、diff、暂存/取消暂存、commit、分支、merge、fetch/pull/push、tag 和 remote 管理。创建并切换分支可在同一个 command 中先将工作区改动（含未跟踪文件）保存到 stash；未选择时保留 Git 默认的工作区携带语义。
 - 不使用 libgit2，因此保留用户的 SSH、Git LFS、正常 hook 与 credential helper 行为；使用应用管理 PAT 或固定 gh bearer token 的网络命令会以命令级 `core.hooksPath` 禁用 hook，避免认证信息被仓库代码读取。
 - GitCore 不知道平台令牌，也不读写 Git 全局配置。
 - 凭据解析后使用固定 URL 执行 Fetch / Pull / Push，避免 remote 在解析与执行之间被替换。URL 形式的 Pull 不采用服务器默认分支，而是捕获当前分支的 remote source ref 与实际 tracking ref，验证仓库 local/worktree scope 的 fetch refspec 后构造明确的 source:destination。system/global scope 的同名 mapping 不参与该仓库决策，negative exclusion 与 force 标记保持 Git 原有语义。
@@ -47,7 +47,7 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 
 | 平台 | MVP 状态 |
 | --- | --- |
-| GitHub | URL 识别、gh 账号导入/状态、仓库信息、PR 列表与创建、自动读取个人/组织发布所有者、发布仓库（均经匹配的 gh 身份） |
+| GitHub | URL 识别、gh 账号导入/状态、仓库信息、PR 列表与创建、Fork 到个人账号并配置独立 remote、自动读取个人/组织发布所有者、发布仓库（均经匹配的 gh 身份） |
 | GitLab | URL 识别、glab 账号导入/状态、账号模型与 capability 占位 |
 | Gitee | URL 识别、账号模型、钥匙串 PAT、remote 绑定及按绑定账号 HTTPS Git 认证 |
 | Gitea / Forgejo | 账号、PAT、remote 绑定和 Git 网络操作；平台 API capability 暂不展示 |
@@ -57,7 +57,7 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 
 - `CodeHostKind`：GitHub、GitLab、Gitee、Gitea、Forgejo、通用 Git 服务、未知平台。
 - `CodeHostEndpoint`：稳定 ID、平台类型、网页/API 地址、Git host。
-- `CodeHostCapabilities`：平台已实现能力的显式开关。
+- `CodeHostCapabilities`：平台已实现能力的显式开关，包括仓库信息、发布、Fork 和 PR。
 - `AccountProfile`：账号 ID、Endpoint、登录名、显示名、认证方式、钥匙串引用、认证状态和默认候选标记。
 - `RemoteProfile`：Git remote 的 fetch/push URL、解析出的 host/path/平台。
 - `RemoteBinding`：规范化仓库路径 + remote 名称到 Endpoint 与显式账号或 `Auto` 的映射。
@@ -93,7 +93,7 @@ Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL �
 
 ## Tauri command 数据流
 
-页面加载仓库时，前端调用只读 command 获取 status、branches、remotes、绑定和可用能力。暂存、提交、分支、remote、账号和绑定操作分别调用窄粒度 command。fetch/pull/push command 在后端完成 remote→binding→credential strategy 解析；若需要选择账号，返回结构化错误而不是尝试另一个账号。
+页面加载仓库时，前端调用只读 command 获取 status、branches、remotes、绑定和可用能力。暂存、提交、分支、remote、账号和绑定操作分别调用窄粒度 command；创建分支时由 UI 明确传递是否先 stash，后端会在写入前复核分支名和同名分支，避免无效操作先移动用户改动。fetch/pull/push command 在后端完成 remote→binding→credential strategy 解析；若需要选择账号，返回结构化错误而不是尝试另一个账号。
 
 ## 国际化
 
@@ -105,6 +105,6 @@ Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL �
 
 ## MVP 边界
 
-本期不包含 Issue 管理、冲突可视化编辑、完整的 SSH 密钥创建器、OAuth 登录流程或 Gitea/Forgejo API。GitHub 已支持仓库信息、PR 列表、创建 PR 和发布仓库，但这些平台操作依赖当前可用且与 remote 明确匹配的 `gh` 身份；GitLab/Gitee 平台 API 入口仍由 capabilities 明确关闭，避免出现无效按钮。
+本期不包含 Issue 管理、冲突可视化编辑、完整的 SSH 密钥创建器、OAuth 登录流程或 Gitea/Forgejo API。GitHub 已支持仓库信息、PR 列表、创建 PR、Fork 到个人账号并配置独立 remote、发布仓库，但这些平台操作依赖当前可用且与 remote 明确匹配的 `gh` 身份；GitLab/Gitee 平台 API 入口仍由 capabilities 明确关闭，避免出现无效按钮。
 
 Git LFS 当前提供状态读取、在当前仓库初始化和添加跟踪规则；不包含大文件传输进度、锁定协作或完整的 LFS 管理工作流。任意 Git host 的多账号 HTTPS、SSH、系统 credential helper 和 remote binding 路径是本期完整实现重点。

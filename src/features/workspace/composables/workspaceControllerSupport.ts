@@ -20,6 +20,7 @@ export type RepositoryGrouping = "manual" | "owner" | "recent";
 export interface NetworkActionTarget {
   repositoryPath: string;
   remoteName: string;
+  remoteIdentity: string;
   selectionGeneration: number;
 }
 
@@ -77,6 +78,7 @@ const repositorySnapshotSignatures = new WeakMap<RepositorySnapshot, string>();
 export const emptyCapabilities: CodeHostCapabilities = {
   repositoryInfo: false,
   repositoryPublish: false,
+  repositoryFork: false,
   pullRequestsRead: false,
   pullRequestsWrite: false,
   accountImport: false,

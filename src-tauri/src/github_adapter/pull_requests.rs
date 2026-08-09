@@ -142,6 +142,14 @@ impl CodeHostAdapter for GitHubAdapter {
             updated_at: pull_request.updated_at,
         })
     }
+
+    fn fork_repository(
+        &self,
+        context: &AdapterContext,
+        remote_name: &str,
+    ) -> Result<GitHubForkSummary, AppError> {
+        GitHubAdapter::fork_repository(self, context, remote_name)
+    }
 }
 
 /// GitHub REST routes use exactly one owner and one repository segment. The
@@ -172,6 +180,31 @@ struct GitHubRepositoryResponse {
     default_branch: Option<String>,
     html_url: String,
     private: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GitHubCreateForkRequest {}
+
+#[derive(Debug, Deserialize)]
+struct GitHubForkRepositoryResponse {
+    full_name: String,
+    name: String,
+    html_url: String,
+    clone_url: String,
+    ssh_url: String,
+    fork: bool,
+    owner: GitHubRepositoryOwnerResponse,
+    parent: Option<GitHubForkParentResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubRepositoryOwnerResponse {
+    login: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubForkParentResponse {
+    full_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -274,6 +307,17 @@ fn safe_command_error(stderr: &[u8]) -> &'static str {
     }
 }
 
+fn github_api_error_code(stderr: &[u8]) -> &'static str {
+    let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if diagnostic.contains("not logged") || diagnostic.contains("authentication") {
+        "github_api_failed"
+    } else if diagnostic.contains("http 404") {
+        "github_api_not_found"
+    } else {
+        "github_api_failed"
+    }
+}
+
 fn github_publish_command_error(stderr: &[u8]) -> AppError {
     let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if diagnostic.contains("already exists") {
@@ -307,4 +351,3 @@ fn github_publish_command_error(stderr: &[u8]) -> AppError {
         )
     }
 }
-

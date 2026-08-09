@@ -1,7 +1,7 @@
 use crate::app_error::AppError;
 use crate::codehost::{
     AdapterContext, CodeHostAdapter, CodeHostRepositoryInfo, CreatePullRequestInput,
-    GitHubPublishOwner, GitHubPublishOwnerKind, PullRequestSummary,
+    GitHubForkSummary, GitHubPublishOwner, GitHubPublishOwnerKind, PullRequestSummary,
 };
 use crate::domain::{
     git_authority_has_explicit_port, github_endpoint_has_gh_compatible_api,

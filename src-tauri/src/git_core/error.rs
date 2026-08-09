@@ -33,8 +33,9 @@ fn bounded_diagnostic_bytes(bytes: &[u8], maximum: usize) -> Vec<u8> {
 /// Git may echo a URL or a server response containing a token, so forwarding
 /// raw stdout/stderr would violate the credential boundary.
 pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &str) -> AppError {
+    let diagnostic = diagnostic.to_ascii_lowercase();
     let (code, guidance) = if contains_any(
-        diagnostic,
+        &diagnostic,
         &[
             "authentication failed",
             "could not read username",
@@ -48,8 +49,22 @@ pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &st
             "git_authentication_failed",
             "请检查 remote 绑定的账号、SSH agent 或系统 Git credential helper。",
         )
+    } else if operation == "推送改动"
+        && (contains_any(
+            &diagnostic,
+            &[
+                "write access to repository not granted",
+                "not allowed to push code to this project",
+                "not allowed to push code to this repository",
+            ],
+        ) || (diagnostic.contains("permission to ") && diagnostic.contains(" denied")))
+    {
+        (
+            "git_push_permission_denied",
+            "当前远程仓库拒绝了写入；请 Fork 到自己的账号后再推送。",
+        )
     } else if contains_any(
-        diagnostic,
+        &diagnostic,
         &[
             "could not resolve host",
             "failed to connect",
@@ -59,7 +74,7 @@ pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &st
     ) {
         ("git_network_error", "请检查网络连接、代理和远程服务状态。")
     } else if contains_any(
-        diagnostic,
+        &diagnostic,
         &[
             "repository not found",
             "does not appear to be a git repository",
@@ -71,7 +86,7 @@ pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &st
             "请检查远程地址、访问权限和账号绑定。",
         )
     } else if contains_any(
-        diagnostic,
+        &diagnostic,
         &[
             "couldn't find remote ref",
             "could not find remote ref",
@@ -95,7 +110,6 @@ pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &st
             "Git 未能完成操作；请检查仓库状态和 Git 配置。",
         )
     };
-    let _ = operation;
     AppError::with_safe_details(code, "Git 命令失败。", guidance)
 }
 

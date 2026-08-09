@@ -385,9 +385,44 @@ export default defineComponent({
     <template #action><n-space justify="end"><n-button @click="customEndpointModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="saveCustomEndpoint">{{ t('workspace.dialogs.saveEndpoint') }}</n-button></n-space></template>
   </n-modal>
 
-  <n-modal v-model:show="branchModalShown" preset="card" :title="t('workspace.dialogs.newBranch')" class="dialog-card" :mask-closable="!mutationBusy">
-    <n-form label-placement="top"><n-form-item :label="t('workspace.dialogs.branchName')"><n-input v-model:value="branchForm.name" :placeholder="t('workspace.dialogs.placeholderFeatureBranch')" /></n-form-item><n-form-item><n-checkbox v-model:checked="branchForm.checkout">{{ t('workspace.dialogs.switchToThisBranchAfterCreation') }}</n-checkbox></n-form-item></n-form>
-    <template #action><n-space justify="end"><n-button @click="branchModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="createBranch">{{ t('workspace.dialogs.createBranch') }}</n-button></n-space></template>
+  <n-modal v-model:show="branchModalShown" preset="card" :title="branchForm.checkout ? t('workspace.dialogs.newBranchAndSwitch') : t('workspace.dialogs.newBranch')" class="dialog-card" :mask-closable="!mutationBusy">
+    <n-alert type="info" :bordered="false" class="token-alert">
+      {{ branchForm.checkout ? t('workspace.dialogs.newBranchAndSwitchBehavior') : t('workspace.dialogs.newBranchBehavior') }}
+    </n-alert>
+    <n-form label-placement="top">
+      <n-form-item :label="t('workspace.dialogs.branchName')"><n-input v-model:value="branchForm.name" :placeholder="t('workspace.dialogs.placeholderFeatureBranch')" /></n-form-item>
+      <n-form-item><n-checkbox v-model:checked="branchForm.checkout">{{ t('workspace.dialogs.switchToThisBranchAfterCreation') }}</n-checkbox></n-form-item>
+      <n-form-item v-if="branchForm.checkout && snapshot?.status.entries.length"><n-checkbox v-model:checked="branchForm.stashLocalChanges">{{ t('workspace.dialogs.stashCurrentChangesBeforeSwitchingToNewBranch') }}</n-checkbox></n-form-item>
+    </n-form>
+    <template #action><n-space justify="end"><n-button @click="branchModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="createBranch">{{ branchForm.checkout ? t('workspace.dialogs.createAndSwitch') : t('workspace.dialogs.createBranch') }}</n-button></n-space></template>
+  </n-modal>
+
+  <n-modal v-model:show="forkModalShown" preset="card" :title="t('workspace.dialogs.forkAndPushCurrentBranch')" class="dialog-card" :mask-closable="!mutationBusy">
+    <n-alert type="info" :bordered="false" class="token-alert">
+      {{ t('workspace.dialogs.forkContributionFlowDescription') }}
+    </n-alert>
+    <n-form label-placement="top">
+      <n-form-item :label="t('workspace.dialogs.ghAccountUsedForFork')"><n-select v-model:value="forkForm.accountId" :options="forkAccountOptions" :placeholder="t('workspace.dialogs.selectAVerifiedGhAccount')" /></n-form-item>
+      <n-form-item :label="t('workspace.dialogs.forkRemoteName')"><n-input v-model:value="forkForm.remoteName" :placeholder="t('workspace.dialogs.placeholderForkRemoteName')" /></n-form-item>
+      <n-form-item>
+        <n-checkbox v-model:checked="forkForm.createContributionBranch">
+          {{ t('workspace.dialogs.createAndSwitchToContributionBranchBeforeForking') }}
+        </n-checkbox>
+      </n-form-item>
+      <n-form-item v-if="forkForm.createContributionBranch" :label="t('workspace.dialogs.contributionBranchName')"><n-input v-model:value="forkForm.branchName" :placeholder="t('workspace.dialogs.placeholderContributionBranch')" /></n-form-item>
+      <n-form-item v-if="forkForm.createContributionBranch && snapshot?.status.entries.length">
+        <n-checkbox v-model:checked="forkForm.stashLocalChanges">
+          {{ t('workspace.dialogs.stashCurrentChangesBeforeSwitchingToContributionBranch') }}
+        </n-checkbox>
+      </n-form-item>
+    </n-form>
+    <n-alert v-if="forkContributionBranchRecommended" type="success" :bordered="false">
+      {{ t('workspace.dialogs.defaultBranchContributionRecommendation', { branch: snapshot?.status.branch || '' }) }}
+    </n-alert>
+    <n-alert v-if="!forkAccountOptions.length" type="warning" :bordered="false">
+      {{ t('workspace.dialogs.noUsableGhCliAccountIsAvailableImportASignedInGhIdentityFromAccountsAndAuthenticationFirst') }}
+    </n-alert>
+    <template #action><n-space justify="end"><n-button @click="forkModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="!forkAccountOptions.length" @click="forkGithubRepository">{{ t('workspace.dialogs.forkAndPush') }}</n-button></n-space></template>
   </n-modal>
 
   <n-modal v-model:show="renameBranchModalShown" preset="card" :title="t('workspace.dialogs.renameBranch')" class="dialog-card" :mask-closable="!mutationBusy">
@@ -449,7 +484,7 @@ export default defineComponent({
   <n-modal v-model:show="pullRequestModalShown" preset="card" :title="t('workspace.dialogs.createPullRequest')" class="dialog-card" :mask-closable="!mutationBusy">
     <n-alert type="warning" :bordered="false" class="token-alert">{{ t('workspace.dialogs.thisCreatesAPullRequestOnGithubThroughTheCurrentlyMatchedGhAccountConfirmThatTheCurrentBranchHas') }}</n-alert>
     <n-form label-placement="top">
-      <n-form-item :label="t('workspace.dialogs.headBranch')"><n-input :value="snapshot?.status.branch || ''" readonly /></n-form-item>
+      <n-form-item :label="t('workspace.dialogs.headBranch')"><n-input :value="pullRequestHead || snapshot?.status.branch || ''" readonly /></n-form-item>
       <n-form-item :label="t('workspace.dialogs.pullRequestBaseBranch')">
         <div class="pull-request-base-field">
           <n-input v-model:value="pullRequestForm.base" :placeholder="t('workspace.dialogs.placeholderDefaultBranch')" />

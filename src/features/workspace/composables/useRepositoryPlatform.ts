@@ -28,8 +28,10 @@ interface RepositoryPlatformDependencies {
   getSelectionGeneration: () => number;
   repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   capabilityForEndpoint: (endpointId: string | null) => CodeHostCapabilities;
+  selectedRemoteName: Ref<string>;
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
   loadCapabilities: (repositoryPath?: string, selectionGeneration?: number) => Promise<void>;
+  refreshSnapshot: () => Promise<void>;
   reportError: (error: unknown, action: string) => void;
   message: MessageApi;
 }
@@ -57,8 +59,10 @@ export function useRepositoryPlatform({
   getSelectionGeneration,
   repositorySelectionIsCurrent,
   capabilityForEndpoint,
+  selectedRemoteName,
   applySnapshot,
   loadCapabilities,
+  refreshSnapshot,
   reportError,
   message,
 }: RepositoryPlatformDependencies) {
@@ -69,7 +73,16 @@ export function useRepositoryPlatform({
   const publishOwnersLoading = ref(false);
   const pullRequestModalShown = ref(false);
   const publishModalShown = ref(false);
+  const forkModalShown = ref(false);
   const pullRequestForm = reactive({ title: "", body: "", base: "", draft: false });
+  const pullRequestHead = ref<string | null>(null);
+  const forkForm = reactive({
+    accountId: "",
+    remoteName: "fork",
+    createContributionBranch: false,
+    branchName: "",
+    stashLocalChanges: false,
+  });
   const publishForm = reactive({
     endpointId: "github.com",
     accountId: "",
@@ -88,6 +101,36 @@ export function useRepositoryPlatform({
   const pullRequestSelectionGeneration = ref<number | null>(null);
   const publishRepositoryPath = ref<string | null>(null);
   const publishSelectionGeneration = ref<number | null>(null);
+  const forkRepositoryPath = ref<string | null>(null);
+  const forkRemoteName = ref<string | null>(null);
+  const forkRemoteIdentity = ref<string | null>(null);
+  const forkSelectionGeneration = ref<number | null>(null);
+
+  function isDefaultContributionBranch(branch: string): boolean {
+    const configuredDefaultBranch = repositoryInfo.value?.defaultBranch?.trim();
+    if (configuredDefaultBranch) return configuredDefaultBranch === branch;
+    return ["main", "master", "trunk"].includes(branch);
+  }
+
+  function branchNamePart(value: string): string {
+    const normalized = value.normalize("NFKD").toLowerCase();
+    return normalized.replace(/[^a-z0-9]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 48);
+  }
+
+  function suggestedContributionBranchName(): string {
+    const summary = selectedCommit.value?.summary || commits.value[0]?.summary || "change";
+    const base = `contrib/${branchNamePart(summary) || "change"}`;
+    const names = new Set(snapshot.value?.branches.map((branch) => branch.name) ?? []);
+    if (!names.has(base)) return base;
+    let suffix = 2;
+    while (names.has(`${base}-${suffix}`)) suffix += 1;
+    return `${base}-${suffix}`;
+  }
+
+  const forkContributionBranchRecommended = computed(() => {
+    const branch = snapshot.value?.status.branch;
+    return Boolean(branch && isDefaultContributionBranch(branch));
+  });
 
   function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
     const releaseOperation = acquireRepositoryOperation(repositoryPath);
@@ -118,6 +161,15 @@ export function useRepositoryPlatform({
     && account.authMethod === "ghCli"
     && (account.status === "valid" || account.status === "available")));
   const publishAccountOptions = computed(() => publishAccounts.value.map((account) => ({
+    label: (account.displayName || account.login) + " · " + authenticationStatusLabel(account.status),
+    value: account.id,
+  })));
+  const forkAccounts = computed(() => accounts.value.filter((account) =>
+    account.endpointId === activeRemote.value?.endpointId
+    && account.authMethod === "ghCli"
+    && (account.status === "valid" || account.status === "available"),
+  ));
+  const forkAccountOptions = computed(() => forkAccounts.value.map((account) => ({
     label: (account.displayName || account.login) + " · " + authenticationStatusLabel(account.status),
     value: account.id,
   })));
@@ -207,6 +259,7 @@ export function useRepositoryPlatform({
       pullRequests.value = [];
       if (pullRequestModalShown.value) {
         pullRequestModalShown.value = false;
+        pullRequestHead.value = null;
         pullRequestRepositoryPath.value = null;
         pullRequestRemoteName.value = null;
         pullRequestRemoteIdentity.value = null;
@@ -215,7 +268,7 @@ export function useRepositoryPlatform({
     },
   );
 
-  function openCreatePullRequest(): void {
+  function prepareCreatePullRequest(headOverride?: string): void {
     const repositoryPath = activeRepositoryPath.value;
     const remote = activeRemote.value;
     const remoteName = remote?.name;
@@ -230,7 +283,195 @@ export function useRepositoryPlatform({
     pullRequestForm.body = "";
     pullRequestForm.base = suggestedBase;
     pullRequestForm.draft = false;
+    pullRequestHead.value = headOverride?.trim() || null;
     pullRequestModalShown.value = true;
+  }
+
+  function openCreatePullRequest(): void {
+    prepareCreatePullRequest();
+  }
+
+  function suggestedForkRemoteName(): string {
+    const names = new Set(snapshot.value?.remotes.map((remote) => remote.name) ?? []);
+    if (!names.has("fork")) return "fork";
+    let suffix = 2;
+    while (names.has(`fork-${suffix}`)) suffix += 1;
+    return `fork-${suffix}`;
+  }
+
+  function openForkModal(): void {
+    const repositoryPath = activeRepositoryPath.value;
+    const remote = activeRemote.value;
+    if (
+      !repositoryPath
+      || !remote
+      || !activeCapabilities.value.repositoryFork
+      || !snapshot.value?.hasHead
+      || !snapshot.value.status.branch
+    ) return;
+    forkRepositoryPath.value = repositoryPath;
+    forkRemoteName.value = remote.name;
+    forkRemoteIdentity.value = getRemoteIdentity(remote);
+    forkSelectionGeneration.value = getSelectionGeneration();
+    forkForm.accountId = forkAccounts.value[0]?.id || "";
+    forkForm.remoteName = suggestedForkRemoteName();
+    forkForm.createContributionBranch = isDefaultContributionBranch(snapshot.value.status.branch);
+    forkForm.branchName = suggestedContributionBranchName();
+    forkForm.stashLocalChanges = false;
+    forkModalShown.value = true;
+  }
+
+  async function forkGithubRepository(): Promise<void> {
+    const repositoryPath = forkRepositoryPath.value;
+    const sourceRemoteName = forkRemoteName.value;
+    const sourceRemoteIdentity = forkRemoteIdentity.value;
+    const selectionGeneration = forkSelectionGeneration.value;
+    const remote = activeRemote.value;
+    if (
+      !repositoryPath
+      || !sourceRemoteName
+      || !sourceRemoteIdentity
+      || selectionGeneration === null
+      || !remote
+      || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+      || remote.name !== sourceRemoteName
+      || getRemoteIdentity(remote) !== sourceRemoteIdentity
+    ) {
+      forkModalShown.value = false;
+      message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+      return;
+    }
+    const accountId = forkForm.accountId;
+    const requestedForkRemoteName = forkForm.remoteName.trim();
+    const createContributionBranch = forkForm.createContributionBranch;
+    const branchName = forkForm.branchName.trim();
+    const stashLocalChanges = forkForm.stashLocalChanges;
+    const endpointId = remote.endpointId;
+    if (!endpointId || !accountId || !requestedForkRemoteName) {
+      message.warning(t("workspace.controller.selectAGhAccountAndEnterAForkRemoteName"));
+      return;
+    }
+    if (requestedForkRemoteName === sourceRemoteName) {
+      message.warning(t("workspace.controller.chooseAForkRemoteNameDifferentFromTheSourceRemote"));
+      return;
+    }
+    const account = forkAccounts.value.find((item) => item.id === accountId);
+    if (!account) {
+      message.warning(t("workspace.controller.selectAGhAccountAndEnterAForkRemoteName"));
+      return;
+    }
+    const finishMutation = beginRepositoryMutation(repositoryPath);
+    if (!finishMutation) return;
+    let contributionBranch = snapshot.value?.status.branch;
+    if (!contributionBranch) {
+      finishMutation();
+      message.warning(t("workspace.controller.switchToALocalBranchBeforeCreatingAPullRequest"));
+      return;
+    }
+    if (createContributionBranch && !branchName) {
+      finishMutation();
+      message.warning(t("workspace.controller.enterAContributionBranchName"));
+      return;
+    }
+    try {
+      if (createContributionBranch) {
+        try {
+          const branchResult = await api.createBranch({
+            repositoryPath,
+            name: branchName,
+            checkout: true,
+            stashLocalChanges,
+          });
+          const nextSnapshot = branchResult.snapshot;
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) return;
+          selectedRemoteName.value = sourceRemoteName;
+          contributionBranch = nextSnapshot.status.branch || branchName;
+        } catch (error) {
+          if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+            reportError(error, t("workspace.controller.couldNotCreateContributionBranch"));
+          }
+          return;
+        }
+      }
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || getRemoteIdentity(activeRemote.value) !== sourceRemoteIdentity
+        || snapshot.value?.status.branch !== contributionBranch
+      ) {
+        forkModalShown.value = false;
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+        return;
+      }
+      const fork = await api.forkGitHubRepository(
+        repositoryPath,
+        sourceRemoteName,
+        endpointId,
+        accountId,
+        requestedForkRemoteName,
+      );
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || getRemoteIdentity(activeRemote.value) !== sourceRemoteIdentity
+        || snapshot.value?.status.branch !== contributionBranch
+      ) {
+        forkModalShown.value = false;
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+        return;
+      }
+      selectedRemoteName.value = fork.remoteName;
+      await refreshSnapshot();
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || activeRemote.value?.name !== fork.remoteName
+        || snapshot.value?.status.branch !== contributionBranch
+      ) {
+        forkModalShown.value = false;
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+        return;
+      }
+      try {
+        await api.pushRemote(repositoryPath, fork.remoteName, false);
+      } catch (error) {
+        await refreshSnapshot().catch(() => undefined);
+        if (
+          repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+          && activeRemote.value?.name === fork.remoteName
+        ) {
+          reportError(error, t("workspace.controller.forkCreatedButCurrentBranchCouldNotBePushed"));
+        }
+        return;
+      }
+      await refreshSnapshot();
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || activeRemote.value?.name !== fork.remoteName
+        || snapshot.value?.status.branch !== contributionBranch
+      ) {
+        forkModalShown.value = false;
+        message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+        return;
+      }
+      selectedRemoteName.value = fork.sourceRemoteName;
+      forkModalShown.value = false;
+      forkRepositoryPath.value = null;
+      forkRemoteName.value = null;
+      forkRemoteIdentity.value = null;
+      forkSelectionGeneration.value = null;
+      forkForm.createContributionBranch = false;
+      forkForm.branchName = "";
+      forkForm.stashLocalChanges = false;
+      prepareCreatePullRequest(`${fork.ownerLogin}:${contributionBranch}`);
+      message.success(t("workspace.controller.repositoryForkedAndBranchPushed", {
+        branch: contributionBranch,
+        remote: fork.remoteName,
+      }));
+    } catch (error) {
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(error, t("workspace.controller.couldNotForkGithubRepository"));
+      }
+    } finally {
+      finishMutation();
+    }
   }
 
   async function createPullRequest(): Promise<void> {
@@ -247,6 +488,7 @@ export function useRepositoryPlatform({
       || getRemoteIdentity(activeRemote.value) !== remoteIdentity
     ) {
       pullRequestModalShown.value = false;
+      pullRequestHead.value = null;
       pullRequestRepositoryPath.value = null;
       pullRequestRemoteName.value = null;
       pullRequestRemoteIdentity.value = null;
@@ -262,18 +504,19 @@ export function useRepositoryPlatform({
       message.warning(t("workspace.controller.enterAPullRequestTitleAndChooseABaseBranch"));
       return;
     }
-    if (pullRequestForm.base.trim() === snapshot.value.status.branch) {
+    const headBranch = snapshot.value.status.branch;
+    const head = pullRequestHead.value?.trim() || headBranch;
+    if (!pullRequestHead.value?.trim() && pullRequestForm.base.trim() === headBranch) {
       message.warning(t("workspace.controller.theHeadBranchAndBaseBranchCannotBeTheSame"));
       return;
     }
-    const headBranch = snapshot.value.status.branch;
     const finishMutation = beginRepositoryMutation(repositoryPath);
     if (!finishMutation) return;
     try {
       const pullRequest = await api.createPullRequest(repositoryPath, remoteName, {
         title: pullRequestForm.title.trim(),
         body: pullRequestForm.body,
-        head: headBranch,
+        head,
         base: pullRequestForm.base.trim(),
         draft: pullRequestForm.draft,
       });
@@ -282,6 +525,7 @@ export function useRepositoryPlatform({
         || getRemoteIdentity(activeRemote.value) !== remoteIdentity
       ) {
         pullRequestModalShown.value = false;
+        pullRequestHead.value = null;
         pullRequestRepositoryPath.value = null;
         pullRequestRemoteName.value = null;
         pullRequestRemoteIdentity.value = null;
@@ -292,6 +536,7 @@ export function useRepositoryPlatform({
       pullRequestsLoading.value = false;
       pullRequests.value = [pullRequest, ...pullRequests.value.filter((item) => item.number !== pullRequest.number)];
       pullRequestModalShown.value = false;
+      pullRequestHead.value = null;
       pullRequestRepositoryPath.value = null;
       pullRequestRemoteName.value = null;
       pullRequestRemoteIdentity.value = null;
@@ -433,7 +678,11 @@ export function useRepositoryPlatform({
     publishOwnersLoading,
     pullRequestModalShown,
     publishModalShown,
+    forkModalShown,
     pullRequestForm,
+    pullRequestHead,
+    forkForm,
+    forkContributionBranchRecommended,
     publishForm,
     publishOwners,
     publishOwnersError,
@@ -441,6 +690,8 @@ export function useRepositoryPlatform({
     publishEndpoints,
     publishAccounts,
     publishAccountOptions,
+    forkAccounts,
+    forkAccountOptions,
     publishOwnerOptions,
     canPublishToSelectedOwner,
     loadRepositoryInfo,
@@ -448,6 +699,8 @@ export function useRepositoryPlatform({
     invalidatePlatformRequests,
     openCreatePullRequest,
     createPullRequest,
+    openForkModal,
+    forkGithubRepository,
     loadPublishOwners,
     openPublishModal,
     publishGitHubRepository,

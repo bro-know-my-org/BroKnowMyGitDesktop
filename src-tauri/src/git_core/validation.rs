@@ -362,7 +362,7 @@ pub(super) fn remote_tracking_branch_name(remote_name: &str, branch: &str) -> St
     format!("{remote_name}/{branch}")
 }
 
-pub(super) fn validate_ref_name(value: &str, _label: &str) -> Result<(), AppError> {
+pub(crate) fn validate_ref_name(value: &str, _label: &str) -> Result<(), AppError> {
     let invalid = value.trim().is_empty()
         || value.trim() != value
         || value.starts_with('-')

@@ -1,4 +1,7 @@
 impl GitHubAdapter {
+    const FORK_REPOSITORY_PAGE_SIZE: usize = 100;
+    const FORK_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
     fn repository_slug(context: &AdapterContext) -> Result<String, AppError> {
         let parsed = &context.remote().parsed;
         let owner = parsed
@@ -50,8 +53,9 @@ impl GitHubAdapter {
         let output = run_gh_with_timeout(command, None, deadline)?;
 
         if !output.status.success() {
+            let error_code = github_api_error_code(&output.stderr);
             return Err(AppError::with_safe_details(
-                "github_api_failed",
+                error_code,
                 "GitHub 请求失败，请检查 gh 登录状态和仓库访问权限。",
                 safe_command_error(&output.stderr),
             ));
@@ -310,6 +314,298 @@ impl GitHubAdapter {
         }
         Ok(())
     }
+
+    /// Creates (or reuses) the authenticated user's fork of the selected
+    /// repository. The caller adds the returned URL as a local remote; this
+    /// method only performs the GitHub platform API operation.
+    pub(crate) fn fork_repository(
+        &self,
+        context: &AdapterContext,
+        remote_name: &str,
+    ) -> Result<GitHubForkSummary, AppError> {
+        let endpoint = context.endpoint();
+        let remote = context.remote();
+        let account_login = context.account().login.as_str();
+        if endpoint.kind != CodeHostKind::GitHub {
+            return Err(AppError::new(
+                "adapter_endpoint_mismatch",
+                "GitHub adapter 不适用于该 Endpoint。",
+            ));
+        }
+        validate_repository_segment(account_login)?;
+        let source_owner = remote
+            .parsed
+            .namespace
+            .as_deref()
+            .filter(|value| is_github_route_segment(value))
+            .ok_or_else(|| {
+                AppError::new(
+                    "repository_slug_unavailable",
+                    "该 remote URL 不包含可识别的 GitHub 仓库路径。",
+                )
+            })?;
+        let repository_name = remote
+            .parsed
+            .repository
+            .as_deref()
+            .filter(|value| is_github_route_segment(value))
+            .ok_or_else(|| {
+                AppError::new(
+                    "repository_slug_unavailable",
+                    "该 remote URL 不包含可识别的 GitHub 仓库路径。",
+                )
+            })?;
+        let source_slug = format!("{source_owner}/{repository_name}");
+        let deadline = Instant::now() + GH_COMMAND_TIMEOUT;
+        let identity = pin_gh_identity_until(endpoint, account_login, deadline)?;
+        let response = self.gh_api_until_with_identity(
+            endpoint,
+            "user",
+            deadline,
+            Some(&identity),
+        )?;
+        let viewer: GitHubUser = serde_json::from_str(&response).map_err(|_| {
+            AppError::new(
+                "github_api_invalid_response",
+                "无法解析当前 GitHub 账号信息。",
+            )
+        })?;
+        if !viewer.login.eq_ignore_ascii_case(account_login) {
+            return Err(AppError::new(
+                "cli_auth_unavailable",
+                "当前 gh 登录与所选 Fork 账号不匹配或已失效。",
+            ));
+        }
+        let fork_slug = format!("{account_login}/{repository_name}");
+        let fork = match self.gh_api_until_with_identity(
+            endpoint,
+            &format!("repos/{fork_slug}"),
+            deadline,
+            Some(&identity),
+        ) {
+            Ok(response) => {
+                let fork = parse_fork_repository_response(&response)?;
+                match validate_fork_repository(
+                    &fork,
+                    account_login,
+                    &source_slug,
+                    Some(repository_name),
+                ) {
+                    Ok(()) => fork,
+                    Err(canonical_conflict) => match self.find_existing_fork_until(
+                        endpoint,
+                        account_login,
+                        &source_slug,
+                        &identity,
+                        deadline,
+                    )? {
+                        Some(fork) => {
+                            validate_fork_repository(&fork, account_login, &source_slug, None)?;
+                            fork
+                        }
+                        None => return Err(canonical_conflict),
+                    },
+                }
+            }
+            Err(error) if error.code() == "github_api_not_found" => {
+                if let Some(fork) = self.find_existing_fork_until(
+                    endpoint,
+                    account_login,
+                    &source_slug,
+                    &identity,
+                    deadline,
+                )? {
+                    validate_fork_repository(&fork, account_login, &source_slug, None)?;
+                    fork
+                } else {
+                    let create_result = self.gh_api_post_json_until_with_identity(
+                        endpoint,
+                        &format!("repos/{source_slug}/forks"),
+                        &GitHubCreateForkRequest {},
+                        deadline,
+                        Some(&identity),
+                    );
+                    match create_result {
+                        Ok(_) => self.wait_for_fork_repository_until(
+                            endpoint,
+                            &source_slug,
+                            &fork_slug,
+                            &identity,
+                            deadline,
+                        )?,
+                        Err(create_error) => {
+                            if let Ok(Some(fork)) = self.find_existing_fork_until(
+                                endpoint,
+                                account_login,
+                                &source_slug,
+                                &identity,
+                                deadline,
+                            ) {
+                                validate_fork_repository(
+                                    &fork,
+                                    account_login,
+                                    &source_slug,
+                                    None,
+                                )?;
+                                fork
+                            } else {
+                                match self.wait_for_fork_repository_until(
+                                    endpoint,
+                                    &source_slug,
+                                    &fork_slug,
+                                    &identity,
+                                    deadline,
+                                ) {
+                                    Ok(fork) => fork,
+                                    Err(error) if error.code() == "github_fork_name_conflict" => {
+                                        return Err(error);
+                                    }
+                                    Err(_) => return Err(create_error),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(GitHubForkSummary {
+            full_name: fork.full_name,
+            owner_login: fork.owner.login,
+            repository_name: fork.name,
+            web_url: fork.html_url,
+            clone_url: fork.clone_url,
+            ssh_url: fork.ssh_url,
+            remote_name: remote_name.to_owned(),
+            source_remote_name: remote.name.clone(),
+        })
+    }
+
+    fn find_existing_fork_until(
+        &self,
+        endpoint: &CodeHostEndpoint,
+        account_login: &str,
+        source_slug: &str,
+        identity: &PinnedGhIdentity,
+        deadline: Instant,
+    ) -> Result<Option<GitHubForkRepositoryResponse>, AppError> {
+        let mut page = 1;
+        loop {
+            let response = self.gh_api_until_with_identity(
+                endpoint,
+                &format!(
+                    "user/repos?type=owner&per_page={}&page={page}",
+                    Self::FORK_REPOSITORY_PAGE_SIZE,
+                ),
+                deadline,
+                Some(identity),
+            )?;
+            let repositories: Vec<GitHubForkRepositoryResponse> =
+                serde_json::from_str(&response).map_err(|_| {
+                    AppError::new(
+                        "github_api_invalid_response",
+                        "无法解析 GitHub 仓库列表。",
+                    )
+                })?;
+            let page_is_final = repositories.len() < Self::FORK_REPOSITORY_PAGE_SIZE;
+            if let Some(fork) = repositories.into_iter().find(|fork| {
+                fork_matches_source_lineage(fork, account_login, source_slug)
+            }) {
+                return Ok(Some(fork));
+            }
+            if page_is_final {
+                return Ok(None);
+            }
+            page += 1;
+        }
+    }
+
+    fn wait_for_fork_repository_until(
+        &self,
+        endpoint: &CodeHostEndpoint,
+        source_slug: &str,
+        fork_slug: &str,
+        identity: &PinnedGhIdentity,
+        deadline: Instant,
+    ) -> Result<GitHubForkRepositoryResponse, AppError> {
+        let (account_login, repository_name) = fork_slug.split_once('/').ok_or_else(|| {
+            AppError::new(
+                "repository_slug_unavailable",
+                "该 Fork 地址不包含可识别的 GitHub 仓库路径。",
+            )
+        })?;
+        loop {
+            match self.gh_api_until_with_identity(
+                endpoint,
+                &format!("repos/{fork_slug}"),
+                deadline,
+                Some(identity),
+            ) {
+                Ok(response) => {
+                    let fork = parse_fork_repository_response(&response)?;
+                    validate_fork_repository(
+                        &fork,
+                        account_login,
+                        source_slug,
+                        Some(repository_name),
+                    )?;
+                    return Ok(fork);
+                }
+                Err(error) if error.code() == "github_api_not_found" => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(AppError::new(
+                            "github_api_timeout",
+                            "GitHub Fork 创建后在规定时间内仍未就绪，请稍后重试。",
+                        ));
+                    }
+                    thread::sleep(remaining.min(Self::FORK_READINESS_POLL_INTERVAL));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+fn parse_fork_repository_response(
+    response: &str,
+) -> Result<GitHubForkRepositoryResponse, AppError> {
+    serde_json::from_str(response).map_err(|_| {
+        AppError::new(
+            "github_api_invalid_response",
+            "无法解析 GitHub Fork 仓库信息。",
+        )
+    })
+}
+
+fn fork_matches_source_lineage(
+    fork: &GitHubForkRepositoryResponse,
+    account_login: &str,
+    source_slug: &str,
+) -> bool {
+    fork.fork
+        && fork.owner.login.eq_ignore_ascii_case(account_login)
+        && fork.parent.as_ref().is_some_and(|parent| {
+            parent.full_name.eq_ignore_ascii_case(source_slug)
+        })
+}
+
+fn validate_fork_repository(
+    fork: &GitHubForkRepositoryResponse,
+    account_login: &str,
+    source_slug: &str,
+    expected_name: Option<&str>,
+) -> Result<(), AppError> {
+    let name_matches = expected_name
+        .map(|name| fork.name.eq_ignore_ascii_case(name))
+        .unwrap_or(true);
+    if !name_matches || !fork_matches_source_lineage(fork, account_login, source_slug) {
+        return Err(AppError::new(
+            "github_fork_name_conflict",
+            "当前账号下已存在同名但不是目标仓库 Fork 的 GitHub 仓库。",
+        ));
+    }
+    Ok(())
 }
 
 fn pin_gh_identity_until(
@@ -490,4 +786,3 @@ query PublishOwners($cursor: String) {
   }
 }
 "#;
-

@@ -88,6 +88,19 @@ pub struct GitHubPublishOwner {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct GitHubForkSummary {
+    pub full_name: String,
+    pub owner_login: String,
+    pub repository_name: String,
+    pub web_url: String,
+    pub clone_url: String,
+    pub ssh_url: String,
+    pub remote_name: String,
+    pub source_remote_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum GitHubPublishOwnerKind {
     User,
     Organization,
@@ -121,6 +134,11 @@ pub trait CodeHostAdapter: Send + Sync {
         context: &AdapterContext,
         input: &CreatePullRequestInput,
     ) -> Result<PullRequestSummary, AppError>;
+    fn fork_repository(
+        &self,
+        context: &AdapterContext,
+        remote_name: &str,
+    ) -> Result<GitHubForkSummary, AppError>;
 }
 
 #[cfg(test)]

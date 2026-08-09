@@ -284,6 +284,17 @@ let stopRepositoryWatchErrorListener: UnlistenFn | null = null;
 let stopWindowFocusListener: UnlistenFn | null = null;
 
 const activeRemote = computed(() => snapshot.value?.remotes.find((remote) => remote.name === selectedRemoteName.value) ?? null);
+function remoteProfileIdentity(remote: RemoteProfile | null): string | null {
+  if (!remote) return null;
+  return JSON.stringify([
+    remote.name,
+    remote.fetchUrl,
+    remote.pushUrl,
+    remote.endpointId,
+    remote.codeHostKind,
+  ]);
+}
+
 const canPullFromActiveRemote = computed(() => {
   const upstream = snapshot.value?.status.upstream;
   return Boolean(
@@ -302,7 +313,10 @@ const {
   publishOwnersLoading,
   pullRequestModalShown,
   publishModalShown,
+  forkModalShown,
   pullRequestForm,
+  pullRequestHead,
+  forkForm,
   publishForm,
   publishOwners,
   publishOwnersError,
@@ -310,6 +324,9 @@ const {
   publishEndpoints,
   publishAccounts,
   publishAccountOptions,
+  forkAccounts,
+  forkAccountOptions,
+  forkContributionBranchRecommended,
   publishOwnerOptions,
   canPublishToSelectedOwner,
   loadRepositoryInfo,
@@ -317,6 +334,8 @@ const {
   invalidatePlatformRequests,
   openCreatePullRequest,
   createPullRequest,
+  openForkModal,
+  forkGithubRepository,
   loadPublishOwners,
   openPublishModal,
   publishGitHubRepository,
@@ -333,8 +352,10 @@ const {
   getSelectionGeneration: () => repositorySelectionGeneration,
   repositorySelectionIsCurrent,
   capabilityForEndpoint,
+  selectedRemoteName,
   applySnapshot,
   loadCapabilities,
+  refreshSnapshot,
   reportError,
   message,
 });
@@ -547,16 +568,16 @@ function capabilityForEndpoint(endpointId: string | null): CodeHostCapabilities 
   if (!endpoint) return emptyCapabilities;
   const portScopedCli = endpointHasExplicitPort(endpoint.gitHost);
   if (endpoint.kind === "gitHub") {
-    return { repositoryInfo: !portScopedCli, repositoryPublish: !portScopedCli, pullRequestsRead: !portScopedCli, pullRequestsWrite: !portScopedCli, accountImport: !portScopedCli, accountBindings: true, patKeychain: true };
+    return { repositoryInfo: !portScopedCli, repositoryPublish: !portScopedCli, repositoryFork: !portScopedCli, pullRequestsRead: !portScopedCli, pullRequestsWrite: !portScopedCli, accountImport: !portScopedCli, accountBindings: true, patKeychain: true };
   }
   if (endpoint.kind === "gitLab") {
-    return { repositoryInfo: false, repositoryPublish: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: !portScopedCli, accountBindings: true, patKeychain: true };
+    return { repositoryInfo: false, repositoryPublish: false, repositoryFork: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: !portScopedCli, accountBindings: true, patKeychain: true };
   }
   if (endpoint.kind === "gitee") {
-    return { repositoryInfo: false, repositoryPublish: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: false, accountBindings: true, patKeychain: true };
+    return { repositoryInfo: false, repositoryPublish: false, repositoryFork: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: false, accountBindings: true, patKeychain: true };
   }
   if (endpoint.kind === "gitea" || endpoint.kind === "forgejo" || endpoint.kind === "genericGit") {
-    return { repositoryInfo: false, repositoryPublish: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: false, accountBindings: true, patKeychain: true };
+    return { repositoryInfo: false, repositoryPublish: false, repositoryFork: false, pullRequestsRead: false, pullRequestsWrite: false, accountImport: false, accountBindings: true, patKeychain: true };
   }
   return emptyCapabilities;
 }
@@ -1398,15 +1419,20 @@ async function runNetworkAction(
   capturedTarget?: NetworkActionTarget,
 ): Promise<void> {
   const repositoryPath = capturedTarget?.repositoryPath ?? activeRepositoryPath.value;
-  const remoteName = capturedTarget?.remoteName ?? activeRemote.value?.name;
+  const currentRemote = activeRemote.value;
+  const remoteName = capturedTarget?.remoteName ?? currentRemote?.name;
+  const remoteIdentity = capturedTarget?.remoteIdentity ?? remoteProfileIdentity(currentRemote);
   const selectionGeneration = capturedTarget?.selectionGeneration ?? repositorySelectionGeneration;
-  if (!repositoryPath || !remoteName) {
+  if (!repositoryPath || !remoteName || !remoteIdentity) {
     message.warning(t("workspace.controller.selectARemoteFirst"));
     return;
   }
+  const activeRemoteMatchesTarget = () =>
+    activeRemote.value?.name === remoteName
+    && remoteProfileIdentity(activeRemote.value) === remoteIdentity;
   if (
     !repositorySelectionIsCurrent(repositoryPath, selectionGeneration) ||
-    (capturedTarget && activeRemote.value?.name !== remoteName)
+    (capturedTarget && !activeRemoteMatchesTarget())
   ) {
     message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
     return;
@@ -1434,20 +1460,61 @@ async function runNetworkAction(
         ? t("workspace.controller.forcePushWithLease")
         : t("workspace.controller.push");
     }
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && activeRemoteMatchesTarget()) {
       message.success(t("workspace.controller.actionCompleted", { action: actionLabel }));
       await refreshSnapshot();
     }
   } catch (error) {
-    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      reportError(
-        error,
-        action === "fetch"
-          ? t("workspace.controller.fetchFailed")
-          : action === "pull"
-            ? t("workspace.controller.pullFailed")
-            : t("workspace.controller.pushFailed"),
-      );
+    if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && activeRemoteMatchesTarget()) {
+      let failureAction: string;
+      if (action === "fetch") {
+        failureAction = t("workspace.controller.fetchFailed");
+      } else if (action === "pull") {
+        failureAction = t("workspace.controller.pullFailed");
+      } else {
+        failureAction = t("workspace.controller.pushFailed");
+      }
+      const canOfferFork = action === "push"
+        && isAppError(error)
+        && error.code === "git_push_permission_denied"
+        && activeCapabilities.value.repositoryFork
+        && activeRemoteMatchesTarget();
+      if (!canOfferFork) {
+        reportError(error, failureAction);
+      } else {
+        const deniedBranch = snapshot.value?.status.branch;
+        let originalPushErrorReported = false;
+        const reportOriginalPushError = () => {
+          if (
+            originalPushErrorReported
+            || !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+            || !activeRemoteMatchesTarget()
+          ) return;
+          originalPushErrorReported = true;
+          reportError(error, failureAction);
+        };
+        dialog.warning({
+          title: t("workspace.controller.pushPermissionDenied"),
+          content: t("workspace.controller.pushPermissionDeniedOfferFork", { remote: remoteName }),
+          positiveText: t("workspace.controller.forkAndPush"),
+          negativeText: t("workspace.controller.cancel"),
+          onPositiveClick: () => {
+            if (
+              !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+              || !activeRemoteMatchesTarget()
+              || !activeCapabilities.value.repositoryFork
+              || !deniedBranch
+              || snapshot.value?.status.branch !== deniedBranch
+            ) {
+              message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+              return;
+            }
+            openForkModal();
+          },
+          onNegativeClick: reportOriginalPushError,
+          onClose: reportOriginalPushError,
+        });
+      }
     }
   } finally {
     releaseOperation();
@@ -1458,10 +1525,13 @@ async function runNetworkAction(
 }
 
 function confirmForcePush(): void {
-  if (!activeRepositoryPath.value || !activeRemote.value) return;
+  const remote = activeRemote.value;
+  const remoteIdentity = remoteProfileIdentity(remote);
+  if (!activeRepositoryPath.value || !remote || !remoteIdentity) return;
   const target: NetworkActionTarget = {
     repositoryPath: activeRepositoryPath.value,
-    remoteName: activeRemote.value.name,
+    remoteName: remote.name,
+    remoteIdentity,
     selectionGeneration: repositorySelectionGeneration,
   };
   dialog.error({
@@ -1870,6 +1940,7 @@ onBeforeUnmount(() => {
     blameModalShown,
     reflogModalShown,
     pullRequestModalShown,
+    forkModalShown,
     squashModalShown,
     publishModalShown,
     tagModalShown,
@@ -1895,6 +1966,8 @@ onBeforeUnmount(() => {
     lfsTrackForm,
     externalEditorForm,
     pullRequestForm,
+    pullRequestHead,
+    forkForm,
     squashForm,
     publishForm,
     tagForm,
@@ -1932,6 +2005,9 @@ onBeforeUnmount(() => {
     publishEndpoints,
     publishAccounts,
     publishAccountOptions,
+    forkAccounts,
+    forkAccountOptions,
+    forkContributionBranchRecommended,
     publishOwnerOptions,
     canPublishToSelectedOwner,
     publishOwnersError,
@@ -2081,6 +2157,8 @@ onBeforeUnmount(() => {
     loadPullRequests,
     openCreatePullRequest,
     createPullRequest,
+    openForkModal,
+    forkGithubRepository,
     openPublishModal,
     loadPublishOwners,
     publishGitHubRepository,

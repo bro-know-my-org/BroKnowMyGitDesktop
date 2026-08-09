@@ -110,6 +110,7 @@ pub fn run() {
             commands::get_codehost_repository_info,
             commands::list_pull_requests,
             commands::create_pull_request,
+            commands::fork_github_repository,
             commands::list_github_publish_owners,
             commands::publish_github_repository,
             commands::list_system_fonts,

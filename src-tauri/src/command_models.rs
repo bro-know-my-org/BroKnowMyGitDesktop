@@ -19,6 +19,15 @@ pub struct RepositorySnapshot {
     pub operation: Option<GitOperationState>,
 }
 
+/// The branch command reports whether its fresh status check actually created
+/// a stash, rather than making callers infer that from the requested option.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateBranchResult {
+    pub snapshot: RepositorySnapshot,
+    pub stashed_local_changes: bool,
+}
+
 /// State for an operation that Git has paused in the working tree.  Conflict
 /// detection comes from the same status snapshot that is rendered in the UI.
 #[derive(Debug, Clone, Serialize)]

@@ -47,6 +47,7 @@ export interface CodeHostEndpoint {
 export interface CodeHostCapabilities {
   repositoryInfo: boolean;
   repositoryPublish: boolean;
+  repositoryFork: boolean;
   pullRequestsRead: boolean;
   pullRequestsWrite: boolean;
   accountImport: boolean;
@@ -237,6 +238,11 @@ export interface RepositorySnapshot {
   operation: GitOperationState | null;
 }
 
+export interface CreateBranchResult {
+  snapshot: RepositorySnapshot;
+  stashedLocalChanges: boolean;
+}
+
 export interface NetworkOperationResult {
   summary: string;
 }
@@ -274,6 +280,17 @@ export interface GitHubPublishOwner {
   name: string | null;
   kind: "user" | "organization";
   canCreateRepositories: boolean;
+}
+
+export interface GitHubForkSummary {
+  fullName: string;
+  ownerLogin: string;
+  repositoryName: string;
+  webUrl: string;
+  cloneUrl: string;
+  sshUrl: string;
+  remoteName: string;
+  sourceRemoteName: string;
 }
 
 export interface CreatePullRequestInput {
@@ -316,4 +333,6 @@ export interface CreateBranchInput {
   repositoryPath: string;
   name: string;
   checkout: boolean;
+  /** Save tracked and untracked worktree changes before creating and switching. */
+  stashLocalChanges?: boolean;
 }

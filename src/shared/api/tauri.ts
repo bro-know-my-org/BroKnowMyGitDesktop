@@ -27,10 +27,12 @@ import type {
   CodeHostRepositoryInfo,
   CreatePullRequestInput,
   CreateBranchInput,
+  CreateBranchResult,
   DiscardChangesPreview,
   ExternalEditorConfig,
   GitOperationKind,
   GitHubPublishOwner,
+  GitHubForkSummary,
   GitStatusEntry,
   InitRepositoryInput,
   LfsStatus,
@@ -80,6 +82,7 @@ const builtinCapabilities: Record<string, CodeHostCapabilities> = {
   "github.com": {
     repositoryInfo: true,
     repositoryPublish: true,
+    repositoryFork: true,
     pullRequestsRead: true,
     pullRequestsWrite: true,
     accountImport: true,
@@ -89,6 +92,7 @@ const builtinCapabilities: Record<string, CodeHostCapabilities> = {
   "gitlab.com": {
     repositoryInfo: false,
     repositoryPublish: false,
+    repositoryFork: false,
     pullRequestsRead: false,
     pullRequestsWrite: false,
     accountImport: true,
@@ -98,6 +102,7 @@ const builtinCapabilities: Record<string, CodeHostCapabilities> = {
   "gitee.com": {
     repositoryInfo: false,
     repositoryPublish: false,
+    repositoryFork: false,
     pullRequestsRead: false,
     pullRequestsWrite: false,
     accountImport: false,
@@ -109,6 +114,7 @@ const builtinCapabilities: Record<string, CodeHostCapabilities> = {
 const unavailableCapabilities: CodeHostCapabilities = {
   repositoryInfo: false,
   repositoryPublish: false,
+  repositoryFork: false,
   pullRequestsRead: false,
   pullRequestsWrite: false,
   accountImport: false,
@@ -125,6 +131,7 @@ function browserCapabilities(endpointId: string): CodeHostCapabilities {
     return {
       repositoryInfo: false,
       repositoryPublish: false,
+      repositoryFork: false,
       pullRequestsRead: false,
       pullRequestsWrite: false,
       accountImport: false,
@@ -272,11 +279,11 @@ function stashBrowserChanges(
   message: string,
   messageKey?: MessageKey,
   includeUntracked = true,
-): void {
+): boolean {
   const entries = includeUntracked
     ? snapshot.status.entries
     : snapshot.status.entries.filter((entry) => !isBrowserUntrackedEntry(entry));
-  if (!entries.length) return;
+  if (!entries.length) return false;
   const commitId = `browser-stash-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   browserStashMessageDescriptors.set(commitId, {
     branch: snapshot.status.branch || "HEAD",
@@ -293,6 +300,7 @@ function stashBrowserChanges(
   snapshot.status.entries = includeUntracked
     ? []
     : snapshot.status.entries.filter(isBrowserUntrackedEntry);
+  return true;
 }
 let browserPullRequests = rawCopy(initialBrowserPullRequests);
 let browserAccounts = rawCopy(initialBrowserAccounts);
@@ -514,6 +522,33 @@ function browserRemoteUrlMatchesEndpoint(url: string, endpointId: string): boole
 function browserRemoteMatchesEndpoint(remote: RemoteProfile, endpointId: string): boolean {
   return browserRemoteUrlMatchesEndpoint(remote.fetchUrl, endpointId)
     && browserRemoteUrlMatchesEndpoint(remote.pushUrl, endpointId);
+}
+
+function isValidBrowserRemoteName(value: string): boolean {
+  return value.length > 0
+    && value.trim() === value
+    && !value.startsWith("-")
+    && value !== "@"
+    && !/[\u0000-\u001F\u007F-\u009F]/u.test(value)
+    && !value.includes(" ")
+    && !/[~^:?*[\\]/u.test(value)
+    && !value.includes("..")
+    && !value.includes("@{")
+    && !value.startsWith("/")
+    && !value.endsWith("/")
+    && value.split("/").every((component) =>
+      component.length > 0
+      && !component.startsWith(".")
+      && !component.endsWith(".")
+      && !component.endsWith(".lock"));
+}
+
+function isValidBrowserGitHubRouteSegment(value: string): boolean {
+  return value.length > 0
+    && value.length <= 100
+    && value !== "."
+    && value !== ".."
+    && /^[A-Za-z0-9._-]+$/u.test(value);
 }
 
 export const api = {
@@ -1024,16 +1059,20 @@ export const api = {
     });
   },
 
-  createBranch(input: CreateBranchInput): Promise<RepositorySnapshot> {
+  createBranch(input: CreateBranchInput): Promise<CreateBranchResult> {
     return request("create_branch", input, () => {
       requireBrowserSnapshot(input.repositoryPath);
       if (!input.name.trim()) {
         throw browserError("branch_name_required");
       }
-      return updateMockSnapshot((snapshot) => {
+      let stashedLocalChanges = false;
+      const snapshot = updateMockSnapshot((snapshot) => {
         const name = input.name.trim();
         if (snapshot.branches.some((branch) => branch.name === name)) {
           throw browserError("branch_already_exists");
+        }
+        if (input.checkout && input.stashLocalChanges) {
+          stashedLocalChanges = stashBrowserChanges(snapshot, "", "demo.stash.autoBeforeSwitch");
         }
         const sourceTip = snapshot.status.branch ? browserBranchTips.get(snapshot.status.branch) ?? null : null;
         if (input.checkout) {
@@ -1047,6 +1086,7 @@ export const api = {
         browserBranchTips.set(name, sourceTip);
         if (input.checkout) syncBrowserBranchStatus(snapshot);
       });
+      return { snapshot, stashedLocalChanges };
     });
   },
 
@@ -1844,6 +1884,71 @@ export const api = {
       browserPullRequests = [pullRequest, ...browserPullRequests];
       return localizeBrowserPullRequest(pullRequest);
     });
+  },
+
+  forkGitHubRepository(
+    repositoryPath: string,
+    remoteName: string,
+    endpointId: string,
+    accountProfileId: string,
+    forkRemoteName: string,
+  ): Promise<GitHubForkSummary> {
+    return request(
+      "fork_github_repository",
+      { repositoryPath, remoteName, endpointId, accountProfileId, forkRemoteName },
+      () => {
+        const snapshot = requireBrowserSnapshot(repositoryPath);
+        const sourceRemote = requireBrowserGitHubRemote(repositoryPath, remoteName);
+        const endpoint = browserEndpoints.find((entry) => entry.id === endpointId);
+        if (
+          !endpoint
+          || endpoint.kind !== "gitHub"
+          || !browserRemoteMatchesEndpoint(sourceRemote, endpointId)
+        ) throw browserError("adapter_endpoint_mismatch");
+        const account = requireBrowserAccountForEndpoint(accountProfileId, endpointId);
+        if (account.authMethod !== "ghCli") throw browserError("github_fork_auth_unsupported");
+        if (account.status !== "available" && account.status !== "valid") {
+          throw browserError("cli_auth_unavailable");
+        }
+        const normalizedRemoteName = forkRemoteName.trim();
+        if (!isValidBrowserRemoteName(normalizedRemoteName)) throw browserError("invalid_remote_name");
+        if (normalizedRemoteName === sourceRemote.name) throw browserError("remote_already_exists");
+        if (!snapshot.status.branch || !snapshot.hasHead) throw browserError("no_commit_to_push");
+        const sourceOwner = sourceRemote.parsed.namespace;
+        const repositoryName = sourceRemote.parsed.repository;
+        if (
+          !sourceOwner
+          || sourceOwner.includes("/")
+          || !repositoryName
+          || !isValidBrowserGitHubRouteSegment(sourceOwner)
+          || !isValidBrowserGitHubRouteSegment(repositoryName)
+        ) throw browserError("repository_slug_unavailable");
+        const ownerLogin = account.login;
+        if (!isValidBrowserGitHubRouteSegment(ownerLogin) || ownerLogin.startsWith("-")) {
+          throw browserError("invalid_repository_name");
+        }
+        const cloneUrl = `https://${endpoint.gitHost}/${ownerLogin}/${repositoryName}.git`;
+        const sshUrl = `git@${endpoint.gitHost}:${ownerLogin}/${repositoryName}.git`;
+        const forkUrl = sourceRemote.parsed.transport === "ssh" ? sshUrl : cloneUrl;
+        const existing = snapshot.remotes.find((remote) => remote.name === normalizedRemoteName);
+        if (existing && (existing.fetchUrl !== forkUrl || existing.pushUrl !== forkUrl)) {
+          throw browserError("remote_already_exists");
+        }
+        updateMockSnapshot((nextSnapshot) => {
+          if (!existing) nextSnapshot.remotes.push(browserRemoteProfile(normalizedRemoteName, forkUrl));
+        });
+        return {
+          fullName: `${ownerLogin}/${repositoryName}`,
+          ownerLogin,
+          repositoryName,
+          webUrl: `https://${endpoint.gitHost}/${ownerLogin}/${repositoryName}`,
+          cloneUrl,
+          sshUrl,
+          remoteName: normalizedRemoteName,
+          sourceRemoteName: sourceRemote.name,
+        };
+      },
+    );
   },
 
   publishGitHubRepository(

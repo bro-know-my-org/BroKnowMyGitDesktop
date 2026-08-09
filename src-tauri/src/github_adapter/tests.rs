@@ -20,6 +20,23 @@ mod tests {
     }
 
     #[test]
+    fn github_api_error_code_only_marks_missing_resources_as_not_found() {
+        assert_eq!(
+            github_api_error_code(b"HTTP 404: Not Found"),
+            "github_api_not_found"
+        );
+        assert_eq!(github_api_error_code(b"resource not found"), "github_api_failed");
+        assert_eq!(
+            github_api_error_code(b"authentication token expired"),
+            "github_api_failed"
+        );
+        assert_eq!(
+            github_api_error_code(b"rate limit exceeded"),
+            "github_api_failed"
+        );
+    }
+
+    #[test]
     fn shared_request_deadline_caps_pipe_collection_time() {
         let error = remaining_gh_collection_timeout(Instant::now() - Duration::from_millis(1))
             .expect_err("an expired operation deadline must not wait for another pipe timeout");

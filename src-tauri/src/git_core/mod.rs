@@ -78,7 +78,7 @@ pub use models::{
     CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions, RemoteUrlKind,
     RepositorySnapshot,
 };
-pub(crate) use validation::validate_git_remote_url;
+pub(crate) use validation::{validate_git_remote_url, validate_ref_name};
 
 impl Default for GitCore {
     fn default() -> Self {

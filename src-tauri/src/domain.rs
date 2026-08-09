@@ -122,6 +122,7 @@ pub fn github_endpoint_has_gh_compatible_api(endpoint: &CodeHostEndpoint) -> boo
 pub struct CodeHostCapabilities {
     pub repository_info: bool,
     pub repository_publish: bool,
+    pub repository_fork: bool,
     pub pull_requests_read: bool,
     pub pull_requests_write: bool,
     pub account_import: bool,
@@ -134,6 +135,7 @@ impl CodeHostCapabilities {
         Self {
             repository_info: false,
             repository_publish: false,
+            repository_fork: false,
             pull_requests_read: false,
             pull_requests_write: false,
             account_import: false,
@@ -150,6 +152,7 @@ impl CodeHostCapabilities {
                 // adapter. Git itself still supports PAT/system/SSH bindings.
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: false,
@@ -162,6 +165,7 @@ impl CodeHostCapabilities {
                 // token to an implicitly derived API destination.
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: false,
@@ -171,6 +175,7 @@ impl CodeHostCapabilities {
             CodeHostKind::GitHub => Self {
                 repository_info: true,
                 repository_publish: true,
+                repository_fork: true,
                 pull_requests_read: true,
                 pull_requests_write: true,
                 account_import: true,
@@ -182,6 +187,7 @@ impl CodeHostCapabilities {
                 // promising CLI account import for a different port.
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: false,
@@ -191,6 +197,7 @@ impl CodeHostCapabilities {
             CodeHostKind::GitLab => Self {
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: true,
@@ -200,6 +207,7 @@ impl CodeHostCapabilities {
             CodeHostKind::Gitee => Self {
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: false,
@@ -213,6 +221,7 @@ impl CodeHostCapabilities {
             CodeHostKind::Gitea | CodeHostKind::Forgejo | CodeHostKind::GenericGit => Self {
                 repository_info: false,
                 repository_publish: false,
+                repository_fork: false,
                 pull_requests_read: false,
                 pull_requests_write: false,
                 account_import: false,

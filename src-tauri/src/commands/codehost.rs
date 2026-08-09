@@ -100,6 +100,113 @@ pub async fn create_pull_request(
 }
 
 #[tauri::command]
+pub async fn fork_github_repository(
+    repository_path: String,
+    remote_name: String,
+    endpoint_id: String,
+    account_profile_id: String,
+    fork_remote_name: String,
+    state: State<'_, AppState>,
+) -> Result<GitHubForkSummary, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        let canonical = repository.to_string_lossy().into_owned();
+        let _repository_operation_lease = state.acquire_repository_operation_lease(&canonical)?;
+        let _account_operation_lease =
+            state.acquire_account_operation_lease(&account_profile_id)?;
+        let git = GitCore::new();
+        let remote = git
+            .remotes(&repository)?
+            .into_iter()
+            .find(|remote| remote.name == remote_name)
+            .ok_or_else(|| AppError::new("remote_not_found", "找不到该 remote。"))?;
+        let fetch_urls = git.remote_urls_for_operation(&repository, &remote_name, false)?;
+        let push_urls = git.remote_urls_for_operation(&repository, &remote_name, true)?;
+        let store = state.snapshot()?;
+        let endpoint = store
+            .endpoint(&endpoint_id)
+            .ok_or_else(|| AppError::new("endpoint_not_found", "找不到该代码托管 Endpoint。"))?;
+        if endpoint.kind != CodeHostKind::GitHub
+            || !codehost_adapter_urls_match_endpoint(&fetch_urls, &push_urls, &endpoint)
+        {
+            return Err(AppError::new(
+                "github_adapter_auth_unsupported",
+                "GitHub 平台信息需要与当前 gh 登录匹配的账号绑定。",
+            ));
+        }
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_profile_id)
+            .cloned()
+            .ok_or_else(|| AppError::new("account_not_found", "找不到用于 Fork 的账号。"))?;
+        if account.endpoint_id != endpoint.id || account.auth_method != AuthenticationMethod::GhCli
+        {
+            return Err(AppError::new(
+                "github_fork_auth_unsupported",
+                "Fork GitHub 仓库需要与 Endpoint 匹配的 gh CLI 账号。",
+            ));
+        }
+        let fork_remote_name = fork_remote_name.trim();
+        validate_ref_name(fork_remote_name, "远程名称")
+            .map_err(|_| AppError::new("invalid_remote_name", "远程名称无效。"))?;
+        if fork_remote_name == remote.name {
+            return Err(AppError::new(
+                "remote_already_exists",
+                "Fork remote 名称不能和源 remote 相同。",
+            ));
+        }
+        let mut context_remote = remote.clone();
+        context_remote.endpoint_id = Some(endpoint.id.clone());
+        context_remote.code_host_kind = endpoint.kind.clone();
+        let context = AdapterContext::new(endpoint.clone(), context_remote, account.clone())?;
+        let adapter = GitHubAdapter;
+        let mut fork = adapter.fork_repository(&context, fork_remote_name)?;
+        let fork_url = if matches!(remote.parsed.transport, crate::domain::RemoteTransport::Ssh) {
+            fork.ssh_url.clone()
+        } else {
+            fork.clone_url.clone()
+        };
+        validate_codehost_binding_url(&fork_url, &endpoint)?;
+        let existing_remote = git
+            .remotes(&repository)?
+            .into_iter()
+            .find(|candidate| candidate.name == fork_remote_name);
+        match existing_remote {
+            Some(existing) => {
+                let existing_url = git
+                    .remote_urls_for_operation(&repository, &existing.name, false)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        AppError::new("remote_not_found", "找不到已有 Fork remote 的地址。")
+                    })?;
+                let existing_push_url = git
+                    .remote_urls_for_operation(&repository, &existing.name, true)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        AppError::new("remote_not_found", "找不到已有 Fork remote 的推送地址。")
+                    })?;
+                if existing_url != fork_url || existing_push_url != fork_url {
+                    return Err(AppError::new(
+                        "remote_already_exists",
+                        "仓库中已存在同名 remote，请换一个 Fork remote 名称。",
+                    ));
+                }
+            }
+            None => git.add_remote(&repository, fork_remote_name, &fork_url)?,
+        }
+        fork.remote_name = fork_remote_name.to_owned();
+        fork.source_remote_name = remote.name;
+        Ok(fork)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "GitHub 后台任务未能完成。"))?
+}
+
+#[tauri::command]
 pub async fn publish_github_repository(
     repository_path: String,
     endpoint_id: String,
