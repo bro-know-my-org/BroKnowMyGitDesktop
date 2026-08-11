@@ -307,6 +307,7 @@ const canPullFromActiveRemote = computed(() => {
 });
 const {
   repositoryInfo,
+  repositoryWebUrl,
   pullRequests,
   platformLoading,
   pullRequestsLoading,
@@ -330,6 +331,7 @@ const {
   publishOwnerOptions,
   canPublishToSelectedOwner,
   loadRepositoryInfo,
+  openCodeHostUrl,
   loadPullRequests,
   invalidatePlatformRequests,
   openCreatePullRequest,
@@ -557,6 +559,7 @@ const {
   authenticationTagType,
   setDefaultCandidate,
   confirmRemoveAccount,
+  openCodeHostUrl,
   confirmPopStash,
   confirmDropStash,
 });
@@ -1883,6 +1886,7 @@ onBeforeUnmount(() => {
     selectedRemoteName,
     activeCapabilities,
     repositoryInfo,
+    repositoryWebUrl,
     pullRequests,
     selectedChange,
     diffText,
@@ -2154,6 +2158,7 @@ onBeforeUnmount(() => {
     setDefaultCandidate,
     confirmRemoveAccount,
     loadRepositoryInfo,
+    openCodeHostUrl,
     loadPullRequests,
     openCreatePullRequest,
     createPullRequest,

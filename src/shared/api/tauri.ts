@@ -552,6 +552,25 @@ function isValidBrowserGitHubRouteSegment(value: string): boolean {
 }
 
 export const api = {
+  async openExternalUrl(url: string): Promise<void> {
+    await request("open_external_url", { url }, () => {
+      const trimmedUrl = url.trim();
+      const parsed = new URL(trimmedUrl);
+      const serialized = parsed.toString();
+      if (
+        !(["http:", "https:"] as string[]).includes(parsed.protocol)
+        || !parsed.hostname
+        || parsed.username
+        || parsed.password
+        || serialized !== `${parsed.origin}${parsed.pathname}`
+        || new TextEncoder().encode(trimmedUrl).length > 4096
+      ) {
+        throw browserError("command_failed");
+      }
+      window.open(serialized, "_blank", "noopener,noreferrer");
+    });
+  },
+
   listRepositories(refreshOwners = false): Promise<RepositoryRecord[]> {
     return request("list_repositories", { refreshOwners }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
   },

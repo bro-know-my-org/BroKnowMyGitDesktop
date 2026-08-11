@@ -39,11 +39,12 @@ export default defineComponent({
                   </n-grid-item>
                 </n-grid>
 
-                <n-card v-if="activeCapabilities.repositoryInfo || activeCapabilities.pullRequestsRead || activeCapabilities.pullRequestsWrite" size="small" :title="t('repository.overview.gitService')" class="platform-card">
+                <n-card v-if="repositoryWebUrl || activeCapabilities.repositoryInfo || activeCapabilities.pullRequestsRead || activeCapabilities.pullRequestsWrite" size="small" :title="t('repository.overview.gitService')" class="platform-card">
                   <n-space>
                     <n-button v-if="activeCapabilities.repositoryInfo" :loading="platformLoading" @click="loadRepositoryInfo">{{ t('repository.overview.loadRepositoryInformation') }}</n-button>
                     <n-button v-if="activeCapabilities.pullRequestsRead" :loading="pullRequestsLoading" @click="loadPullRequests">{{ t('repository.overview.loadPullRequests') }}</n-button>
                     <n-button v-if="activeCapabilities.pullRequestsWrite" type="primary" @click="openCreatePullRequest">{{ t('repository.overview.createPullRequest') }}</n-button>
+                    <n-button v-if="repositoryWebUrl" tertiary @click="openCodeHostUrl(repositoryWebUrl)">{{ t('workspace.header.openRepositoryWebsite') }}</n-button>
                   </n-space>
                   <n-descriptions v-if="repositoryInfo" :column="2" size="small" class="repository-info">
                     <n-descriptions-item :label="t('repository.overview.repository')">{{ repositoryInfo.fullName }}</n-descriptions-item>

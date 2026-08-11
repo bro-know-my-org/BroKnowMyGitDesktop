@@ -1,5 +1,5 @@
-import { computed, reactive, ref, watch, type ComputedRef, type Ref } from "vue";
-import type { MessageApi } from "naive-ui";
+import { computed, h, reactive, ref, watch, type ComputedRef, type Ref } from "vue";
+import { NButton, type MessageApi } from "naive-ui";
 import { api, isAppError } from "../../../shared/api/tauri";
 import { authenticationStatusLabel, localizedErrorMessage, t } from "../../../shared/i18n";
 import type {
@@ -186,6 +186,45 @@ export function useRepositoryPlatform({
     && !publishOwnersError.value
     && publishOwners.value.some((owner) =>
       owner.login === publishForm.ownerLogin && owner.canCreateRepositories));
+
+  const repositoryWebUrl = computed(() => {
+    if (repositoryInfo.value?.webUrl) return repositoryInfo.value.webUrl;
+    const remote = activeRemote.value;
+    const endpoint = endpoints.value.find((item) => item.id === remote?.endpointId);
+    const namespace = remote?.parsed.namespace;
+    const repository = remote?.parsed.repository;
+    const supportsConventionalRepositoryRoute = endpoint
+      && ["gitHub", "gitLab", "gitee", "gitea", "forgejo"].includes(endpoint.kind);
+    if (!supportsConventionalRepositoryRoute || !endpoint.webUrl || !namespace || !repository) return null;
+    const encodedPath = [...namespace.split("/"), repository]
+      .filter(Boolean)
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    return encodedPath ? `${endpoint.webUrl.replace(/\/+$/u, "")}/${encodedPath}` : null;
+  });
+
+  async function openCodeHostUrl(url: string): Promise<void> {
+    try {
+      await api.openExternalUrl(url);
+    } catch (error) {
+      reportError(error, t("workspace.controller.couldNotOpenWebPage"));
+    }
+  }
+
+  function showSuccessWithLink(messageText: string, url: string, actionText: string): void {
+    message.success(
+      () => h("span", [
+        messageText,
+        " ",
+        h(
+          NButton,
+          { size: "small", text: true, type: "primary", onClick: () => void openCodeHostUrl(url) },
+          { default: () => actionText },
+        ),
+      ]),
+      { duration: 8000, keepAliveOnHover: true },
+    );
+  }
 
   async function loadRepositoryInfo(): Promise<void> {
     const repositoryPath = activeRepositoryPath.value;
@@ -461,10 +500,14 @@ export function useRepositoryPlatform({
       forkForm.branchName = "";
       forkForm.stashLocalChanges = false;
       prepareCreatePullRequest(`${fork.ownerLogin}:${contributionBranch}`);
-      message.success(t("workspace.controller.repositoryForkedAndBranchPushed", {
-        branch: contributionBranch,
-        remote: fork.remoteName,
-      }));
+      showSuccessWithLink(
+        t("workspace.controller.repositoryForkedAndBranchPushed", {
+          branch: contributionBranch,
+          remote: fork.remoteName,
+        }),
+        fork.webUrl,
+        t("workspace.controller.openFork"),
+      );
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
         reportError(error, t("workspace.controller.couldNotForkGithubRepository"));
@@ -541,7 +584,11 @@ export function useRepositoryPlatform({
       pullRequestRemoteName.value = null;
       pullRequestRemoteIdentity.value = null;
       pullRequestSelectionGeneration.value = null;
-      message.success(t("workspace.controller.pullRequestNumberCreated", { number: pullRequest.number }));
+      showSuccessWithLink(
+        t("workspace.controller.pullRequestNumberCreated", { number: pullRequest.number }),
+        pullRequest.webUrl,
+        t("workspace.controller.openPullRequest"),
+      );
     } catch (error) {
       if (
         repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
@@ -636,14 +683,20 @@ export function useRepositoryPlatform({
     }
     const finishMutation = beginRepositoryMutation(repositoryPath);
     if (!finishMutation) return;
+    const publishedEndpointId = publishForm.endpointId;
+    const publishedAccountId = publishForm.accountId;
+    const publishedOwnerLogin = publishForm.ownerLogin;
+    const publishedRepositoryName = publishForm.name.trim();
+    const publishedVisibility = publishForm.isPrivate;
+    const publishedEndpoint = endpoints.value.find((item) => item.id === publishedEndpointId);
     try {
       const nextSnapshot = await api.publishGitHubRepository(
         repositoryPath,
-        publishForm.endpointId,
-        publishForm.accountId,
-        publishForm.ownerLogin,
-        publishForm.name.trim(),
-        publishForm.isPrivate,
+        publishedEndpointId,
+        publishedAccountId,
+        publishedOwnerLogin,
+        publishedRepositoryName,
+        publishedVisibility,
       );
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || !applySnapshot(nextSnapshot)) {
         publishModalShown.value = false;
@@ -654,7 +707,18 @@ export function useRepositoryPlatform({
       publishModalShown.value = false;
       publishRepositoryPath.value = null;
       publishSelectionGeneration.value = null;
-      message.success(t("workspace.controller.repositoryPublishedToGithubAndOriginConfigured"));
+      const publishedUrl = publishedEndpoint?.webUrl
+        ? `${publishedEndpoint.webUrl.replace(/\/+$/u, "")}/${encodeURIComponent(publishedOwnerLogin)}/${encodeURIComponent(publishedRepositoryName)}`
+        : null;
+      if (publishedUrl) {
+        showSuccessWithLink(
+          t("workspace.controller.repositoryPublishedToGithubAndOriginConfigured"),
+          publishedUrl,
+          t("workspace.controller.openRepositoryWebsite"),
+        );
+      } else {
+        message.success(t("workspace.controller.repositoryPublishedToGithubAndOriginConfigured"));
+      }
       await loadCapabilities(repositoryPath, selectionGeneration).catch(() => undefined);
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
@@ -672,6 +736,7 @@ export function useRepositoryPlatform({
 
   return {
     repositoryInfo,
+    repositoryWebUrl,
     pullRequests,
     platformLoading,
     pullRequestsLoading,
@@ -695,6 +760,7 @@ export function useRepositoryPlatform({
     publishOwnerOptions,
     canPublishToSelectedOwner,
     loadRepositoryInfo,
+    openCodeHostUrl,
     loadPullRequests,
     invalidatePlatformRequests,
     openCreatePullRequest,

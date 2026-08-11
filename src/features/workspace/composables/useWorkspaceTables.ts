@@ -35,6 +35,7 @@ interface WorkspaceTableDependencies {
   authenticationTagType: (status: AccountProfile["status"]) => "default" | "success" | "warning" | "error";
   setDefaultCandidate: (account: AccountProfile) => MaybePromiseVoid;
   confirmRemoveAccount: (account: AccountProfile) => void;
+  openCodeHostUrl: (url: string) => MaybePromiseVoid;
   confirmPopStash: (stash: StashEntry) => void;
   confirmDropStash: (stash: StashEntry) => void;
 }
@@ -72,6 +73,7 @@ export function useWorkspaceTables(dependencies: WorkspaceTableDependencies) {
     authenticationTagType,
     setDefaultCandidate,
     confirmRemoveAccount,
+    openCodeHostUrl,
     confirmPopStash,
     confirmDropStash,
   } = dependencies;
@@ -383,6 +385,16 @@ const pullRequestColumns = computed<DataTableColumns<PullRequestSummary>>(() => 
   { title: t("workspace.tables.author"), key: "author", width: 120 },
   { title: t("workspace.tables.status"), key: "state", width: 90 },
   { title: t("workspace.tables.updated"), key: "updatedAt", width: 110, render: (item) => item.updatedAt || "—" },
+  {
+    title: t("workspace.tables.actions"),
+    key: "actions",
+    width: 80,
+    render: (item) => h(
+      NButton,
+      { size: "tiny", tertiary: true, onClick: () => void openCodeHostUrl(item.webUrl) },
+      { default: () => t("workspace.tables.open") },
+    ),
+  },
 ]);
 
 const stashColumns = computed<DataTableColumns<StashEntry>>(() => [

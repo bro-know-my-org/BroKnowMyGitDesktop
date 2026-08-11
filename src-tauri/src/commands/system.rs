@@ -1,6 +1,9 @@
 use crate::app_error::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use tauri::AppHandle;
+use tauri_plugin_opener::OpenerExt;
+use url::Url;
 
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -55,6 +58,35 @@ pub async fn list_system_fonts() -> Result<Vec<SystemFontFamily>, AppError> {
     tauri::async_runtime::spawn_blocking(collect_system_fonts)
         .await
         .map_err(|_| AppError::new("command_failed", "系统字体列表读取任务未能完成。"))
+}
+
+#[tauri::command]
+pub fn open_external_url(app: AppHandle, url: String) -> Result<(), AppError> {
+    let url = validated_external_url(&url)?;
+    app.opener()
+        .open_url(url.to_string(), None::<String>)
+        .map_err(|_| AppError::new("command_failed", "无法调用系统默认浏览器。"))
+}
+
+fn validated_external_url(value: &str) -> Result<Url, AppError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 4096 {
+        return Err(AppError::new("command_failed", "网页地址无效。"));
+    }
+    let url = Url::parse(value).map_err(|_| AppError::new("command_failed", "网页地址无效。"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AppError::new(
+            "command_failed",
+            "只允许打开不含凭据的 HTTP 或 HTTPS 网页。",
+        ));
+    }
+    Ok(url)
 }
 
 fn collect_system_fonts() -> Vec<SystemFontFamily> {
@@ -636,5 +668,27 @@ fixed=Noto Sans Mono,11,-1,5,50,0,0,0,0,0
             split_pango_family_and_style("Arial Black", &installed),
             ("Arial Black", String::new())
         );
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validated_external_url;
+
+    #[test]
+    fn external_urls_only_allow_credential_free_http_pages() {
+        assert!(validated_external_url("https://github.com/example/project/pull/1").is_ok());
+        assert!(validated_external_url("http://git.example.test/group/project").is_ok());
+        assert!(validated_external_url("file:///tmp/project").is_err());
+        assert!(validated_external_url("javascript:alert(1)").is_err());
+        assert!(validated_external_url("https://token@example.test/project").is_err());
+        assert!(
+            validated_external_url("https://example.test/project?access_token=secret").is_err()
+        );
+        assert!(
+            validated_external_url("https://example.test/project#access_token=secret").is_err()
+        );
+        assert!(validated_external_url("https://example.test/project?").is_err());
+        assert!(validated_external_url("https://example.test/project#").is_err());
     }
 }

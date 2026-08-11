@@ -16,6 +16,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(AppState::load(&app_data_dir)?);
@@ -115,6 +116,7 @@ pub fn run() {
             commands::publish_github_repository,
             commands::list_system_fonts,
             commands::get_system_font_preferences,
+            commands::open_external_url,
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

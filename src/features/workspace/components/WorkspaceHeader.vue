@@ -457,6 +457,15 @@ export default defineComponent({
               </n-button>
             </div>
             <div v-if="snapshot" class="topbar-utility-group">
+              <n-button
+                v-if="repositoryWebUrl"
+                size="small"
+                tertiary
+                :title="t('workspace.header.openRepositoryWebsite')"
+                @click="openCodeHostUrl(repositoryWebUrl)"
+              >
+                {{ t('workspace.header.openRepositoryWebsite') }}
+              </n-button>
               <n-dropdown
                 trigger="click"
                 placement="bottom-end"
