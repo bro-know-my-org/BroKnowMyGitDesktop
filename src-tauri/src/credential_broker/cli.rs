@@ -40,15 +40,24 @@ fn run_platform_cli_command(
     cli: PlatformCli,
     arguments: &[&str],
 ) -> Result<Output, PlatformCliCommandError> {
-    run_platform_cli_program(OsStr::new(cli.executable()), arguments)
+    let mut command = Command::new(cli.executable());
+    configure_platform_cli_auth_environment(cli, &mut command);
+    run_platform_cli_command_instance(command, arguments)
 }
 
+#[cfg(test)]
 fn run_platform_cli_program(
     executable: &OsStr,
     arguments: &[&str],
 ) -> Result<Output, PlatformCliCommandError> {
+    run_platform_cli_command_instance(Command::new(executable), arguments)
+}
+
+fn run_platform_cli_command_instance(
+    mut command: Command,
+    arguments: &[&str],
+) -> Result<Output, PlatformCliCommandError> {
     let operation_permit = PlatformCliPipeOperationPermit::acquire()?;
-    let mut command = Command::new(executable);
     configure_platform_cli_process_group(&mut command);
     command
         .args(arguments)
@@ -141,6 +150,24 @@ fn run_platform_cli_program(
         stdout,
         stderr,
     })
+}
+
+/// GitHub publication deliberately pins an account stored by `gh` instead of
+/// trusting bearer tokens inherited from the desktop process. Status and
+/// import probes must use the same credential source or the UI can report an
+/// environment-only identity as usable even though publication will reject it.
+fn configure_platform_cli_auth_environment(cli: PlatformCli, command: &mut Command) {
+    if cli != PlatformCli::Gh {
+        return;
+    }
+    for name in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        command.env_remove(name);
+    }
 }
 
 #[derive(Debug)]
@@ -332,20 +359,40 @@ fn cli_auth_status(cli: PlatformCli, hostname: &str) -> CliAuthenticationStatus 
         };
     }
 
-    let output = run_platform_cli_command(cli, &["auth", "status", "--hostname", &hostname]);
+    // `gh auth status` can exit successfully while its diagnostic says the
+    // configured token is invalid. Querying the authenticated API both proves
+    // the credential and returns the authoritative active login. Keep glab on
+    // its native status command because its API response is not shared with
+    // GitHub's compact login probe.
+    let output = match cli {
+        PlatformCli::Gh => run_platform_cli_command(
+            cli,
+            &["api", "user", "--hostname", &hostname, "--jq", ".login"],
+        ),
+        PlatformCli::Glab => {
+            run_platform_cli_command(cli, &["auth", "status", "--hostname", &hostname])
+        }
+    };
 
     match output {
-        Ok(output) if output.status.success() => CliAuthenticationStatus {
-            cli,
-            hostname,
-            login: parse_login_from_status_output(&output),
-            status: AuthenticationStatus::Valid,
-        },
-        Ok(_) => CliAuthenticationStatus {
+        Ok(output) if output.status.success() => {
+            let (login, status) = successful_cli_authentication(
+                cli,
+                output.stdout.as_slice(),
+                output.stderr.as_slice(),
+            );
+            CliAuthenticationStatus {
+                cli,
+                hostname,
+                login,
+                status,
+            }
+        }
+        Ok(output) => CliAuthenticationStatus {
             cli,
             hostname,
             login: None,
-            status: AuthenticationStatus::NeedsReauthentication,
+            status: failed_cli_authentication(cli, output.status.code(), &output.stderr),
         },
         Err(PlatformCliCommandError::NotFound) => CliAuthenticationStatus {
             cli,
@@ -359,6 +406,22 @@ fn cli_auth_status(cli: PlatformCli, hostname: &str) -> CliAuthenticationStatus 
             login: None,
             status: AuthenticationStatus::Unavailable,
         },
+    }
+}
+
+fn failed_cli_authentication(
+    cli: PlatformCli,
+    exit_code: Option<i32>,
+    stderr: &[u8],
+) -> AuthenticationStatus {
+    if cli == PlatformCli::Glab {
+        return AuthenticationStatus::NeedsReauthentication;
+    }
+    let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    if exit_code == Some(4) || diagnostic.contains("http 401") {
+        AuthenticationStatus::NeedsReauthentication
+    } else {
+        AuthenticationStatus::Unavailable
     }
 }
 
@@ -429,9 +492,14 @@ fn import_current_cli_account(
         ));
     }
 
-    // The API query asks the CLI for the account that is active now.  It does
-    // not request or expose its token, and no command changes CLI state.
-    let login = current_cli_login(cli, &hostname).ok_or_else(|| {
+    // The GitHub status probe already queried the API and captured the active
+    // login. Glab retains its separate API query after the native status check.
+    // Neither path requests or exposes a token, and no command changes state.
+    let login = match cli {
+        PlatformCli::Gh => status.login,
+        PlatformCli::Glab => current_cli_login(cli, &hostname),
+    }
+    .ok_or_else(|| {
         AppError::new(
             "cli_account_import_failed",
             "无法读取当前 CLI 认证账号的登录名。",
@@ -479,11 +547,28 @@ fn current_cli_login(cli: PlatformCli, hostname: &str) -> Option<String> {
     }
 }
 
-fn parse_login_from_status_output(output: &Output) -> Option<String> {
+fn successful_cli_authentication(
+    cli: PlatformCli,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> (Option<String>, AuthenticationStatus) {
+    let login = match cli {
+        PlatformCli::Gh => std::str::from_utf8(stdout).ok().and_then(normalized_login),
+        PlatformCli::Glab => parse_login_from_status_output(stdout, stderr),
+    };
+    let status = if cli == PlatformCli::Gh && login.is_none() {
+        AuthenticationStatus::NeedsReauthentication
+    } else {
+        AuthenticationStatus::Valid
+    };
+    (login, status)
+}
+
+fn parse_login_from_status_output(stdout: &[u8], stderr: &[u8]) -> Option<String> {
     let combined = format!(
         "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
     );
 
     for marker in [" account ", " as "] {
@@ -518,4 +603,3 @@ fn is_safe_hostname(hostname: &str) -> bool {
 fn is_safe_git_authority(authority: &str) -> bool {
     normalize_git_authority(authority).as_deref() == Some(authority)
 }
-

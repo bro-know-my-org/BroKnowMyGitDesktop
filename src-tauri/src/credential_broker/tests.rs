@@ -513,6 +513,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn github_cli_requires_an_authenticated_api_login_even_after_a_successful_exit() {
+        let (login, status) = successful_cli_authentication(
+            PlatformCli::Gh,
+            b"",
+            b"X Failed to log in: the token is invalid",
+        );
+
+        assert_eq!(login, None);
+        assert_eq!(status, AuthenticationStatus::NeedsReauthentication);
+    }
+
+    #[test]
+    fn github_cli_accepts_the_login_returned_by_the_authenticated_api() {
+        let (login, status) =
+            successful_cli_authentication(PlatformCli::Gh, b"JIAFALSEDREAM\n", b"");
+
+        assert_eq!(login.as_deref(), Some("JIAFALSEDREAM"));
+        assert_eq!(status, AuthenticationStatus::Valid);
+    }
+
+    #[test]
+    fn github_cli_only_requests_reauthentication_for_explicit_authentication_failures() {
+        assert_eq!(
+            failed_cli_authentication(PlatformCli::Gh, Some(4), b"not logged in"),
+            AuthenticationStatus::NeedsReauthentication
+        );
+        assert_eq!(
+            failed_cli_authentication(
+                PlatformCli::Gh,
+                Some(1),
+                b"gh: Requires authentication (HTTP 401)"
+            ),
+            AuthenticationStatus::NeedsReauthentication
+        );
+        for diagnostic in [
+            b"error connecting to api.github.com".as_slice(),
+            b"gh: service unavailable (HTTP 503)".as_slice(),
+        ] {
+            assert_eq!(
+                failed_cli_authentication(PlatformCli::Gh, Some(1), diagnostic),
+                AuthenticationStatus::Unavailable
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn platform_cli_runner_drains_stdout_and_stderr_while_the_child_runs() {
