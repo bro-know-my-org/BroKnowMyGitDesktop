@@ -7,6 +7,9 @@ use super::*;
 struct PushUpstream {
     local_branch: String,
     remote_branch: String,
+    pushed_commit: String,
+    tracking_reference: Option<String>,
+    previous_tracking_commit: Option<String>,
 }
 
 struct BranchUpstream {
@@ -495,19 +498,30 @@ impl GitCore {
     /// `push.default=upstream` therefore rejects an otherwise valid push.
     /// Capture the configured upstream and express it as an explicit refspec
     /// before using the immutable URL. A `--set-upstream` request is also
-    /// converted to an explicit current-branch refspec: the network child
-    /// holds the config lock, then this process records the named remote only
-    /// after the credential-bearing push has completed.
+    /// converted to an explicit immutable-commit refspec: the network child
+    /// holds the config lock, then this process establishes the named remote's
+    /// official tracking relationship only after the push has completed.
     fn push_refspecs_for_url(
         &self,
         repository: &Path,
         options: &PushOptions,
     ) -> Result<(Vec<String>, Option<PushUpstream>), AppError> {
         if options.set_upstream {
-            let upstream = self.push_upstream_for_url(repository, options)?;
+            let mut upstream = self.push_upstream_for_url(repository, options)?;
+            if let Some(tracking_reference) = self.configured_tracking_reference(
+                repository,
+                &options.remote,
+                &upstream.remote_branch,
+            )? {
+                validate_ref_name(&tracking_reference, "远程跟踪引用")
+                    .map_err(|_| push_upstream_fetch_mapping_unavailable_error())?;
+                upstream.previous_tracking_commit =
+                    self.reference_commit(repository, &tracking_reference)?;
+                upstream.tracking_reference = Some(tracking_reference);
+            }
             let refspec = format!(
-                "refs/heads/{}:refs/heads/{}",
-                upstream.local_branch, upstream.remote_branch
+                "{}:refs/heads/{}",
+                upstream.pushed_commit, upstream.remote_branch
             );
             validate_refspec(&refspec)?;
             return Ok((vec![refspec], Some(upstream)));
@@ -532,15 +546,19 @@ impl GitCore {
         match options.refspecs.as_slice() {
             [] => {
                 let local_branch = self.current_branch_name(repository)?;
+                let pushed_commit = self.commit_for_local_branch(repository, &local_branch)?;
                 Ok(PushUpstream {
                     remote_branch: local_branch.clone(),
                     local_branch,
+                    pushed_commit,
+                    tracking_reference: None,
+                    previous_tracking_commit: None,
                 })
             }
             [refspec] => {
-                let upstream = push_upstream_for_refspec(refspec)?;
-                let local_reference = format!("refs/heads/{}^{{commit}}", upstream.local_branch);
-                let local_branch = self.execute(
+                let (local_branch, remote_branch) = push_branches_for_refspec(refspec)?;
+                let local_reference = format!("refs/heads/{local_branch}^{{commit}}");
+                let commit = self.execute(
                     Some(repository),
                     &[
                         OsString::from("rev-parse"),
@@ -550,13 +568,22 @@ impl GitCore {
                     ],
                     &GitEnvironment::default(),
                 )?;
-                if !local_branch.status.success() {
+                if !commit.status.success() {
                     return Err(AppError::new(
                         "set_upstream_requires_local_branch",
                         "设置上游必须指定一个存在的本地分支。",
                     ));
                 }
-                Ok(upstream)
+                Ok(PushUpstream {
+                    local_branch,
+                    remote_branch,
+                    pushed_commit: parse_commit_id(
+                        &commit.stdout,
+                        "无法读取首次推送的本地提交标识。",
+                    )?,
+                    tracking_reference: None,
+                    previous_tracking_commit: None,
+                })
             }
             _ => Err(AppError::new(
                 "set_upstream_requires_single_branch",
@@ -571,21 +598,221 @@ impl GitCore {
         remote_name: &str,
         upstream: &PushUpstream,
     ) -> Result<(), AppError> {
-        let remote_key = format!("branch.{}.remote", upstream.local_branch);
-        let merge_key = format!("branch.{}.merge", upstream.local_branch);
-        let remote_reference = format!("refs/heads/{}", upstream.remote_branch);
-        for (key, value) in [
-            (remote_key.as_str(), remote_name),
-            (merge_key.as_str(), remote_reference.as_str()),
-        ] {
-            self.run(
-                Some(repository),
-                &os_arguments(&["config", "--local", "--replace-all", key, value]),
-                &GitEnvironment::default(),
-                "设置当前分支上游",
+        validate_remote_name(remote_name)?;
+        validate_ref_name(&upstream.local_branch, "本地分支名")?;
+        validate_ref_name(&upstream.remote_branch, "远程分支名")?;
+        let created_tracking_reference;
+        let tracking_reference = if let Some(reference) = upstream.tracking_reference.as_deref() {
+            reference
+        } else {
+            created_tracking_reference = self.ensure_push_remote_tracking_mapping(
+                repository,
+                remote_name,
+                &upstream.remote_branch,
             )?;
+            created_tracking_reference.as_str()
+        };
+        validate_ref_name(tracking_reference, "远程跟踪引用")
+            .map_err(|_| push_tracking_setup_incomplete_error())?;
+
+        self.update_tracking_reference_after_push(
+            repository,
+            tracking_reference,
+            &upstream.pushed_commit,
+            upstream.previous_tracking_commit.as_deref(),
+        )?;
+
+        let set_upstream_argument = format!("--set-upstream-to={tracking_reference}");
+        self.run(
+            Some(repository),
+            &[
+                OsString::from("branch"),
+                OsString::from(set_upstream_argument),
+                OsString::from(&upstream.local_branch),
+            ],
+            &GitEnvironment::default(),
+            "设置当前分支上游",
+        )?;
+        let configured = self
+            .branch_upstream(repository, &upstream.local_branch)
+            .map_err(|_| push_tracking_setup_incomplete_error())?;
+        let expected_remote_reference = format!("refs/heads/{}", upstream.remote_branch);
+        if !configured.is_some_and(|configured| {
+            configured.remote == remote_name
+                && configured.remote_reference == expected_remote_reference
+                && configured.tracking_reference.as_deref() == Some(tracking_reference)
+        }) {
+            return Err(push_tracking_setup_incomplete_error());
         }
         Ok(())
+    }
+
+    pub(super) fn update_tracking_reference_after_push(
+        &self,
+        repository: &Path,
+        tracking_reference: &str,
+        pushed_commit: &str,
+        previous_tracking_commit: Option<&str>,
+    ) -> Result<(), AppError> {
+        validate_ref_name(tracking_reference, "远程跟踪引用")
+            .map_err(|_| push_tracking_setup_incomplete_error())?;
+        parse_commit_id(pushed_commit.as_bytes(), "无法读取首次推送的本地提交标识。")?;
+        let expected = previous_tracking_commit.unwrap_or("");
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "update-ref",
+                "--no-deref",
+                "--create-reflog",
+                "-m",
+                "update by push",
+                tracking_reference,
+                pushed_commit,
+                expected,
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+        let verification = self.execute(
+            Some(repository),
+            &os_arguments(&[
+                "update-ref",
+                "--no-deref",
+                tracking_reference,
+                pushed_commit,
+                pushed_commit,
+            ]),
+            &GitEnvironment::default(),
+        )?;
+        if verification.status.success() {
+            Ok(())
+        } else {
+            Err(push_tracking_setup_incomplete_error())
+        }
+    }
+
+    fn commit_for_local_branch(&self, repository: &Path, branch: &str) -> Result<String, AppError> {
+        validate_ref_name(branch, "本地分支名")?;
+        let revision = format!("refs/heads/{branch}^{{commit}}");
+        let output = self.run(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", &revision]),
+            &GitEnvironment::default(),
+            "读取首次推送的本地提交",
+        )?;
+        parse_commit_id(&output.stdout, "无法读取首次推送的本地提交标识。")
+    }
+
+    fn reference_commit(
+        &self,
+        repository: &Path,
+        reference: &str,
+    ) -> Result<Option<String>, AppError> {
+        validate_refspec(reference)?;
+        let revision = format!("{reference}^{{commit}}");
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", "--quiet", &revision]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(git_command_error("读取远程跟踪分支", &output));
+        }
+        parse_commit_id(&output.stdout, "无法读取远程跟踪分支提交标识。").map(Some)
+    }
+
+    /// Ensure Git can reverse-map the pushed remote branch to a local
+    /// remote-tracking ref. `git remote set-branches --add` is the porcelain
+    /// operation Git provides for extending a restrictive single-branch
+    /// clone without replacing the user's existing tracked branch set.
+    fn ensure_push_remote_tracking_mapping(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        remote_branch: &str,
+    ) -> Result<String, AppError> {
+        if let Some(reference) =
+            self.configured_tracking_reference(repository, remote_name, remote_branch)?
+        {
+            return Ok(reference);
+        }
+        self.run(
+            Some(repository),
+            &[
+                OsString::from("remote"),
+                OsString::from("set-branches"),
+                OsString::from("--add"),
+                OsString::from(remote_name),
+                OsString::from(remote_branch),
+            ],
+            &GitEnvironment::default(),
+            "扩展远程分支跟踪范围",
+        )?;
+        self.configured_tracking_reference(repository, remote_name, remote_branch)?
+            .ok_or_else(push_upstream_fetch_mapping_unavailable_error)
+    }
+
+    pub(super) fn configured_tracking_reference(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        remote_branch: &str,
+    ) -> Result<Option<String>, AppError> {
+        let config_key = remote_fetch_refspec_config_key(remote_name)?;
+        let source_reference = format!("refs/heads/{remote_branch}");
+        let mut tracking_reference = None;
+        let mut excluded = false;
+        for configured_refspec in self
+            .repository_config_values(repository, &config_key)?
+            .iter()
+            .map(|refspec| refspec.trim())
+        {
+            if configured_refspec.is_empty() {
+                continue;
+            }
+            validate_refspec(configured_refspec)?;
+            if let Some(exclusion) = configured_refspec.strip_prefix('^') {
+                excluded |= refspec_source_capture(exclusion, &source_reference).is_some();
+                continue;
+            }
+            let configured_refspec = configured_refspec
+                .strip_prefix('+')
+                .unwrap_or(configured_refspec);
+            let Some((source_pattern, destination_pattern)) = configured_refspec.split_once(':')
+            else {
+                continue;
+            };
+            let Some(capture) = refspec_source_capture(source_pattern, &source_reference) else {
+                continue;
+            };
+            let Some(destination) =
+                expand_refspec_destination(destination_pattern, capture.as_deref())
+            else {
+                continue;
+            };
+            validate_ref_name(&destination, "远程跟踪引用")
+                .map_err(|_| push_upstream_fetch_mapping_unavailable_error())?;
+            let expected_prefix = format!("refs/remotes/{remote_name}/");
+            if !destination.starts_with(&expected_prefix) {
+                return Err(push_upstream_fetch_mapping_unavailable_error());
+            }
+            match tracking_reference.as_deref() {
+                Some(existing) if existing != destination => {
+                    return Err(push_upstream_fetch_mapping_unavailable_error());
+                }
+                Some(_) => {}
+                None => tracking_reference = Some(destination),
+            }
+        }
+        if excluded {
+            return Err(push_upstream_fetch_mapping_unavailable_error());
+        }
+        Ok(tracking_reference)
     }
 
     fn push_default_is_upstream(&self, repository: &Path) -> Result<bool, AppError> {
@@ -630,6 +857,31 @@ fn pull_upstream_fetch_mapping_unavailable_error() -> AppError {
         "pull_upstream_fetch_mapping_unavailable",
         "当前分支上游没有可用的远程跟踪引用映射。",
     )
+}
+
+fn push_upstream_fetch_mapping_unavailable_error() -> AppError {
+    AppError::new(
+        "push_upstream_fetch_mapping_unavailable",
+        "无法为首次推送的远程分支建立唯一的远程跟踪引用映射。",
+    )
+}
+
+fn push_tracking_setup_incomplete_error() -> AppError {
+    AppError::new(
+        "push_tracking_setup_incomplete",
+        "远程推送已成功，但本地远程跟踪引用同时发生变化，上游设置未能完成。",
+    )
+}
+
+fn parse_commit_id(output: &[u8], message: &'static str) -> Result<String, AppError> {
+    let output = output_text(output);
+    let commit_id = output.trim();
+    if !(40..=64).contains(&commit_id.len())
+        || !commit_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(AppError::new("git_parse_error", message));
+    }
+    Ok(commit_id.to_owned())
 }
 
 pub(super) fn parse_repository_config_values(output: &[u8]) -> Result<Vec<String>, AppError> {
@@ -689,7 +941,7 @@ fn expand_refspec_destination(pattern: &str, capture: Option<&str>) -> Option<St
     }
 }
 
-fn push_upstream_for_refspec(refspec: &str) -> Result<PushUpstream, AppError> {
+fn push_branches_for_refspec(refspec: &str) -> Result<(String, String), AppError> {
     let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
     let (source, destination) = refspec
         .split_once(':')
@@ -718,10 +970,7 @@ fn push_upstream_for_refspec(refspec: &str) -> Result<PushUpstream, AppError> {
         .strip_prefix("refs/heads/")
         .unwrap_or(destination);
     validate_ref_name(remote_branch, "远程分支名")?;
-    Ok(PushUpstream {
-        local_branch: local_branch.to_owned(),
-        remote_branch: remote_branch.to_owned(),
-    })
+    Ok((local_branch.to_owned(), remote_branch.to_owned()))
 }
 
 /// Command-scope overrides complement the preflight: a repository config may

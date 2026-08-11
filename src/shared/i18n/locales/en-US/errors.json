@@ -192,6 +192,8 @@
   "errors.pull_upstream_not_a_branch": "The current branch upstream is not a remote branch.",
   "errors.pull_upstream_remote_mismatch": "The current branch does not track the selected remote.",
   "errors.push_upstream_not_a_branch": "The current branch upstream is not a remote branch.",
+  "errors.push_upstream_fetch_mapping_unavailable": "A unique remote-tracking ref mapping could not be established for the initially pushed branch.",
+  "errors.push_tracking_setup_incomplete": "The remote push succeeded, but the local remote-tracking ref changed concurrently, so upstream setup could not finish. Refresh the repository and retry the tracking setup.",
   "errors.remote_already_exists": "A remote with this name already exists.",
   "errors.remote_binding_reconciliation_failed": "The remote changed but its account binding could not be saved or restored. Rebind it before network operations.",
   "errors.remote_branch_not_found": "The remote branch could not be found. Fetch remote updates and try again.",

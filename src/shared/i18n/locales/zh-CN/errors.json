@@ -192,6 +192,8 @@
   "errors.pull_upstream_not_a_branch": "当前分支上游不是远程分支。",
   "errors.pull_upstream_remote_mismatch": "当前分支没有跟踪所选 remote。",
   "errors.push_upstream_not_a_branch": "当前分支上游不是远程分支。",
+  "errors.push_upstream_fetch_mapping_unavailable": "无法为首次推送的远程分支建立唯一的远程跟踪引用映射。",
+  "errors.push_tracking_setup_incomplete": "远程推送已成功，但本地远程跟踪引用同时发生变化，上游设置未能完成。请刷新仓库状态后重试设置跟踪关系。",
   "errors.remote_already_exists": "仓库中已存在同名 remote。",
   "errors.remote_binding_reconciliation_failed": "remote 添加失败，原有账号绑定恢复失败；请检查 remote 后重新关联账号。",
   "errors.remote_branch_not_found": "找不到该远程分支；请先获取远程更新后重试。",

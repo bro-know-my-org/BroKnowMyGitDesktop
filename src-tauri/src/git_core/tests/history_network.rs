@@ -855,7 +855,7 @@ fn push_with_url_preserves_push_default_upstream_behavior() {
 }
 
 #[test]
-fn push_with_url_sets_the_named_upstream_after_the_network_push() {
+fn push_with_url_sets_an_official_upstream_for_a_single_branch_remote() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -892,6 +892,19 @@ fn push_with_url_sets_the_named_upstream_after_the_network_push() {
     run_git(
         &repository,
         &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(
+        &repository,
+        &["config", "--unset-all", "remote.origin.fetch"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
     );
 
     let git = GitCore::new();
@@ -933,9 +946,157 @@ fn push_with_url_sets_the_named_upstream_after_the_network_push() {
         .unwrap();
     assert!(output.status.success());
     assert_eq!(output_text(&output.stdout).trim(), expected);
+    let tracking_reference = "refs/remotes/origin/review-target";
+    let output = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", tracking_reference])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output_text(&output.stdout).trim(), expected);
+    let output = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args([
+            "for-each-ref",
+            "--format=%(upstream)",
+            &format!("refs/heads/{branch}"),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output_text(&output.stdout).trim(), tracking_reference);
+    let fetch_refspecs = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["config", "--get-all", "remote.origin.fetch"])
+        .output()
+        .unwrap();
+    assert!(fetch_refspecs.status.success());
+    assert_eq!(
+        output_text(&fetch_refspecs.stdout)
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![
+            "+refs/heads/main:refs/remotes/origin/main",
+            "+refs/heads/review-target:refs/remotes/origin/review-target",
+        ]
+    );
 
     let _ = fs::remove_dir_all(repository);
     let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn push_upstream_rejects_fetch_mappings_outside_the_selected_remote_namespace() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-push-fetch-mapping-safety-{}-{suffix}",
+        std::process::id()
+    )));
+    let initialized = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap();
+    assert!(initialized.success());
+
+    let git = GitCore::new();
+    for destination in [
+        "HEAD",
+        "refs/heads/main",
+        "refs/tags/pwned",
+        "refs/remotes/other/review-target",
+        "refs/remotes/origin2/review-target",
+        "refs/remotes/origin/../heads/main",
+    ] {
+        let configured = test_git_command()
+            .args([
+                "-C",
+                repository.to_str().unwrap(),
+                "config",
+                "--replace-all",
+                "remote.origin.fetch",
+                &format!("+refs/heads/review-target:{destination}"),
+            ])
+            .status()
+            .unwrap();
+        assert!(configured.success());
+
+        let error = git
+            .configured_tracking_reference(&repository, "origin", "review-target")
+            .expect_err("unsafe fetch destinations must not become tracking references");
+        assert_eq!(error.code(), "push_upstream_fetch_mapping_unavailable");
+    }
+}
+
+#[test]
+fn pushed_tracking_update_never_dereferences_a_symbolic_remote_tracking_ref() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-symbolic-tracking-ref-safety-{}-{suffix}",
+        std::process::id()
+    )));
+    let run_git = |arguments: &[&str]| {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "user.email", "push@example.invalid"]);
+    run_git(&["config", "user.name", "Push Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    let branch = output_text(&run_git(&["branch", "--show-current"]).stdout)
+        .trim()
+        .to_owned();
+    let head_before = output_text(&run_git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
+    let branch_reference = format!("refs/heads/{branch}");
+    run_git(&[
+        "symbolic-ref",
+        "refs/remotes/origin/review-target",
+        &branch_reference,
+    ]);
+
+    GitCore::new()
+        .update_tracking_reference_after_push(
+            &repository,
+            "refs/remotes/origin/review-target",
+            &head_before,
+            Some(&head_before),
+        )
+        .expect("the symbolic tracking ref itself can be replaced without dereferencing its target");
+    let head_after = output_text(&run_git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_owned();
+    assert_eq!(head_after, head_before);
+    let symbolic_check = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "symbolic-ref",
+            "--quiet",
+            "refs/remotes/origin/review-target",
+        ])
+        .output()
+        .unwrap();
+    assert!(!symbolic_check.status.success());
+    let tracking_commit = output_text(
+        &run_git(&["rev-parse", "refs/remotes/origin/review-target"]).stdout,
+    )
+    .trim()
+    .to_owned();
+    assert_eq!(tracking_commit, head_before);
 }
 
 #[test]
