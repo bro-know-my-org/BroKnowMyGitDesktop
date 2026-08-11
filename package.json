@@ -1,7 +1,7 @@
 {
   "name": "broknowmygitdesktop",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -9,8 +9,12 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm check:i18n && vue-tsc --noEmit && vite build",
-    "check": "pnpm lint:css && pnpm build",
+    "check": "pnpm lint:css && pnpm check:release && pnpm build",
     "check:i18n": "node scripts/check-i18n.mjs",
+    "check:release": "node --test scripts/release-version-utils.test.mjs",
+    "check:release-tag": "node scripts/check-release-tag.mjs",
+    "check:release-version": "node scripts/check-release-version.mjs",
+    "release:prepare": "node scripts/set-version.mjs",
     "lint:css": "stylelint \"src/**/*.{css,vue}\"",
     "preview": "vite preview",
     "tauri": "tauri"

@@ -1,0 +1,350 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      release_commit: ${{ steps.release_commit.outputs.commit }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.96.1
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/check-release-tag.mjs
+
+      - name: Record release commit
+        id: release_commit
+        shell: bash
+        run: printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Test release version tooling
+        run: node --test scripts/release-version-utils.test.mjs
+
+      - name: Ensure tagged commit belongs to default branch
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          git fetch --no-tags origin \
+            "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+
+          node scripts/release-git.mjs assert-lineage \
+            "$tag_commit" "refs/remotes/origin/${DEFAULT_BRANCH}"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows NSIS
+            platform: windows-2025
+            args: --ci --bundles nsis
+          - name: Linux packages
+            platform: ubuntu-22.04
+            args: --ci --bundles deb,rpm,appimage
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            rpm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.13.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: 1.96.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run project checks
+        if: runner.os == 'Linux'
+        run: pnpm check
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+
+      - name: Set version from release tag
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: pnpm release:prepare "$RELEASE_TAG"
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: pnpm check:release-version
+
+      - name: Remove cached release bundles
+        shell: bash
+        run: rm -rf src-tauri/target/release/bundle
+
+      - name: Build release bundles
+        run: pnpm tauri build ${{ matrix.args }} -- --locked
+
+      - name: Ensure Cargo.lock was not rewritten
+        shell: bash
+        run: git diff --exit-code -- src-tauri/Cargo.lock
+
+      - name: Collect Windows release assets
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+          Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" |
+            Copy-Item -Destination release-assets
+          if (-not (Get-ChildItem -Path release-assets -File)) {
+            throw "No Windows NSIS installer was produced."
+          }
+
+      - name: Collect Linux release assets
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p release-assets
+          find src-tauri/target/release/bundle -maxdepth 2 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
+            -exec cp '{}' release-assets/ \;
+          for pattern in '*.deb' '*.rpm' '*.AppImage'; do
+            if ! compgen -G "release-assets/$pattern" > /dev/null; then
+              printf 'Missing required Linux release asset: %s\n' "$pattern" >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ runner.os }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: [validate, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      EXPECTED_TAG_COMMIT: ${{ needs.validate.outputs.release_commit }}
+    steps:
+      - name: Check out full Git history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: release-assets
+        run: |
+          find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+
+      - name: Generate release notes from commits
+        shell: bash
+        run: |
+          previous_tag="$(node scripts/release-git.mjs previous-tag "$EXPECTED_TAG_COMMIT" "$RELEASE_TAG")"
+
+          if [ -n "$previous_tag" ]; then
+            commit_range="$previous_tag..$EXPECTED_TAG_COMMIT"
+            comparison_url="https://github.com/$GITHUB_REPOSITORY/compare/$previous_tag...$RELEASE_TAG"
+            range_title="$previous_tag → $RELEASE_TAG"
+          else
+            commit_range="$EXPECTED_TAG_COMMIT"
+            comparison_url="https://github.com/$GITHUB_REPOSITORY/commits/$RELEASE_TAG"
+            range_title="首次发布 → $RELEASE_TAG"
+          fi
+
+          {
+            printf '自动构建的 BroKnowMyGitDesktop 发布版本。\n\n'
+            printf '> Windows 安装包当前未进行 Authenticode 代码签名，安装时可能出现 SmartScreen 提示。\n\n'
+            printf '## 更新记录（%s）\n\n' "$range_title"
+            node scripts/release-notes.mjs "$commit_range" "$GITHUB_REPOSITORY"
+            printf '\n\n[查看完整版本对比](%s)\n' "$comparison_url"
+          } > release-notes.md
+
+      - name: Verify release tag is unchanged
+        shell: bash
+        run: |
+          remote_tag_commit="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk '{print $1}')"
+          if [ -z "$remote_tag_commit" ]; then
+            remote_tag_commit="$(git ls-remote --refs origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
+          fi
+          if [ -z "$remote_tag_commit" ] || [ "$remote_tag_commit" != "$EXPECTED_TAG_COMMIT" ]; then
+            printf 'Tag %s changed after this workflow started.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]; then
+              printf 'Release %s is already public; refusing to replace its assets.\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh release edit "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "BroKnowMyGitDesktop $RELEASE_TAG" \
+              --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --draft \
+              --title "BroKnowMyGitDesktop $RELEASE_TAG" \
+              --notes-file release-notes.md
+          fi
+
+      - name: Replace draft release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          require_draft() {
+            if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]; then
+              printf 'Release %s is no longer a draft; refusing to mutate its assets.\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+          }
+
+          declare -A expected_assets=()
+          while IFS= read -r -d '' asset_path; do
+            expected_assets["$(basename "$asset_path")"]=1
+          done < <(find release-assets -maxdepth 1 -type f -print0)
+
+          require_draft
+          gh release upload "$RELEASE_TAG" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          mapfile -t uploaded_assets < <(
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name'
+          )
+          for expected_asset in "${!expected_assets[@]}"; do
+            found=false
+            for uploaded_asset in "${uploaded_assets[@]}"; do
+              if [ "$uploaded_asset" = "$expected_asset" ]; then
+                found=true
+                break
+              fi
+            done
+            if [ "$found" != true ]; then
+              printf 'Draft release is missing uploaded asset: %s\n' "$expected_asset" >&2
+              exit 1
+            fi
+          done
+
+          for uploaded_asset in "${uploaded_assets[@]}"; do
+            if [ -z "${expected_assets[$uploaded_asset]+present}" ]; then
+              require_draft
+              gh release delete-asset "$RELEASE_TAG" "$uploaded_asset" \
+                --repo "$GITHUB_REPOSITORY" --yes
+            fi
+          done
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if [ "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != "true" ]; then
+            printf 'Release %s is no longer a draft; refusing to publish it.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          remote_tag_commit="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk '{print $1}')"
+          if [ -z "$remote_tag_commit" ]; then
+            remote_tag_commit="$(git ls-remote --refs origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
+          fi
+          if [ -z "$remote_tag_commit" ] || [ "$remote_tag_commit" != "$EXPECTED_TAG_COMMIT" ]; then
+            printf 'Tag %s changed before publication.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+          published_tag_commit="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | awk '{print $1}')"
+          if [ -z "$published_tag_commit" ]; then
+            published_tag_commit="$(git ls-remote --refs origin "refs/tags/$RELEASE_TAG" | awk '{print $1}')"
+          fi
+          if [ "$published_tag_commit" != "$EXPECTED_TAG_COMMIT" ]; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=true
+            printf 'Tag %s changed during publication; release returned to draft.\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi

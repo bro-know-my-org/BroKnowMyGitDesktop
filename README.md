@@ -27,3 +27,25 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
+
+## 发布
+
+仓库中的 `package.json`、`src-tauri/Cargo.toml` 和
+`src-tauri/tauri.conf.json` 固定使用占位版本 `0.0.0`。正式版本以 `vX.Y.Z` tag
+为唯一来源。tag 指向的 commit 必须已经进入 GitHub 仓库的默认分支，GitHub
+Actions 才会在各平台构建前临时写入真实版本：
+
+```bash
+git tag v0.2.0
+git push origin HEAD v0.2.0
+```
+
+本地开发的关于窗口显示为 `dev`；未经过发布 workflow 手工生成的安装包元数据仍为
+`0.0.0`。GitHub Actions 会构建 Windows NSIS 安装包以及 Linux DEB、RPM、
+AppImage，生成 `SHA256SUMS.txt`，然后公开 GitHub Release。Release 页面会列出
+上一个稳定版本 tag 到当前 tag 之间的 commit，并提供完整版本对比链接。Windows
+安装包当前未进行 Authenticode 代码签名，安装时可能出现 SmartScreen 提示。
+
+当前不发布 macOS 安装包；源码仍保留 macOS 平台实现，但没有 Apple 签名和
+notarization 前不作为正式二进制分发平台。GitHub 仓库上线前还应为 `v*.*.*` 配置
+禁止更新和删除的 tag Ruleset，避免已发布版本的 tag 被移动。

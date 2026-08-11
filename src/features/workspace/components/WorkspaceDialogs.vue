@@ -102,7 +102,7 @@ export default defineComponent({
     const codeFontWeightOptions = computed(() => weightOptions(systemCodeFontWeight.value));
     return {
       ...workspace,
-      appVersion: packageMetadata.version,
+      appVersion: packageMetadata.version === "0.0.0" ? "dev" : packageMetadata.version,
       interfaceFont,
       codeFont,
       interfaceFontSize,

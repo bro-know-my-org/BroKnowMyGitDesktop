@@ -1,6 +1,6 @@
 [package]
 name = "broknowmygitdesktop"
-version = "0.1.0"
+version = "0.0.0"
 description = "A lightweight multi-account Git and code host desktop client"
 authors = ["BroKnowMyOrg"]
 edition = "2021"
