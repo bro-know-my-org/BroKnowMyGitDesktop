@@ -129,6 +129,29 @@ impl AppState {
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
     }
 
+    /// Copies only the Endpoint and binding metadata required to enrich one
+    /// repository's remotes. Context-menu reads must not clone accounts,
+    /// recent repositories, or pending-operation state along with it.
+    pub(crate) fn remote_endpoint_metadata(
+        &self,
+        repository_path: &str,
+    ) -> Result<(Vec<CodeHostEndpoint>, Vec<RemoteBinding>), AppError> {
+        self.profiles
+            .lock()
+            .map(|store| {
+                let store = store.data();
+                let endpoints = store.all_endpoints();
+                let bindings = store
+                    .remote_bindings
+                    .iter()
+                    .filter(|binding| binding.repository_path == repository_path)
+                    .cloned()
+                    .collect();
+                (endpoints, bindings)
+            })
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
+    }
+
     /// Starts a status refresh generation. Results from an older generation
     /// must not overwrite a newer refresh or a concurrent account import.
     pub(crate) fn begin_account_status_refresh(&self) -> Result<u64, AppError> {
@@ -646,4 +669,3 @@ fn empty_profile_store() -> ProfileStore {
         ..ProfileStore::default()
     }
 }
-

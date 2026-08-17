@@ -105,6 +105,7 @@ pub fn run() {
             commands::create_tag,
             commands::delete_tag,
             commands::add_remote,
+            commands::get_repository_remote_web_url,
             commands::set_remote_url,
             commands::rename_remote,
             commands::remove_remote,
@@ -117,6 +118,8 @@ pub fn run() {
             commands::list_system_fonts,
             commands::get_system_font_preferences,
             commands::open_external_url,
+            commands::open_repository_in_file_manager,
+            commands::open_repository_in_terminal,
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

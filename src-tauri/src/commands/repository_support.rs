@@ -497,24 +497,44 @@ pub(super) fn enrich_remote_endpoints(
     repository_path: &str,
 ) {
     let endpoints = store.all_endpoints();
+    enrich_remote_endpoints_from_metadata(
+        remotes,
+        &endpoints,
+        &store.remote_bindings,
+        repository_path,
+    );
+}
+
+pub(super) fn enrich_remote_endpoints_from_metadata(
+    remotes: &mut [RemoteProfile],
+    endpoints: &[CodeHostEndpoint],
+    bindings: &[RemoteBinding],
+    repository_path: &str,
+) {
     for remote in remotes {
         if remote.endpoint_id.is_some() {
             continue;
         }
-        let endpoint = store
-            .binding_for(repository_path, &remote.name)
-            .and_then(|binding| store.endpoint(&binding.endpoint_id))
+        let endpoint = bindings
+            .iter()
+            .find(|binding| {
+                binding.repository_path == repository_path && binding.remote_name == remote.name
+            })
+            .and_then(|binding| {
+                endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.id == binding.endpoint_id)
+            })
             .or_else(|| {
                 remote
                     .parsed
                     .authority()
                     .as_deref()
-                    .and_then(|authority| endpoint_for_host(authority, &endpoints))
-                    .cloned()
+                    .and_then(|authority| endpoint_for_host(authority, endpoints))
             });
         if let Some(endpoint) = endpoint {
-            remote.endpoint_id = Some(endpoint.id);
-            remote.code_host_kind = endpoint.kind;
+            remote.endpoint_id = Some(endpoint.id.clone());
+            remote.code_host_kind = endpoint.kind.clone();
         }
     }
 }

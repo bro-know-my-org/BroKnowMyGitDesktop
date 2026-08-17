@@ -1,6 +1,9 @@
+use super::support::repository_root;
 use crate::app_error::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
+use std::process::Command;
 use tauri::AppHandle;
 use tauri_plugin_opener::OpenerExt;
 use url::Url;
@@ -13,7 +16,8 @@ use std::{
     env, fs,
     io::Read,
     os::fd::AsRawFd,
-    process::{Command, Output, Stdio},
+    process::{Output, Stdio},
+    sync::{mpsc, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -66,6 +70,195 @@ pub fn open_external_url(app: AppHandle, url: String) -> Result<(), AppError> {
     app.opener()
         .open_url(url.to_string(), None::<String>)
         .map_err(|_| AppError::new("command_failed", "无法调用系统默认浏览器。"))
+}
+
+#[tauri::command]
+pub async fn open_repository_in_file_manager(
+    app: AppHandle,
+    repository_path: String,
+) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        let opener_path = if let Some(repository) = repository.to_str() {
+            repository.to_owned()
+        } else {
+            let requested_path = std::fs::canonicalize(&repository_path).map_err(|_| {
+                AppError::new("command_failed", "无法解析要在文件管理器中打开的仓库路径。")
+            })?;
+            if requested_path != repository {
+                return Err(AppError::new(
+                    "command_failed",
+                    "系统文件管理器无法表示该仓库路径。",
+                ));
+            }
+            repository_path
+        };
+        app.opener()
+            .open_path(opener_path, None::<String>)
+            .map_err(|_| AppError::new("command_failed", "无法调用系统文件管理器。"))
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "文件管理器后台任务未能完成。"))?
+}
+
+#[tauri::command]
+pub async fn open_repository_in_terminal(repository_path: String) -> Result<(), AppError> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        platform_open_terminal(&repository)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "终端后台任务未能完成。"))?
+}
+
+#[cfg(target_os = "windows")]
+fn spawn_terminal(command: &mut Command) -> Result<(), AppError> {
+    let child = command
+        .spawn()
+        .map_err(|_| AppError::new("command_failed", "无法调用系统终端。"))?;
+    drop(child);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+static TERMINAL_REAPER_SENDER: OnceLock<Option<mpsc::Sender<std::process::Child>>> =
+    OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn terminal_reaper_sender() -> Option<mpsc::Sender<std::process::Child>> {
+    TERMINAL_REAPER_SENDER
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::channel::<std::process::Child>();
+            if thread::Builder::new()
+                .name("bkm-terminal-reaper".into())
+                .spawn(move || {
+                    let mut children = Vec::<std::process::Child>::new();
+                    loop {
+                        if children.is_empty() {
+                            match receiver.recv() {
+                                Ok(child) => children.push(child),
+                                Err(_) => break,
+                            }
+                        } else {
+                            match receiver.recv_timeout(Duration::from_millis(100)) {
+                                Ok(child) => children.push(child),
+                                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                        while let Ok(child) = receiver.try_recv() {
+                            children.push(child);
+                        }
+                        children.retain_mut(|child| match child.try_wait() {
+                            Ok(None) => true,
+                            Ok(Some(_)) => false,
+                            Err(_) => {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                false
+                            }
+                        });
+                    }
+                })
+                .is_err()
+            {
+                return None;
+            }
+            Some(sender)
+        })
+        .as_ref()
+        .cloned()
+}
+
+#[cfg(target_os = "linux")]
+fn reap_terminal_child(mut child: std::process::Child) -> Result<(), AppError> {
+    let Some(sender) = terminal_reaper_sender() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AppError::new("command_failed", "无法监控系统终端进程。"));
+    };
+    if let Err(error) = sender.send(child) {
+        child = error.0;
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(AppError::new("command_failed", "无法监控系统终端进程。"));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn platform_open_terminal(repository: &Path) -> Result<(), AppError> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    spawn_terminal(
+        Command::new("cmd.exe")
+            .current_dir(repository)
+            .creation_flags(CREATE_NEW_CONSOLE),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn platform_open_terminal(repository: &Path) -> Result<(), AppError> {
+    let status = Command::new("open")
+        .args(["-a", "Terminal"])
+        .arg(repository)
+        .status()
+        .map_err(|_| AppError::new("command_failed", "无法调用系统终端。"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::new("command_failed", "无法调用系统终端。"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_open_terminal(repository: &Path) -> Result<(), AppError> {
+    const TERMINALS: &[&str] = &[
+        "xdg-terminal-exec",
+        "x-terminal-emulator",
+        "gnome-terminal",
+        "konsole",
+        "xfce4-terminal",
+        "mate-terminal",
+        "kitty",
+        "wezterm",
+        "alacritty",
+        "foot",
+        "xterm",
+    ];
+
+    let mut launch_failed = false;
+    for terminal in TERMINALS {
+        match Command::new(terminal).current_dir(repository).spawn() {
+            Ok(mut child) => match child.try_wait() {
+                Ok(Some(status)) if status.success() => return Ok(()),
+                Ok(Some(_)) => launch_failed = true,
+                Ok(None) => return reap_terminal_child(child),
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    launch_failed = true;
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => launch_failed = true,
+        }
+    }
+
+    Err(if launch_failed {
+        AppError::new("command_failed", "无法调用系统终端。")
+    } else {
+        AppError::new("command_failed", "没有找到可用的系统终端。")
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+fn platform_open_terminal(_repository: &Path) -> Result<(), AppError> {
+    Err(AppError::new(
+        "command_failed",
+        "当前平台不支持打开系统终端。",
+    ))
 }
 
 fn validated_external_url(value: &str) -> Result<Url, AppError> {

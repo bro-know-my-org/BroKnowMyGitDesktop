@@ -739,10 +739,22 @@ fn parsed_parts(
     port: Option<u16>,
     path: &str,
 ) -> ParsedRemoteUrl {
-    let mut parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let path = path.strip_prefix('/').unwrap_or(path);
+    if path.is_empty() || path.split('/').any(str::is_empty) {
+        return ParsedRemoteUrl {
+            transport,
+            host,
+            port,
+            namespace: None,
+            repository: None,
+        };
+    }
+    let mut parts: Vec<&str> = path.split('/').collect();
     let repository = parts
         .pop()
-        .map(|part| part.strip_suffix(".git").unwrap_or(part).to_string());
+        .map(|part| part.strip_suffix(".git").unwrap_or(part))
+        .filter(|part| !part.is_empty())
+        .map(str::to_string);
     let namespace = if parts.is_empty() {
         None
     } else {

@@ -320,6 +320,263 @@ fn repository_owner_grouping_prefers_origin() {
 }
 
 #[test]
+fn repository_web_url_prefers_origin_and_preserves_nested_namespaces() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remotes = vec![
+        RemoteProfile {
+            name: "upstream".into(),
+            fetch_url: "https://github.com/upstream/project.git".into(),
+            push_url: "https://github.com/upstream/project.git".into(),
+            parsed: parse_remote_url("https://github.com/upstream/project.git"),
+            endpoint_id: Some("github.com".into()),
+            code_host_kind: CodeHostKind::GitHub,
+        },
+        RemoteProfile {
+            name: "origin".into(),
+            fetch_url: "https://gitlab.com/team/platform/project.git".into(),
+            push_url: "https://gitlab.com/team/platform/project.git".into(),
+            parsed: parse_remote_url("https://gitlab.com/team/platform/project.git"),
+            endpoint_id: Some("gitlab.com".into()),
+            code_host_kind: CodeHostKind::GitLab,
+        },
+    ];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://gitlab.com/team/platform/project")
+    );
+}
+
+#[test]
+fn repository_web_url_falls_back_when_origin_has_no_web_route() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remotes = vec![
+        RemoteProfile {
+            name: "origin".into(),
+            fetch_url: "/work/local.git".into(),
+            push_url: "/work/local.git".into(),
+            parsed: parse_remote_url("/work/local.git"),
+            endpoint_id: None,
+            code_host_kind: CodeHostKind::Unknown,
+        },
+        RemoteProfile {
+            name: "upstream".into(),
+            fetch_url: "https://github.com/upstream/project.git".into(),
+            push_url: "https://github.com/upstream/project.git".into(),
+            parsed: parse_remote_url("https://github.com/upstream/project.git"),
+            endpoint_id: Some("github.com".into()),
+            code_host_kind: CodeHostKind::GitHub,
+        },
+    ];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://github.com/upstream/project")
+    );
+}
+
+#[test]
+fn repository_web_url_falls_back_when_origin_endpoint_binding_is_stale() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remotes = vec![
+        RemoteProfile {
+            name: "origin".into(),
+            fetch_url: "https://git.example.test/team/project.git".into(),
+            push_url: "https://git.example.test/team/project.git".into(),
+            parsed: parse_remote_url("https://git.example.test/team/project.git"),
+            endpoint_id: Some("github.com".into()),
+            code_host_kind: CodeHostKind::GitHub,
+        },
+        RemoteProfile {
+            name: "upstream".into(),
+            fetch_url: "https://gitlab.com/upstream/project.git".into(),
+            push_url: "https://gitlab.com/upstream/project.git".into(),
+            parsed: parse_remote_url("https://gitlab.com/upstream/project.git"),
+            endpoint_id: Some("gitlab.com".into()),
+            code_host_kind: CodeHostKind::GitLab,
+        },
+    ];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://gitlab.com/upstream/project")
+    );
+}
+
+#[test]
+fn repository_web_url_falls_back_when_origin_has_an_empty_repository_name() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remotes = vec![
+        RemoteProfile {
+            name: "origin".into(),
+            fetch_url: "git@github.com:team/.git".into(),
+            push_url: "git@github.com:team/.git".into(),
+            parsed: parse_remote_url("git@github.com:team/.git"),
+            endpoint_id: Some("github.com".into()),
+            code_host_kind: CodeHostKind::GitHub,
+        },
+        RemoteProfile {
+            name: "upstream".into(),
+            fetch_url: "https://gitlab.com/upstream/project.git".into(),
+            push_url: "https://gitlab.com/upstream/project.git".into(),
+            parsed: parse_remote_url("https://gitlab.com/upstream/project.git"),
+            endpoint_id: Some("gitlab.com".into()),
+            code_host_kind: CodeHostKind::GitLab,
+        },
+    ];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://gitlab.com/upstream/project")
+    );
+}
+
+#[test]
+fn repository_web_url_falls_back_when_origin_has_an_empty_path_segment() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remotes = vec![
+        RemoteProfile {
+            name: "origin".into(),
+            fetch_url: "git@github.com:team//project.git".into(),
+            push_url: "git@github.com:team//project.git".into(),
+            parsed: parse_remote_url("git@github.com:team//project.git"),
+            endpoint_id: Some("github.com".into()),
+            code_host_kind: CodeHostKind::GitHub,
+        },
+        RemoteProfile {
+            name: "upstream".into(),
+            fetch_url: "https://gitlab.com/upstream/project.git".into(),
+            push_url: "https://gitlab.com/upstream/project.git".into(),
+            parsed: parse_remote_url("https://gitlab.com/upstream/project.git"),
+            endpoint_id: Some("gitlab.com".into()),
+            code_host_kind: CodeHostKind::GitLab,
+        },
+    ];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://gitlab.com/upstream/project")
+    );
+}
+
+#[test]
+fn repository_web_url_preserves_encoded_segments_and_endpoint_base_path() {
+    let endpoints = vec![CodeHostEndpoint {
+        id: "git.example.test".into(),
+        kind: CodeHostKind::GitLab,
+        display_name: "Example GitLab".into(),
+        web_url: "https://git.example.test/code/".into(),
+        api_url: "https://git.example.test/code/api/v4".into(),
+        git_host: "git.example.test".into(),
+        is_builtin: false,
+    }];
+    let remotes = vec![RemoteProfile {
+        name: "origin".into(),
+        fetch_url: "ssh://git@git.example.test/team/platform%20tools/project%20name.git".into(),
+        push_url: "ssh://git@git.example.test/team/platform%20tools/project%20name.git".into(),
+        parsed: parse_remote_url(
+            "ssh://git@git.example.test/team/platform%20tools/project%20name.git",
+        ),
+        endpoint_id: Some("git.example.test".into()),
+        code_host_kind: CodeHostKind::GitLab,
+    }];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://git.example.test/code/team/platform%20tools/project%20name")
+    );
+}
+
+#[test]
+fn repository_web_url_encodes_raw_path_segments() {
+    let endpoints = vec![CodeHostEndpoint {
+        id: "git.example.test".into(),
+        kind: CodeHostKind::GitLab,
+        display_name: "Example GitLab".into(),
+        web_url: "https://git.example.test".into(),
+        api_url: "https://git.example.test/api/v4".into(),
+        git_host: "git.example.test".into(),
+        is_builtin: false,
+    }];
+    let remote_url = "git@git.example.test:team/platform tools/project name.git";
+    let remotes = vec![RemoteProfile {
+        name: "origin".into(),
+        fetch_url: remote_url.into(),
+        push_url: remote_url.into(),
+        parsed: parse_remote_url(remote_url),
+        endpoint_id: Some("git.example.test".into()),
+        code_host_kind: CodeHostKind::GitLab,
+    }];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://git.example.test/team/platform%20tools/project%20name")
+    );
+}
+
+#[test]
+fn repository_web_url_preserves_percent_encoded_non_utf8_bytes() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remote_url = "ssh://git@github.com/team/project%FF.git";
+    let remotes = vec![RemoteProfile {
+        name: "origin".into(),
+        fetch_url: remote_url.into(),
+        push_url: remote_url.into(),
+        parsed: parse_remote_url(remote_url),
+        endpoint_id: Some("github.com".into()),
+        code_host_kind: CodeHostKind::GitHub,
+    }];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://github.com/team/project%FF")
+    );
+}
+
+#[test]
+fn repository_web_url_rejects_encoded_dot_segments() {
+    let endpoints = vec![CodeHostEndpoint {
+        id: "git.example.test".into(),
+        kind: CodeHostKind::GitLab,
+        display_name: "Example GitLab".into(),
+        web_url: "https://git.example.test/code/".into(),
+        api_url: "https://git.example.test/code/api/v4".into(),
+        git_host: "git.example.test".into(),
+        is_builtin: false,
+    }];
+    let remote_url = "ssh://git@git.example.test/team/%2E%2E/project.git";
+    let remotes = vec![RemoteProfile {
+        name: "origin".into(),
+        fetch_url: remote_url.into(),
+        push_url: remote_url.into(),
+        parsed: parse_remote_url(remote_url),
+        endpoint_id: Some("git.example.test".into()),
+        code_host_kind: CodeHostKind::GitLab,
+    }];
+
+    assert_eq!(repository_web_url_from_remotes(&remotes, &endpoints), None);
+}
+
+#[test]
+fn repository_web_url_encodes_remote_backslashes() {
+    let endpoints = CodeHostEndpoint::builtin();
+    let remote_url = r"git@github.com:team\other/project.git";
+    let remotes = vec![RemoteProfile {
+        name: "origin".into(),
+        fetch_url: remote_url.into(),
+        push_url: remote_url.into(),
+        parsed: parse_remote_url(remote_url),
+        endpoint_id: Some("github.com".into()),
+        code_host_kind: CodeHostKind::GitHub,
+    }];
+
+    assert_eq!(
+        repository_web_url_from_remotes(&remotes, &endpoints).as_deref(),
+        Some("https://github.com/team%5Cother/project")
+    );
+}
+
+#[test]
 fn repository_group_validation_trims_and_rejects_control_characters() {
     assert_eq!(
         normalize_repository_group(Some("  工作项目  ".into())).unwrap(),

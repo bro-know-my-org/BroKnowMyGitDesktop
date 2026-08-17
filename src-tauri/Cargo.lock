@@ -316,6 +316,7 @@ dependencies = [
  "keyring",
  "libc",
  "notify",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

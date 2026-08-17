@@ -1,5 +1,93 @@
 use super::support::*;
 use super::*;
+use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, CONTROLS};
+use url::Url;
+
+const URL_PATH_SEGMENT_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'/')
+    .add(b'\\')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
+
+#[tauri::command]
+pub async fn get_repository_remote_web_url(
+    repository_path: String,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let repository = repository_root(&repository_path)?;
+        let canonical = repository.to_string_lossy().into_owned();
+        let mut remotes = GitCore::new().remotes(&repository)?;
+        let (endpoints, bindings) = state.remote_endpoint_metadata(&canonical)?;
+        enrich_remote_endpoints_from_metadata(&mut remotes, &endpoints, &bindings, &canonical);
+        Ok(repository_web_url_from_remotes(&remotes, &endpoints))
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "远程仓库读取任务未能完成。"))?
+}
+
+pub(super) fn repository_web_url_from_remotes(
+    remotes: &[RemoteProfile],
+    endpoints: &[CodeHostEndpoint],
+) -> Option<String> {
+    let origin = remotes.iter().find(|remote| remote.name == "origin");
+    origin
+        .into_iter()
+        .chain(remotes.iter().filter(|remote| remote.name != "origin"))
+        .find_map(|remote| remote_web_url(remote, endpoints))
+}
+
+fn remote_web_url(remote: &RemoteProfile, endpoints: &[CodeHostEndpoint]) -> Option<String> {
+    let endpoint = endpoints
+        .iter()
+        .find(|endpoint| Some(endpoint.id.as_str()) == remote.endpoint_id.as_deref())?;
+    let authority = remote.parsed.authority()?;
+    if !endpoint_matches_authority(endpoint, &authority) {
+        return None;
+    }
+    if !matches!(
+        endpoint.kind,
+        CodeHostKind::GitHub
+            | CodeHostKind::GitLab
+            | CodeHostKind::Gitee
+            | CodeHostKind::Gitea
+            | CodeHostKind::Forgejo
+    ) {
+        return None;
+    }
+    let namespace = remote.parsed.namespace.as_deref()?;
+    let repository = remote.parsed.repository.as_deref()?;
+    if repository.is_empty() || namespace.split('/').any(str::is_empty) {
+        return None;
+    }
+    let url = Url::parse(&endpoint.web_url).ok()?;
+    if url.cannot_be_a_base() || url.query().is_some() || url.fragment().is_some() {
+        return None;
+    }
+    let encoded_path = namespace
+        .split('/')
+        .chain(std::iter::once(repository))
+        .map(|segment| {
+            let decoded = percent_decode_str(segment).collect::<Vec<_>>();
+            if matches!(decoded.as_slice(), b"." | b"..") {
+                return None;
+            }
+            Some(percent_encode(&decoded, URL_PATH_SEGMENT_ENCODE_SET).to_string())
+        })
+        .collect::<Option<Vec<_>>>()?
+        .join("/");
+    (!encoded_path.is_empty())
+        .then(|| format!("{}/{}", url.as_str().trim_end_matches('/'), encoded_path))
+}
 
 #[tauri::command]
 pub fn create_tag(

@@ -2,6 +2,7 @@
 import { computed, defineComponent, h, nextTick, ref, watch } from "vue";
 import { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText, type SelectRenderLabel } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
+import { api } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
 
 function splitReferenceLabel(label: string): { prefix: string; tail: string } {
@@ -33,6 +34,10 @@ export default defineComponent({
     const repositoryContextMenuY = ref(0);
     const repositoryContextTarget = ref<RepositoryRecord | null>(null);
     const repositoryContextMenuOptions = computed(() => [
+      { label: workspace.t('workspace.header.openInDefaultTerminal'), key: "open-terminal" },
+      { label: workspace.t('workspace.header.openInFileManager'), key: "open-file-manager" },
+      { label: workspace.t('workspace.header.openRepositoryWebsite'), key: "open-remote" },
+      { type: "divider", key: "open-divider" },
       { label: workspace.t('workspace.header.setRepositoryAlias'), key: "edit-alias" },
       { label: workspace.t('workspace.header.editRepositoryGroup'), key: "edit-group" },
     ]);
@@ -182,24 +187,72 @@ export default defineComponent({
 
     function openRepositoryContextMenu(event: MouseEvent, repository: RepositoryRecord): void {
       event.preventDefault();
+      showRepositoryContextMenu(event.currentTarget, event.clientX, event.clientY, repository);
+    }
+
+    function openRepositoryContextMenuFromKeyboard(event: KeyboardEvent, repository: RepositoryRecord): void {
+      if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+      event.preventDefault();
+      showRepositoryContextMenu(event.currentTarget, null, null, repository);
+    }
+
+    function showRepositoryContextMenu(
+      eventTarget: EventTarget | null,
+      clientX: number | null,
+      clientY: number | null,
+      repository: RepositoryRecord,
+    ): void {
       repositoryContextMenuOpen.value = false;
       repositoryContextTarget.value = repository;
-      const target = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+      const target = eventTarget instanceof HTMLElement ? eventTarget : null;
       const bounds = target?.getBoundingClientRect();
-      repositoryContextMenuX.value = event.clientX || (bounds ? bounds.left + bounds.width / 2 : 0);
-      repositoryContextMenuY.value = event.clientY || (bounds ? bounds.top + bounds.height / 2 : 0);
+      repositoryContextMenuX.value = clientX ?? (bounds ? bounds.left + bounds.width / 2 : 0);
+      repositoryContextMenuY.value = clientY ?? (bounds ? bounds.top + bounds.height / 2 : 0);
       void nextTick(() => {
         repositoryContextMenuOpen.value = true;
       });
     }
 
-    function selectRepositoryContextMenuAction(value: string | number): void {
+    async function openRemoteRepository(repository: RepositoryRecord): Promise<void> {
+      let url: string | null;
+      try {
+        url = await api.getRepositoryRemoteWebUrl(repository.path);
+      } catch (error) {
+        workspace.reportError(error, workspace.t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"));
+        return;
+      }
+      if (!url) {
+        workspace.message.warning(workspace.t("workspace.header.remoteRepositoryWebsiteUnavailable"));
+        return;
+      }
+      await workspace.openCodeHostUrl(url);
+    }
+
+    async function selectRepositoryContextMenuAction(value: string | number): Promise<void> {
       repositoryContextMenuOpen.value = false;
       const repository = repositoryContextTarget.value;
-      if (value === "edit-alias" && repository) {
+      if (!repository) return;
+      if (value === "open-terminal") {
+        repositoryPickerOpen.value = false;
+        try {
+          await api.openRepositoryInTerminal(repository.path);
+        } catch (error) {
+          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInTerminal"));
+        }
+      } else if (value === "open-file-manager") {
+        repositoryPickerOpen.value = false;
+        try {
+          await api.openRepositoryInFileManager(repository.path);
+        } catch (error) {
+          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInFileManager"));
+        }
+      } else if (value === "open-remote") {
+        repositoryPickerOpen.value = false;
+        await openRemoteRepository(repository);
+      } else if (value === "edit-alias") {
         repositoryPickerOpen.value = false;
         workspace.openRepositoryAliasEditor(repository);
-      } else if (value === "edit-group" && repository) {
+      } else if (value === "edit-group") {
         repositoryPickerOpen.value = false;
         workspace.openRepositoryGroupEditor(repository);
       }
@@ -235,6 +288,7 @@ export default defineComponent({
       pushButtonTitle,
       renderBranchLabel,
       openRepositoryContextMenu,
+      openRepositoryContextMenuFromKeyboard,
       selectApplicationMenuItem,
       selectContributionAction,
       selectBranch,
@@ -271,7 +325,11 @@ export default defineComponent({
                     type="button"
                     :aria-label="repositorySwitcherAriaLabel"
                     :aria-expanded="repositoryPickerOpen"
-                    :title="repositorySwitcherAriaLabel"
+                    aria-keyshortcuts="Shift+F10"
+                    :aria-description="t('workspace.header.rightClickForRepositoryActions')"
+                    :title="`${repositorySwitcherAriaLabel} · ${t('workspace.header.rightClickForRepositoryActions')}`"
+                    @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
+                    @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
                   >
                     <template v-if="snapshot?.repository.alias">
                       <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
@@ -311,9 +369,12 @@ export default defineComponent({
                                 class="sidebar-repository"
                                 :class="{ active: repository.path === activeRepositoryPath }"
                                 type="button"
-                                :title="`${repository.path} · ${t('workspace.header.rightClickToSetAnAliasOrEditTheGroup')}`"
+                                aria-keyshortcuts="Shift+F10"
+                                :aria-description="t('workspace.header.rightClickForRepositoryActions')"
+                                :title="`${repository.path} · ${t('workspace.header.rightClickForRepositoryActions')}`"
                                 @click="repositoryPickerOpen = false; selectRepository(repository.path)"
                                 @contextmenu="openRepositoryContextMenu($event, repository)"
+                                @keydown="openRepositoryContextMenuFromKeyboard($event, repository)"
                               >
                                 <template v-if="repository.alias">
                                   <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
@@ -342,7 +403,7 @@ export default defineComponent({
                 :y="repositoryContextMenuY"
                 :options="repositoryContextMenuOptions"
                 @clickoutside="repositoryContextMenuOpen = false"
-                @select="selectRepositoryContextMenuAction"
+                @select="(value) => void selectRepositoryContextMenuAction(value)"
               />
               <template v-if="snapshot">
                 <n-tag v-if="!snapshot.branches.length" size="small" type="primary" class="branch-status-tag" :title="currentBranch">

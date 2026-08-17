@@ -571,6 +571,18 @@ export const api = {
     });
   },
 
+  async openRepositoryInFileManager(repositoryPath: string): Promise<void> {
+    await request("open_repository_in_file_manager", { repositoryPath }, () => undefined);
+  },
+
+  async openRepositoryInTerminal(repositoryPath: string): Promise<void> {
+    await request("open_repository_in_terminal", { repositoryPath }, () => undefined);
+  },
+
+  getRepositoryRemoteWebUrl(repositoryPath: string): Promise<string | null> {
+    return request("get_repository_remote_web_url", { repositoryPath }, () => null);
+  },
+
   listRepositories(refreshOwners = false): Promise<RepositoryRecord[]> {
     return request("list_repositories", { refreshOwners }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
   },
