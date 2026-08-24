@@ -2,8 +2,9 @@
 import { computed, defineComponent, h, nextTick, ref, watch } from "vue";
 import { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText, type SelectRenderLabel } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
-import { api } from "../../../shared/api/tauri";
+import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
+import { settingsSection } from "../../../shared/settingsNavigation";
 
 function splitReferenceLabel(label: string): { prefix: string; tail: string } {
   const separatorIndex = label.lastIndexOf("/");
@@ -34,7 +35,8 @@ export default defineComponent({
     const repositoryContextMenuY = ref(0);
     const repositoryContextTarget = ref<RepositoryRecord | null>(null);
     const repositoryContextMenuOptions = computed(() => [
-      { label: workspace.t('workspace.header.openInDefaultTerminal'), key: "open-terminal" },
+      { label: workspace.t('workspace.header.openInSystemDefaultTerminal'), key: "open-system-terminal" },
+      { label: workspace.t('workspace.header.openInPreferredTerminal'), key: "open-preferred-terminal" },
       { label: workspace.t('workspace.header.openInFileManager'), key: "open-file-manager" },
       { label: workspace.t('workspace.header.openRepositoryWebsite'), key: "open-remote" },
       { type: "divider", key: "open-divider" },
@@ -232,12 +234,25 @@ export default defineComponent({
       repositoryContextMenuOpen.value = false;
       const repository = repositoryContextTarget.value;
       if (!repository) return;
-      if (value === "open-terminal") {
+      if (value === "open-system-terminal") {
         repositoryPickerOpen.value = false;
         try {
           await api.openRepositoryInTerminal(repository.path);
         } catch (error) {
-          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInTerminal"));
+          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInSystemTerminal"));
+        }
+      } else if (value === "open-preferred-terminal") {
+        repositoryPickerOpen.value = false;
+        try {
+          await api.openRepositoryInPreferredTerminal(repository.path);
+        } catch (error) {
+          if (isAppError(error) && error.code === "preferred_terminal_not_configured") {
+            settingsSection.value = "general";
+            workspace.settingsModalShown.value = true;
+            workspace.message.warning(workspace.t("workspace.controller.configureAPreferredTerminalFirst"));
+            return;
+          }
+          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInPreferredTerminal"));
         }
       } else if (value === "open-file-manager") {
         repositoryPickerOpen.value = false;

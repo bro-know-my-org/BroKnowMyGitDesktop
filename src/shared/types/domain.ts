@@ -115,6 +115,17 @@ export interface ExternalEditorConfig {
   arguments: string[];
 }
 
+/** App-local terminal used only by the explicit preferred-terminal action. */
+export interface TerminalConfig {
+  executable: string;
+  arguments: string[];
+}
+
+export interface SystemTerminalInfo {
+  executable: string;
+  arguments: string[];
+}
+
 export interface GitStatus {
   headCommit: string | null;
   branch: string | null;

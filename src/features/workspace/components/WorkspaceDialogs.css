@@ -74,6 +74,23 @@
   margin-bottom: 22px;
 }
 
+.settings-subsection-heading {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.terminal-setting-hint {
+  display: block;
+  margin-top: -10px;
+  line-height: 1.45;
+}
+
+.terminal-setting-actions {
+  margin-top: 14px;
+}
+
+.settings-subsection-heading strong,
 .settings-section-heading strong,
 .settings-about-heading strong {
   color: var(--app-text-strong);

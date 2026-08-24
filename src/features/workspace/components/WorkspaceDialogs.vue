@@ -1,7 +1,8 @@
 <script lang="ts">
-import { computed, defineComponent, onBeforeUnmount, ref, watch } from "vue";
+import { computed, defineComponent, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
 import packageMetadata from "../../../../package.json";
+import { api } from "../../../shared/api/tauri";
 import { diffLineWrapping, setDiffLineWrapping } from "../../../shared/diffPreferences";
 import {
   codeFont,
@@ -31,6 +32,8 @@ import {
   systemInterfaceFontWeight,
 } from "../../../shared/fonts";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
+import type { SystemTerminalInfo, TerminalConfig } from "../../../shared/types/domain";
+import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
@@ -45,9 +48,183 @@ export default defineComponent({
       settingsTabsPlacement.value = event.matches ? "top" : "left";
     }
     narrowSettingsViewport?.addEventListener("change", updateSettingsTabsPlacement);
-    onBeforeUnmount(() => narrowSettingsViewport?.removeEventListener("change", updateSettingsTabsPlacement));
+    onBeforeUnmount(() => {
+      narrowSettingsViewport?.removeEventListener("change", updateSettingsTabsPlacement);
+      systemTerminalRequestId += 1;
+      preferredTerminalRequestId += 1;
+    });
+    const systemTerminal = ref<SystemTerminalInfo | null>(null);
+    const preferredTerminal = ref<TerminalConfig | null>(null);
+    const systemTerminalLoading = ref(false);
+    const systemTerminalLoadFailed = ref(false);
+    const preferredTerminalLoading = ref(false);
+    const preferredTerminalLoaded = ref(false);
+    const preferredTerminalLoadFailed = ref(false);
+    const preferredTerminalForm = reactive({ executable: "", arguments: "[]" });
+    const preferredTerminalFormDirty = ref(false);
+    const systemTerminalDescription = computed(() => {
+      if (!systemTerminal.value) return workspace.t("workspace.dialogs.noSystemTerminalCandidateResolved");
+      const argumentsDescription = systemTerminal.value.arguments.length
+        ? ` ${JSON.stringify(systemTerminal.value.arguments)}`
+        : "";
+      return `${systemTerminal.value.executable}${argumentsDescription}`;
+    });
+    const terminalSettingsLoadDeferred = ref(false);
+    let terminalSettingsLoadedForCurrentOpen = false;
+    let systemTerminalRequestId = 0;
+    let preferredTerminalRequestId = 0;
+
+    async function loadSystemTerminalSettings(): Promise<void> {
+      if (workspace.mutationBusy.value) {
+        terminalSettingsLoadDeferred.value = true;
+        return;
+      }
+      const requestId = ++systemTerminalRequestId;
+      systemTerminalLoading.value = true;
+      systemTerminalLoadFailed.value = false;
+      try {
+        const nextSystemTerminal = await api.getSystemTerminal();
+        if (requestId !== systemTerminalRequestId) return;
+        systemTerminal.value = nextSystemTerminal;
+        systemTerminalLoadFailed.value = false;
+      } catch (error) {
+        if (requestId !== systemTerminalRequestId) return;
+        systemTerminal.value = null;
+        systemTerminalLoadFailed.value = true;
+        workspace.reportError(error, workspace.t("workspace.controller.couldNotLoadSystemTerminal"));
+      } finally {
+        if (requestId === systemTerminalRequestId) systemTerminalLoading.value = false;
+      }
+    }
+
+    async function loadPreferredTerminalSettings(): Promise<void> {
+      if (workspace.mutationBusy.value) {
+        terminalSettingsLoadDeferred.value = true;
+        return;
+      }
+      const requestId = ++preferredTerminalRequestId;
+      preferredTerminalLoading.value = true;
+      preferredTerminalLoaded.value = false;
+      preferredTerminalLoadFailed.value = false;
+      try {
+        const nextPreferredTerminal = await api.getPreferredTerminal();
+        if (requestId !== preferredTerminalRequestId) return;
+        preferredTerminalLoaded.value = true;
+        preferredTerminalLoadFailed.value = false;
+        preferredTerminal.value = nextPreferredTerminal;
+        if (!preferredTerminalFormDirty.value) {
+          preferredTerminalForm.executable = nextPreferredTerminal?.executable ?? "";
+          preferredTerminalForm.arguments = JSON.stringify(nextPreferredTerminal?.arguments ?? [], null, 2);
+        }
+      } catch (error) {
+        if (requestId !== preferredTerminalRequestId) return;
+        preferredTerminalLoadFailed.value = true;
+        workspace.reportError(error, workspace.t("workspace.controller.couldNotLoadPreferredTerminal"));
+      } finally {
+        if (requestId === preferredTerminalRequestId) preferredTerminalLoading.value = false;
+      }
+    }
+
+    function loadTerminalSettings(): void {
+      if (workspace.mutationBusy.value) {
+        terminalSettingsLoadDeferred.value = true;
+        return;
+      }
+      terminalSettingsLoadDeferred.value = false;
+      void loadSystemTerminalSettings();
+      void loadPreferredTerminalSettings();
+    }
+
+    async function savePreferredTerminal(): Promise<void> {
+      if (!preferredTerminalLoaded.value) return;
+      if (workspace.mutationBusy.value) {
+        workspace.message.warning(workspace.t("workspace.controller.waitForTheCurrentSettingsChangeToFinish"));
+        return;
+      }
+      const executable = preferredTerminalForm.executable;
+      if (!executable.trim()) {
+        workspace.message.warning(workspace.t("workspace.controller.enterThePreferredTerminalSAbsoluteExecutablePath"));
+        return;
+      }
+      let arguments_: string[];
+      try {
+        const parsedArguments: unknown = JSON.parse(preferredTerminalForm.arguments);
+        if (!Array.isArray(parsedArguments) || !parsedArguments.every((argument) => typeof argument === "string")) {
+          throw new TypeError("Preferred terminal arguments must be a string array.");
+        }
+        arguments_ = parsedArguments;
+      } catch {
+        workspace.message.warning(workspace.t("workspace.controller.enterPreferredTerminalArgumentsAsAJsonStringArray"));
+        return;
+      }
+      preferredTerminalRequestId += 1;
+      preferredTerminalLoading.value = false;
+      workspace.mutationBusy.value = true;
+      try {
+        preferredTerminal.value = await api.savePreferredTerminal({ executable, arguments: arguments_ });
+        preferredTerminalForm.executable = preferredTerminal.value?.executable ?? executable;
+        preferredTerminalForm.arguments = JSON.stringify(preferredTerminal.value?.arguments ?? [], null, 2);
+        preferredTerminalFormDirty.value = false;
+        workspace.message.success(workspace.t("workspace.controller.preferredTerminalSaved"));
+      } catch (error) {
+        workspace.reportError(error, workspace.t("workspace.controller.couldNotSavePreferredTerminal"));
+      } finally {
+        workspace.mutationBusy.value = false;
+      }
+    }
+
+    function confirmClearPreferredTerminal(): void {
+      workspace.dialog.warning({
+        title: workspace.t("workspace.controller.clearPreferredTerminal"),
+        content: workspace.t("workspace.controller.clearThePreferredTerminalConfigurationSavedByThisAppThisDoesNotChangeTheSystemDefaultTerminal"),
+        positiveText: workspace.t("workspace.controller.clear"),
+        negativeText: workspace.t("workspace.controller.cancel"),
+        onPositiveClick: async () => {
+          if (workspace.mutationBusy.value) {
+            workspace.message.warning(workspace.t("workspace.controller.waitForTheCurrentSettingsChangeToFinish"));
+            return;
+          }
+          preferredTerminalRequestId += 1;
+          preferredTerminalLoading.value = false;
+          workspace.mutationBusy.value = true;
+          try {
+            preferredTerminal.value = await api.savePreferredTerminal(null);
+            preferredTerminalForm.executable = "";
+            preferredTerminalForm.arguments = "[]";
+            preferredTerminalFormDirty.value = false;
+            workspace.message.success(workspace.t("workspace.controller.preferredTerminalConfigurationCleared"));
+          } catch (error) {
+            workspace.reportError(error, workspace.t("workspace.controller.couldNotClearPreferredTerminal"));
+          } finally {
+            workspace.mutationBusy.value = false;
+          }
+        },
+      });
+    }
     watch(workspace.settingsModalShown, (shown) => {
       if (shown) void loadSystemFonts();
+    });
+    watch([workspace.settingsModalShown, workspace.mutationBusy, settingsSection], ([shown, busy, section], previous) => {
+      const [wasShown, , previousSection] = previous ?? [false, false, "general"];
+      const terminalSettingsActive = shown && section === "general";
+      const terminalSettingsWereActive = wasShown && previousSection === "general";
+      if (!terminalSettingsActive) {
+        terminalSettingsLoadDeferred.value = false;
+        if (!shown && wasShown) preferredTerminalFormDirty.value = false;
+        if (terminalSettingsWereActive || (!shown && wasShown)) {
+          const loadWasInFlight = systemTerminalLoading.value || preferredTerminalLoading.value;
+          systemTerminalRequestId += 1;
+          preferredTerminalRequestId += 1;
+          systemTerminalLoading.value = false;
+          preferredTerminalLoading.value = false;
+          if (!shown || loadWasInFlight) terminalSettingsLoadedForCurrentOpen = false;
+        }
+      } else if (!terminalSettingsLoadedForCurrentOpen && busy) {
+        terminalSettingsLoadDeferred.value = true;
+      } else if ((!terminalSettingsLoadedForCurrentOpen || terminalSettingsLoadDeferred.value) && !busy) {
+        terminalSettingsLoadedForCurrentOpen = true;
+        loadTerminalSettings();
+      }
     });
     const interfaceSystemFontOption = computed(() => ({
       label: systemInterfaceFontName.value
@@ -127,7 +304,22 @@ export default defineComponent({
       setCodeLigatures,
       setDiffLineWrapping,
       resetFonts,
-      settingsSection: ref<"general" | "about">("general"),
+      systemTerminal,
+      systemTerminalDescription,
+      preferredTerminal,
+      systemTerminalLoading,
+      systemTerminalLoadFailed,
+      preferredTerminalLoading,
+      preferredTerminalLoaded,
+      preferredTerminalLoadFailed,
+      preferredTerminalForm,
+      preferredTerminalFormDirty,
+      loadTerminalSettings,
+      loadSystemTerminalSettings,
+      loadPreferredTerminalSettings,
+      savePreferredTerminal,
+      confirmClearPreferredTerminal,
+      settingsSection,
       settingsTabsPlacement,
     };
   },
@@ -228,6 +420,77 @@ export default defineComponent({
                 </n-text>
               </n-space>
             </n-form-item>
+            <n-divider />
+            <div class="settings-subsection-heading">
+              <strong>{{ t('workspace.dialogs.terminals') }}</strong>
+              <n-text depth="3">{{ t('workspace.dialogs.systemDefaultAndPreferredTerminalsAreSeparateTheRepositoryMenuProvidesBothActions') }}</n-text>
+            </div>
+            <n-form-item :label="t('workspace.dialogs.systemDefaultTerminal')">
+              <n-space vertical>
+                <n-spin :show="systemTerminalLoading" size="small">
+                  <n-text>{{ systemTerminalDescription }}</n-text>
+                </n-spin>
+                <n-text depth="3">{{ t('workspace.dialogs.systemTerminalCandidateFallbackHint') }}</n-text>
+              </n-space>
+            </n-form-item>
+            <n-alert v-if="systemTerminalLoadFailed" type="warning" :bordered="false">
+              <n-space justify="space-between" align="center">
+                <span>{{ t('workspace.dialogs.systemDefaultTerminalCouldNotBeDetected') }}</span>
+                <n-button size="small" tertiary :loading="systemTerminalLoading" :disabled="mutationBusy" @click="loadSystemTerminalSettings">
+                  {{ t('workspace.dialogs.retry') }}
+                </n-button>
+              </n-space>
+            </n-alert>
+            <n-form-item :label="t('workspace.dialogs.preferredTerminalExecutable')">
+              <n-input
+                v-model:value="preferredTerminalForm.executable"
+                :disabled="preferredTerminalLoading || mutationBusy || !preferredTerminalLoaded"
+                :placeholder="t('workspace.dialogs.forExampleUsrBinKitty')"
+                @update:value="preferredTerminalFormDirty = true"
+              />
+            </n-form-item>
+            <n-form-item :label="t('workspace.dialogs.preferredTerminalArgumentsJsonArray')">
+              <n-input
+                v-model:value="preferredTerminalForm.arguments"
+                :disabled="preferredTerminalLoading || mutationBusy || !preferredTerminalLoaded"
+                type="textarea"
+                :autosize="{ minRows: 2, maxRows: 5 }"
+                :placeholder="t('workspace.dialogs.placeholderPreferredTerminalArgumentsJson')"
+                @update:value="preferredTerminalFormDirty = true"
+              />
+            </n-form-item>
+            <n-text depth="3" class="terminal-setting-hint">
+              {{ t('workspace.dialogs.preferredTerminalUsesAnAbsoluteExecutablePathAndDirectArgumentsNoShellIsUsedRepositoryPlaceholder') }}
+            </n-text>
+            <n-alert v-if="preferredTerminalLoadFailed" type="warning" :bordered="false">
+              <n-space justify="space-between" align="center">
+                <span>{{ t('workspace.dialogs.preferredTerminalCouldNotBeLoadedRetryBeforeEditing') }}</span>
+                <n-button size="small" tertiary :loading="preferredTerminalLoading" :disabled="mutationBusy" @click="loadPreferredTerminalSettings">
+                  {{ t('workspace.dialogs.retry') }}
+                </n-button>
+              </n-space>
+            </n-alert>
+            <n-space justify="space-between" class="terminal-setting-actions">
+              <n-button
+                v-if="preferredTerminal"
+                type="error"
+                tertiary
+                :loading="mutationBusy"
+                :disabled="preferredTerminalLoading || mutationBusy || !preferredTerminalLoaded"
+                @click="confirmClearPreferredTerminal"
+              >
+                {{ t('workspace.dialogs.clearConfiguration') }}
+              </n-button>
+              <span v-else />
+              <n-button
+                type="primary"
+                :loading="mutationBusy"
+                :disabled="preferredTerminalLoading || mutationBusy || !preferredTerminalLoaded"
+                @click="savePreferredTerminal"
+              >
+                {{ t('workspace.dialogs.savePreferredTerminal') }}
+              </n-button>
+            </n-space>
           </n-form>
         </section>
       </n-tab-pane>

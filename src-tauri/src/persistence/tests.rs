@@ -528,7 +528,7 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join(STORE_FILE_NAME),
-            br#"{"schemaVersion":5,"futureField":{"preserve":true}}"#,
+            br#"{"schemaVersion":6,"futureField":{"preserve":true}}"#,
         )
         .unwrap();
 

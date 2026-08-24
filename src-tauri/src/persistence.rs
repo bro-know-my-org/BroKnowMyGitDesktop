@@ -2,7 +2,7 @@ use crate::app_error::AppError;
 use crate::credential_broker::delete_personal_access_token;
 use crate::domain::{
     AccountProfile, AuthenticationMethod, CodeHostEndpoint, ExternalEditorConfig,
-    KeychainReference, RemoteBinding, RepositoryRecord,
+    KeychainReference, RemoteBinding, RepositoryRecord, TerminalConfig,
 };
 use crate::git_core::{CleanUntrackedPathFingerprint, DiscardChangesFingerprint, GitCore};
 use fs2::FileExt;
@@ -89,12 +89,16 @@ pub struct ProfileStore {
     /// action from the conflict workflow.
     #[serde(default)]
     pub external_editor: Option<ExternalEditorConfig>,
+    /// Optional app-local override used only by the explicit "preferred
+    /// terminal" action. The system-default action never reads this field.
+    #[serde(default)]
+    pub preferred_terminal: Option<TerminalConfig>,
     #[serde(default)]
     pub recent_repositories: Vec<RepositoryRecord>,
 }
 
 fn default_schema_version() -> u32 {
-    4
+    5
 }
 
 // Preserve the existing private state boundary while separating storage,

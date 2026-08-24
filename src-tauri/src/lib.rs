@@ -117,9 +117,13 @@ pub fn run() {
             commands::publish_github_repository,
             commands::list_system_fonts,
             commands::get_system_font_preferences,
+            commands::get_system_terminal,
+            commands::get_preferred_terminal,
+            commands::save_preferred_terminal,
             commands::open_external_url,
             commands::open_repository_in_file_manager,
             commands::open_repository_in_terminal,
+            commands::open_repository_in_preferred_terminal,
         ])
         .run(tauri::generate_context!());
     if result.is_err() {

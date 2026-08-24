@@ -48,6 +48,8 @@ import type {
   ResetMode,
   StashEntry,
   SubmoduleInfo,
+  SystemTerminalInfo,
+  TerminalConfig,
   WorktreeInfo,
 } from "../types/domain";
 
@@ -251,6 +253,37 @@ let browserWorktrees = rawCopy(initialBrowserWorktrees);
 let browserSubmodules = rawCopy(initialBrowserSubmodules);
 let browserLfsStatus = rawCopy(initialBrowserLfsStatus);
 let browserExternalEditor: ExternalEditorConfig | null = null;
+let browserPreferredTerminal: TerminalConfig | null = null;
+
+function isAbsoluteExecutablePath(value: string): boolean {
+  const windows = typeof navigator !== "undefined" && /^Win/u.test(navigator.platform);
+  if (!windows) return value.startsWith("/");
+  return /^(?:[A-Za-z]:[\\/]|\\\\\?\\[A-Za-z]:[\\/]|\\\\\?\\UNC\\[^\\/]+\\[^\\/]+(?:\\|$)|\\\\[^?.\\/][^\\/]*\\[^\\/]+(?:\\|$))/iu.test(value);
+}
+
+function validateBrowserPreferredTerminalShape(terminal: unknown): TerminalConfig {
+  if (!terminal || typeof terminal !== "object") throw browserError("preferred_terminal_config_invalid");
+  const candidate = terminal as Partial<TerminalConfig>;
+  const executable = candidate.executable;
+  const terminalArguments = candidate.arguments;
+  // Require every index from 0..length-1 and reject extra enumerable keys so
+  // browser fallback state remains a plain, dense string-array shape.
+  const argumentKeys = Array.isArray(terminalArguments) ? Object.keys(terminalArguments) : [];
+  const isDenseStringArray = Array.isArray(terminalArguments)
+    && argumentKeys.every((key, index) => key === String(index))
+    && argumentKeys.length === terminalArguments.length
+    && terminalArguments.every((argument) => typeof argument === "string");
+  const isAbsoluteExecutable = typeof executable === "string" && isAbsoluteExecutablePath(executable);
+  const requiresCommandProcessor = typeof executable === "string"
+    && typeof navigator !== "undefined"
+    && /^Win/u.test(navigator.platform)
+    && /\.(?:bat|cmd)$/iu.test(executable);
+  if (!isAbsoluteExecutable || requiresCommandProcessor || !isDenseStringArray) {
+    throw browserError("preferred_terminal_config_invalid");
+  }
+  return { executable, arguments: [...terminalArguments] };
+}
+
 let browserCleanUntrackedConfirmation: { repositoryPath: string; token: string; paths: Set<string> } | null = null;
 const browserDiscardConfirmationTtlMs = 60_000;
 let browserDiscardChangesConfirmation: {
@@ -577,6 +610,34 @@ export const api = {
 
   async openRepositoryInTerminal(repositoryPath: string): Promise<void> {
     await request("open_repository_in_terminal", { repositoryPath }, () => undefined);
+  },
+
+  async openRepositoryInPreferredTerminal(repositoryPath: string): Promise<void> {
+    await request("open_repository_in_preferred_terminal", { repositoryPath }, () => {
+      if (!browserPreferredTerminal) throw browserError("preferred_terminal_not_configured");
+      validateBrowserPreferredTerminalShape(browserPreferredTerminal);
+    });
+  },
+
+  getSystemTerminal(): Promise<SystemTerminalInfo | null> {
+    return request("get_system_terminal", {}, () => null);
+  },
+
+  getPreferredTerminal(): Promise<TerminalConfig | null> {
+    return request("get_preferred_terminal", {}, () => (
+      browserPreferredTerminal ? copy(validateBrowserPreferredTerminalShape(browserPreferredTerminal)) : null
+    ));
+  },
+
+  savePreferredTerminal(terminal: TerminalConfig | null): Promise<TerminalConfig | null> {
+    return request("save_preferred_terminal", { terminal }, () => {
+      if (terminal === null) {
+        browserPreferredTerminal = null;
+        return null;
+      }
+      browserPreferredTerminal = validateBrowserPreferredTerminalShape(terminal);
+      return copy(browserPreferredTerminal);
+    });
   },
 
   getRepositoryRemoteWebUrl(repositoryPath: string): Promise<string | null> {
