@@ -4,12 +4,14 @@ import { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty,
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
+import { resolvedInterfaceFontSize } from "../../../shared/fonts";
 import { t } from "../../../shared/i18n";
 import type { CommitChangedFile, CommitFileStatus, CommitSummary } from "../../../shared/types/domain";
+import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue";
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
+  components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const message = useMessage();
@@ -41,6 +43,10 @@ export default defineComponent({
       unmerged: "U",
       unknown: "?",
     };
+    const historyFileRowHeight = computed(() => Math.ceil((29.7 * resolvedInterfaceFontSize.value / 14) + 10));
+    const commitFileVirtualKeys = computed(() => workspace.commitChangedFiles.value.map(
+      (file) => `${file.previousPath || ""}\u0000${file.path}`,
+    ));
 
     function commitFileStatusCode(file: CommitChangedFile): string {
       return commitFileStatusCodes[file.status];
@@ -194,6 +200,8 @@ export default defineComponent({
       commitContextMenuY,
       commitContextMenuOptions,
       historyActionOptions,
+      historyFileRowHeight,
+      commitFileVirtualKeys,
       commitFileStatusCode,
       commitFileStatusClass,
       commitFileStatusLabel,
@@ -313,26 +321,36 @@ export default defineComponent({
                           <span v-if="selectedCommit" class="history-pane-count">{{ commitChangedFiles.length }}</span>
                         </header>
                         <n-spin :show="commitFilesLoading" class="history-files-spin">
-                          <div v-if="commitChangedFiles.length" class="history-file-list">
+                          <FixedVirtualList
+                            v-if="commitChangedFiles.length"
+                            class="history-file-list"
+                            :item-count="commitChangedFiles.length"
+                            :item-height="historyFileRowHeight"
+                            :item-keys="commitFileVirtualKeys"
+                            :overscan-viewports="3"
+                            :reset-key="selectedCommit?.sha"
+                          >
+                            <template #default="{ index, tabIndex }">
                             <button
-                              v-for="file in commitChangedFiles"
-                              :key="`${file.previousPath || ''}\u0000${file.path}`"
                               type="button"
                               class="history-file-row"
-                              :class="[{ selected: selectedCommitFile?.path === file.path }, commitFileStatusClass(file)]"
-                              :aria-label="`${commitFileStatusLabel(file)}：${file.path}`"
-                              @click="loadCommitFileDiff(file)"
+                              data-virtual-list-focus
+                              :tabindex="tabIndex"
+                              :class="[{ selected: selectedCommitFile?.path === commitChangedFiles[index].path }, commitFileStatusClass(commitChangedFiles[index])]"
+                              :aria-label="`${commitFileStatusLabel(commitChangedFiles[index])}：${commitChangedFiles[index].path}`"
+                              @click="loadCommitFileDiff(commitChangedFiles[index])"
                             >
                               <span class="history-file-copy">
-                                <span class="history-file-path" :title="file.path">{{ file.path }}</span>
-                                <span v-if="file.previousPath" class="history-file-previous" :title="file.previousPath">
-                                  {{ t('repository.history.previousPath', { path: file.previousPath }) }}
+                                <span class="history-file-path" :title="commitChangedFiles[index].path">{{ commitChangedFiles[index].path }}</span>
+                                <span v-if="commitChangedFiles[index].previousPath" class="history-file-previous" :title="commitChangedFiles[index].previousPath || ''">
+                                  {{ t('repository.history.previousPath', { path: commitChangedFiles[index].previousPath || '' }) }}
                                 </span>
-                                <span v-else class="history-file-kind">{{ commitFileStatusLabel(file) }}</span>
+                                <span v-else class="history-file-kind">{{ commitFileStatusLabel(commitChangedFiles[index]) }}</span>
                               </span>
-                              <span class="history-file-status" :title="commitFileStatusLabel(file)">{{ commitFileStatusCode(file) }}</span>
+                              <span class="history-file-status" :title="commitFileStatusLabel(commitChangedFiles[index])">{{ commitFileStatusCode(commitChangedFiles[index]) }}</span>
                             </button>
-                          </div>
+                            </template>
+                          </FixedVirtualList>
                           <n-empty
                             v-else-if="!commitFilesLoading"
                             :description="selectedCommit ? t('repository.history.commitHasNoDisplayableFileChanges') : t('repository.history.selectCommitViewChangedFiles')"

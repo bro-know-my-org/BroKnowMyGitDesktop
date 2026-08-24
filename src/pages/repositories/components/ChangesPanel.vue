@@ -1,18 +1,23 @@
 <script lang="ts">
-import { defineComponent } from "vue";
+import { computed, defineComponent } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText } from "naive-ui";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
+import { resolvedInterfaceFontSize } from "../../../shared/fonts";
 import { t } from "../../../shared/i18n";
+import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue";
 
 export default defineComponent({
   name: "RepositoryChangesPanel",
-  components: { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText, RepositoryDiffViewer },
+  components: { FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText, RepositoryDiffViewer },
   setup() {
+    const workspace = useWorkspaceControllerContext();
     return {
-      ...useWorkspaceControllerContext(),
+      ...workspace,
       ...useRepositoryPanelSplit(),
+      changeFileRowHeight: computed(() => Math.ceil((29.7 * resolvedInterfaceFontSize.value / 14) + 8)),
+      changeFileVirtualKeys: computed(() => workspace.snapshot.value?.status.entries.map((entry) => entry.path) || []),
       t,
     };
   },
@@ -42,35 +47,45 @@ export default defineComponent({
                           @update:checked="updateAllChangeInclusion"
                         >{{ t('repository.changes.includeAllChanges') }}</n-checkbox>
                       </div>
-                      <div v-if="snapshot.status.entries.length" class="changes-file-list" :aria-label="t('repository.changes.changedFilesList')">
+                      <FixedVirtualList
+                        v-if="snapshot.status.entries.length"
+                        class="changes-file-list"
+                        :item-count="snapshot.status.entries.length"
+                        :item-height="changeFileRowHeight"
+                        :item-keys="changeFileVirtualKeys"
+                        :overscan-viewports="3"
+                        :reset-key="activeRepositoryPath"
+                        :aria-label="t('repository.changes.changedFilesList')"
+                      >
+                        <template #default="{ index, tabIndex }">
                         <div
-                          v-for="entry in snapshot.status.entries"
-                          :key="entry.path"
                           class="change-file-row"
-                          :class="{ selected: selectedChange?.path === entry.path }"
+                          data-virtual-list-focus
+                          :class="{ selected: selectedChange?.path === snapshot.status.entries[index].path }"
                           role="button"
-                          tabindex="0"
-                          @click="loadDiff(entry)"
-                          @keydown.enter.prevent="loadDiff(entry)"
-                          @keydown.space.prevent="loadDiff(entry)"
+                          :tabindex="tabIndex"
+                          @click="loadDiff(snapshot.status.entries[index])"
+                          @keydown.enter.self.prevent="loadDiff(snapshot.status.entries[index])"
+                          @keydown.space.self.prevent="loadDiff(snapshot.status.entries[index])"
                         >
                           <span class="change-file-checkbox" @click.stop>
                             <n-checkbox
                               size="small"
-                              :checked="isChangeFullyIncluded(entry)"
-                              :indeterminate="isChangePartiallyIncluded(entry)"
+                              :checked="isChangeFullyIncluded(snapshot.status.entries[index])"
+                              :indeterminate="isChangePartiallyIncluded(snapshot.status.entries[index])"
                               :disabled="mutationBusy"
-                              :aria-label="changeIncludeLabel(entry)"
-                              @update:checked="updateChangeInclusion(entry, $event)"
+                              :aria-label="changeIncludeLabel(snapshot.status.entries[index])"
+                              @update:checked="updateChangeInclusion(snapshot.status.entries[index], $event)"
                             />
                           </span>
                           <span class="change-file-copy">
-                            <span class="change-file-path" :title="entry.path">{{ entry.path }}</span>
-                            <span v-if="changeStatusLabel(entry)" class="change-file-state">{{ changeStatusLabel(entry) }}</span>
+                            <span class="change-file-path" :title="snapshot.status.entries[index].path">{{ snapshot.status.entries[index].path }}</span>
+                            <span v-if="changeStatusLabel(snapshot.status.entries[index])" class="change-file-state">{{ changeStatusLabel(snapshot.status.entries[index]) }}</span>
                           </span>
-                          <span class="change-file-status" :class="`is-${changeStatusTagType(entry)}`" aria-hidden="true" />
+                          <span class="change-file-status" :class="`is-${changeStatusTagType(snapshot.status.entries[index])}`" aria-hidden="true" />
                         </div>
-                      </div>
+                        </template>
+                      </FixedVirtualList>
                       <n-empty v-if="!snapshot.status.entries.length" :description="t('repository.changes.workingTreeClean')" :show-icon="false" />
                     </n-card>
 

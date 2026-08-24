@@ -9,9 +9,10 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm check:i18n && vue-tsc --noEmit && vite build",
-    "check": "pnpm lint:css && pnpm check:release && pnpm build",
+    "check": "pnpm lint:css && pnpm check:release && pnpm check:virtual-list && pnpm build",
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:release": "node --test scripts/release-version-utils.test.mjs",
+    "check:virtual-list": "node --test scripts/virtual-list-window.test.mjs",
     "check:release-tag": "node scripts/check-release-tag.mjs",
     "check:release-version": "node scripts/check-release-version.mjs",
     "release:prepare": "node scripts/set-version.mjs",
