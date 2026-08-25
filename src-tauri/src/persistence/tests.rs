@@ -658,6 +658,7 @@ mod tests {
                 account_profile_id: "account-1".into(),
                 remote_name: "origin".into(),
                 expected_head: "0123456789012345678901234567890123456789".into(),
+                expected_branch: "main".into(),
                 expected_repository_slug: "octo/project".into(),
                 remote_repository_id: Some("R_kgDOExample".into()),
             }],

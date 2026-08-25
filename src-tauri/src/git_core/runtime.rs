@@ -29,10 +29,10 @@ fn sleep_before_next_git_process_poll(delay: &mut Duration) {
 /// read from another thread. Retaining the permit gives the backend a hard
 /// bound on both detached workers and buffered patch input instead of letting
 /// repeated IPC calls consume unbounded resources.
-struct GitPipeOperationPermit;
+pub(super) struct GitPipeOperationPermit;
 
 impl GitPipeOperationPermit {
-    fn acquire() -> Result<Arc<Self>, AppError> {
+    pub(super) fn acquire() -> Result<Arc<Self>, AppError> {
         let mut active = ACTIVE_GIT_PIPE_OPERATIONS.load(Ordering::Acquire);
         loop {
             if active >= MAX_CONCURRENT_GIT_PIPE_OPERATIONS {
@@ -118,15 +118,41 @@ impl NetworkConfigurationLock {
         }
         Ok(lock)
     }
+
+    fn release_files(&mut self) -> Result<(), AppError> {
+        let mut first_error = None;
+        while let Some(lock) = self.files.pop() {
+            let path = lock.path;
+            let file = lock.file;
+            #[cfg(unix)]
+            let removal = {
+                let result = fs::remove_file(&path);
+                drop(file);
+                result
+            };
+            #[cfg(not(unix))]
+            let removal = {
+                drop(file);
+                fs::remove_file(path)
+            };
+            if let Err(error) = removal {
+                first_error.get_or_insert_with(|| AppError::io("释放仓库 Git 配置锁", error));
+            }
+        }
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn release(mut self) -> Result<(), AppError> {
+        self.release_files()
+    }
 }
 
 impl Drop for NetworkConfigurationLock {
     fn drop(&mut self) {
-        while let Some(lock) = self.files.pop() {
-            let path = lock.path;
-            drop(lock.file);
-            let _ = fs::remove_file(path);
-        }
+        let _ = self.release_files();
     }
 }
 
@@ -359,7 +385,14 @@ impl GitCore {
         NetworkConfigurationLock::acquire(self.network_configuration_paths(repository)?)
     }
 
-    fn network_configuration_paths(&self, repository: &Path) -> Result<Vec<PathBuf>, AppError> {
+    pub(super) fn network_configuration_paths(
+        &self,
+        repository: &Path,
+    ) -> Result<Vec<PathBuf>, AppError> {
+        let git_directory = fs::canonicalize(self.git_directory(repository)?)
+            .map_err(|error| AppError::io("验证仓库 Git 配置目录", error))?;
+        let common_directory = fs::canonicalize(self.git_common_directory(repository)?)
+            .map_err(|error| AppError::io("验证仓库 Git 配置目录", error))?;
         let mut configurations = Vec::new();
         for name in ["config", "config.worktree"] {
             let output = self.execute(
@@ -376,6 +409,28 @@ impl GitCore {
             } else {
                 repository.join(path)
             };
+            let parent = path.parent().ok_or_else(|| {
+                AppError::new("unsafe_git_config", "仓库 Git 配置位置无法安全确认。")
+            })?;
+            let parent = fs::canonicalize(parent).map_err(|_| {
+                AppError::new("unsafe_git_config", "仓库 Git 配置位置无法安全确认。")
+            })?;
+            if !paths_match(&parent, &git_directory) && !paths_match(&parent, &common_directory) {
+                return Err(AppError::new(
+                    "unsafe_git_config",
+                    "仓库 Git 配置位置超出 Git 元数据目录。",
+                ));
+            }
+            let file_name = path.file_name().ok_or_else(|| {
+                AppError::new("unsafe_git_config", "仓库 Git 配置位置无法安全确认。")
+            })?;
+            if file_name != OsStr::new(name) {
+                return Err(AppError::new(
+                    "unsafe_git_config",
+                    "仓库 Git 配置位置无法安全确认。",
+                ));
+            }
+            let path = parent.join(file_name);
             if !configurations.contains(&path) {
                 configurations.push(path);
             }

@@ -24,6 +24,106 @@ impl GitCore {
         Ok(branch)
     }
 
+    /// Captures a branch name and HEAD commit that were observed together.
+    /// External Git processes are not covered by the application lease, so
+    /// retry a changing checkout instead of persisting an impossible pair.
+    pub(crate) fn current_checkout_snapshot(
+        &self,
+        repository: &Path,
+    ) -> Result<(String, String), AppError> {
+        let mut environment = GitEnvironment::new();
+        environment.isolate_network_credentials_and_disable_hooks();
+        let read_snapshot = || -> Result<(String, String), AppError> {
+            let output = self.run(
+                Some(repository),
+                &os_arguments(&[
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--untracked-files=no",
+                    "--",
+                    ":(exclude)**",
+                ]),
+                &environment,
+                "读取发布分支快照",
+            )?;
+            let output = output_text(&output.stdout);
+            let branch = output
+                .lines()
+                .find_map(|line| line.strip_prefix("# branch.head "))
+                .ok_or_else(|| AppError::new("git_parse_error", "无法读取发布分支快照。"))?;
+            if branch == "(detached)" {
+                return Err(AppError::new("detached_head", "当前仓库未检出本地分支。"));
+            }
+            validate_ref_name(branch, "当前分支名")?;
+            let commit = output
+                .lines()
+                .find_map(|line| line.strip_prefix("# branch.oid "))
+                .ok_or_else(|| AppError::new("git_parse_error", "无法读取发布分支快照。"))?;
+            if !matches!(commit.len(), 40 | 64)
+                || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(AppError::new(
+                    "git_parse_error",
+                    "无法读取发布分支提交标识。",
+                ));
+            }
+            Ok((branch.to_owned(), commit.to_owned()))
+        };
+        let mut previous = read_snapshot()?;
+        for _ in 0..3 {
+            let current = read_snapshot()?;
+            if current == previous {
+                return Ok(current);
+            }
+            previous = current;
+        }
+        Err(AppError::new(
+            "repository_changed",
+            "当前分支或提交正在变化，请稍后重试。",
+        ))
+    }
+
+    pub(crate) fn unique_local_branch_at_commit(
+        &self,
+        repository: &Path,
+        commit: &str,
+    ) -> Result<Option<String>, AppError> {
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(AppError::new("git_parse_error", "无法读取已发布提交标识。"));
+        }
+        let points_at = format!("--points-at={commit}");
+        let output = self.run(
+            Some(repository),
+            &[
+                OsString::from("for-each-ref"),
+                OsString::from(points_at),
+                OsString::from("--count=2"),
+                OsString::from("--format=%(refname)"),
+                OsString::from("refs/heads/"),
+            ],
+            &GitEnvironment::default(),
+            "查找已发布本地分支",
+        )?;
+        let output = output_text(&output.stdout);
+        let mut matching = output
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|reference| {
+                let branch = reference
+                    .strip_prefix("refs/heads/")
+                    .ok_or_else(|| AppError::new("git_parse_error", "无法读取已发布本地分支。"))?;
+                validate_ref_name(branch, "已发布本地分支名")?;
+                Ok(branch.to_owned())
+            });
+        let first = matching.next().transpose()?;
+        if matching.next().transpose()?.is_some() {
+            return Ok(None);
+        }
+        Ok(first)
+    }
+
     /// Creates a local branch without switching to it.
     pub fn create_branch(
         &self,

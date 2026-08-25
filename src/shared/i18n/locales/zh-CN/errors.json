@@ -199,6 +199,8 @@
   "errors.pull_upstream_remote_mismatch": "当前分支没有跟踪所选 remote。",
   "errors.push_upstream_not_a_branch": "当前分支上游不是远程分支。",
   "errors.push_upstream_fetch_mapping_unavailable": "无法为首次推送的远程分支建立唯一的远程跟踪引用映射。",
+  "errors.push_finalized_cleanup_failed": "发布与本地绑定已完成，但 Git 锁文件未能清理。请勿直接重试发布；关闭应用并检查锁文件后再继续操作。",
+  "errors.push_finalization_cleanup_blocked": "本地跟踪状态已写入，但账户绑定尚未完成。请关闭应用并检查 Git 配置锁，清理后重试恢复。",
   "errors.push_tracking_setup_incomplete": "远程推送已成功，但本地远程跟踪引用同时发生变化，上游设置未能完成。请刷新仓库状态后重试设置跟踪关系。",
   "errors.remote_already_exists": "仓库中已存在同名 remote。",
   "errors.remote_binding_reconciliation_failed": "remote 添加失败，原有账号绑定恢复失败；请检查 remote 后重新关联账号。",

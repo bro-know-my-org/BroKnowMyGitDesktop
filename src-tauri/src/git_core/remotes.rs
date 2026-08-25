@@ -6,7 +6,7 @@ use super::validation::*;
 use super::*;
 
 const MAX_TAG_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
-const MAX_NETWORK_CONFIGURATION_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_NETWORK_CONFIGURATION_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NetworkConfigurationAssessment {

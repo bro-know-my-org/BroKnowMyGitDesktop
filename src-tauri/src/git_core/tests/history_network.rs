@@ -1384,6 +1384,722 @@ fn push_with_url_sets_an_official_upstream_for_a_single_branch_remote() {
     let _ = fs::remove_dir_all(remote);
 }
 
+fn published_remote_state(remote_url: &str) -> PublishedRemoteState {
+    PublishedRemoteState {
+        verified_fetch_url: remote_url.to_owned(),
+        fetch_urls: vec![remote_url.to_owned()],
+        push_urls: vec![remote_url.to_owned()],
+    }
+}
+
+#[test]
+fn published_branch_finalization_sets_upstream_after_the_remote_is_added_late() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-upstream-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-upstream-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    run_git(&repository, &["branch", "work-in-progress"]);
+    run_git(&repository, &["checkout", "-q", "work-in-progress"]);
+    let read_upstream = || {
+        test_git_command()
+            .args([
+                "-C",
+                repository.to_str().unwrap(),
+                "for-each-ref",
+                "--format=%(upstream)",
+                "refs/heads/main",
+            ])
+            .output()
+            .unwrap()
+    };
+    assert!(output_text(&read_upstream().stdout).trim().is_empty());
+    git.configure_published_branch_upstream(
+        &repository,
+        "origin",
+        "main",
+        &expected,
+        &published_remote_state(remote_url),
+    )
+        .expect("publish finalization records the already-pushed branch upstream");
+
+    assert_eq!(
+        output_text(&read_upstream().stdout).trim(),
+        "refs/remotes/origin/main"
+    );
+    let tracking_commit = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "rev-parse",
+            "refs/remotes/origin/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(tracking_commit.status.success());
+    assert_eq!(output_text(&tracking_commit.stdout).trim(), expected);
+    run_git(&repository, &["checkout", "-q", "main"]);
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_rejects_a_moved_local_branch_without_writing_tracking_state() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-moved-branch-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-moved-branch-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+
+    let git = GitCore::new();
+    let published = git.head_commit_id(&repository).unwrap();
+    fs::write(repository.join("history.txt"), "moved\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "move main"]);
+
+    let error = git
+        .configure_published_branch_upstream(
+            &repository,
+            "origin",
+            "main",
+            &published,
+            &published_remote_state(remote_url),
+        )
+        .expect_err("a moved published branch must not be finalized");
+    assert_eq!(error.code(), "push_tracking_setup_incomplete");
+
+    let upstream = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "for-each-ref",
+            "--format=%(upstream)",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(output_text(&upstream.stdout).trim().is_empty());
+    let tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main",
+        ])
+        .status()
+        .unwrap();
+    assert!(!tracking.success());
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_rejects_a_symbolic_local_branch() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-symbolic-branch-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-symbolic-branch-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/published"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    run_git(
+        &repository,
+        &["symbolic-ref", "refs/heads/published", "refs/heads/main"],
+    );
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    let error = git
+        .configure_published_branch_upstream(
+            &repository,
+            "origin",
+            "published",
+            &expected,
+            &published_remote_state(remote_url),
+        )
+        .expect_err("symbolic local branches must not be finalized");
+    assert_eq!(error.code(), "push_tracking_setup_incomplete");
+    let tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/published",
+        ])
+        .status()
+        .unwrap();
+    assert!(!tracking.success());
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_preserves_a_symbolic_tracking_reference() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-symbolic-tracking-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-symbolic-tracking-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    run_git(
+        &repository,
+        &[
+            "symbolic-ref",
+            "refs/remotes/origin/main",
+            "refs/heads/main",
+        ],
+    );
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    let error = git
+        .configure_published_branch_upstream(
+            &repository,
+            "origin",
+            "main",
+            &expected,
+            &published_remote_state(remote_url),
+        )
+        .expect_err("symbolic tracking refs must not be replaced");
+    assert_eq!(error.code(), "push_tracking_setup_incomplete");
+    let symbolic_target = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "symbolic-ref",
+            "refs/remotes/origin/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(symbolic_target.status.success());
+    assert_eq!(
+        output_text(&symbolic_target.stdout).trim(),
+        "refs/heads/main"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_does_not_require_a_nested_config_lock() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-config-rollback-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-config-rollback-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    fs::create_dir(repository.join(".git/config.lock.lock")).unwrap();
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    git.configure_published_branch_upstream(
+        &repository,
+        "origin",
+        "main",
+        &expected,
+        &published_remote_state(remote_url),
+    )
+    .expect("staging writes through the already-owned config lock handle");
+    let tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main",
+        ])
+        .status()
+        .unwrap();
+    assert!(tracking.success());
+    let upstream = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "for-each-ref",
+            "--format=%(upstream)",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output_text(&upstream.stdout).trim(),
+        "refs/remotes/origin/main"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_preserves_partial_worktree_upstream_configuration() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-existing-upstream-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-existing-upstream-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    run_git(
+        &repository,
+        &["config", "extensions.worktreeConfig", "true"],
+    );
+    run_git(
+        &repository,
+        &["config", "--worktree", "branch.main.remote", "backup"],
+    );
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    let error = git
+        .configure_published_branch_upstream(
+            &repository,
+            "origin",
+            "main",
+            &expected,
+            &published_remote_state(remote_url),
+        )
+        .expect_err("publish finalization must preserve partial worktree branch configuration");
+    assert_eq!(error.code(), "push_tracking_setup_incomplete");
+
+    let configured_remote = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "config",
+            "--worktree",
+            "--get",
+            "branch.main.remote",
+        ])
+        .output()
+        .unwrap();
+    assert!(configured_remote.status.success());
+    assert_eq!(output_text(&configured_remote.stdout).trim(), "backup");
+    let configured_merge = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "config",
+            "--worktree",
+            "--get",
+            "branch.main.merge",
+        ])
+        .status()
+        .unwrap();
+    assert!(!configured_merge.success());
+    let origin_tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main",
+        ])
+        .status()
+        .unwrap();
+    assert!(!origin_tracking.success());
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn published_branch_finalization_accepts_upstream_split_across_config_scopes() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-split-upstream-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-split-upstream-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    run_git(
+        &repository,
+        &["config", "extensions.worktreeConfig", "true"],
+    );
+    run_git(
+        &repository,
+        &["config", "branch.main.remote", "origin"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--worktree",
+            "branch.main.merge",
+            "refs/heads/main",
+        ],
+    );
+
+    let git = GitCore::new();
+    let expected = git.head_commit_id(&repository).unwrap();
+    git.configure_published_branch_upstream(
+        &repository,
+        "origin",
+        "main",
+        &expected,
+        &published_remote_state(remote_url),
+    )
+    .expect("split compatible branch configuration must be preserved");
+
+    let upstream = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "for-each-ref",
+            "--format=%(upstream)",
+            "refs/heads/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(upstream.status.success());
+    assert_eq!(
+        output_text(&upstream.stdout).trim(),
+        "refs/remotes/origin/main"
+    );
+    let tracking = test_git_command()
+        .args([
+            "-C",
+            repository.to_str().unwrap(),
+            "rev-parse",
+            "refs/remotes/origin/main",
+        ])
+        .output()
+        .unwrap();
+    assert!(tracking.status.success());
+    assert_eq!(output_text(&tracking.stdout).trim(), expected);
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+}
+
+#[cfg(unix)]
+#[test]
+fn published_branch_finalization_rejects_symlinked_reference_directories() {
+    use std::os::unix::fs::symlink;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-ref-symlink-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let remote = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-ref-symlink-remote-{}-{suffix}",
+        std::process::id()
+    ));
+    let outside_heads = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-publish-ref-symlink-outside-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&repository, &["init", "-q"]);
+    run_git(&repository, &["branch", "-m", "main"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "publish@example.invalid"],
+    );
+    run_git(&repository, &["config", "user.name", "Publish Test"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&remote, &["init", "--bare", "-q"]);
+
+    let remote_url = remote.to_str().unwrap();
+    run_git(
+        &repository,
+        &["push", remote_url, "HEAD:refs/heads/main"],
+    );
+    run_git(&repository, &["remote", "add", "origin", remote_url]);
+    let expected = GitCore::new().head_commit_id(&repository).unwrap();
+    let heads = repository.join(".git/refs/heads");
+    fs::rename(&heads, &outside_heads).unwrap();
+    symlink(&outside_heads, &heads).unwrap();
+
+    GitCore::new()
+        .configure_published_branch_upstream(
+            &repository,
+            "origin",
+            "main",
+            &expected,
+            &published_remote_state(remote_url),
+        )
+        .expect_err("reference locks must not follow repository-controlled symlinks");
+    assert!(!outside_heads.join("main.lock").exists());
+
+    let _ = fs::remove_dir_all(repository);
+    let _ = fs::remove_dir_all(remote);
+    let _ = fs::remove_dir_all(outside_heads);
+}
+
+#[test]
+fn legacy_publish_branch_lookup_rejects_noncanonical_object_id_lengths() {
+    let error = GitCore::new()
+        .unique_local_branch_at_commit(Path::new("."), &"a".repeat(41))
+        .expect_err("noncanonical object IDs must fail before Git is invoked");
+
+    assert_eq!(error.code(), "git_parse_error");
+}
+
 #[test]
 fn push_upstream_rejects_fetch_mappings_outside_the_selected_remote_namespace() {
     let suffix = SystemTime::now()

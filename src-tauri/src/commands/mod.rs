@@ -25,7 +25,7 @@ use crate::domain::{
 use crate::git_core::{
     normalize_external_editor_config, validate_git_remote_url, validate_ref_name, CloneOptions,
     DiffOptions, FetchOptions, GitCore, GitEnvironment, NetworkConfigurationAssessment,
-    PullOptions, PushOptions, RemoteUrlKind,
+    PublishedRemoteState, PullOptions, PushOptions, RemoteUrlKind,
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{

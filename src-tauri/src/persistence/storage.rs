@@ -142,12 +142,12 @@ impl PersistentProfileStore {
 }
 
 #[cfg(not(windows))]
-fn replace_file(temporary_path: &Path, destination_path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temporary_path: &Path, destination_path: &Path) -> io::Result<()> {
     fs::rename(temporary_path, destination_path)
 }
 
 #[cfg(windows)]
-fn replace_file(temporary_path: &Path, destination_path: &Path) -> io::Result<()> {
+pub(crate) fn replace_file(temporary_path: &Path, destination_path: &Path) -> io::Result<()> {
     use std::iter;
     use std::os::windows::ffi::OsStrExt;
 
@@ -191,7 +191,7 @@ fn replace_file(temporary_path: &Path, destination_path: &Path) -> io::Result<()
 }
 
 #[cfg(unix)]
-fn sync_parent_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent_directory(path: &Path) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,
@@ -210,7 +210,7 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
-fn sync_parent_directory(_path: &Path) -> io::Result<()> {
+pub(crate) fn sync_parent_directory(_path: &Path) -> io::Result<()> {
     // Windows uses MOVEFILE_WRITE_THROUGH in `replace_file`; opening a
     // directory through std::fs::File is not portable there.
     Ok(())
@@ -233,4 +233,3 @@ pub struct AppState {
     // independent desktop processes using the same profile directory.
     _profile_store_lock: Arc<fs::File>,
 }
-

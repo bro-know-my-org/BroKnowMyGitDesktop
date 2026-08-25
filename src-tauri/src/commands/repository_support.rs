@@ -308,16 +308,18 @@ pub(super) fn reconcile_pending_publish(
         })?;
         return Err(reconciliation_error());
     }
-    let current_head = git
-        .head_commit_id(repository)
-        .map_err(|_| reconciliation_error())?;
-    if current_head != pending.expected_head {
-        state.mutate(|store| {
-            store.clear_pending_publish(&repository_record.path);
-            Ok(())
-        })?;
-        return Err(reconciliation_error());
-    }
+    let expected_branch = if pending.expected_branch.is_empty() {
+        git.unique_local_branch_at_commit(repository, &pending.expected_head)?
+            .ok_or_else(|| {
+                AppError::with_safe_details(
+                    "github_publish_reconciliation_required",
+                    "检测到旧版本留下的待完成发布，但无法唯一确定原发布分支。",
+                    "发布记录已保留；请确认只有原发布分支指向该提交后重试。",
+                )
+            })?
+    } else {
+        pending.expected_branch.clone()
+    };
     let origin_exists = git
         .remotes(repository)?
         .into_iter()
@@ -363,14 +365,16 @@ pub(super) fn reconcile_pending_publish(
         return Err(reconciliation_error());
     }
 
-    let branch = git
-        .current_branch_name(repository)
-        .map_err(|_| reconciliation_error())?;
     let environment = git
         .unbound_network_environment()
         .map_err(|_| reconciliation_error())?;
-    let remote_head = git
-        .remote_branch_tip(repository, &pending.remote_name, &branch, &environment)
+    let (remote_head, verified_fetch_url) = git
+        .remote_branch_tip(
+            repository,
+            &pending.remote_name,
+            &expected_branch,
+            &environment,
+        )
         .map_err(|_| reconciliation_error())?;
     if remote_head.as_deref() != Some(pending.expected_head.as_str()) {
         return Err(AppError::new(
@@ -378,28 +382,108 @@ pub(super) fn reconcile_pending_publish(
             "已找到 origin，但尚未确认当前提交已推送到远程分支；请检查远程状态后重试。",
         ));
     }
+    let published_remote_state = PublishedRemoteState {
+        verified_fetch_url: verified_fetch_url.clone(),
+        fetch_urls: fetch_urls.clone(),
+        push_urls: push_urls.clone(),
+    };
+    git.configure_published_branch_upstream_and_then(
+        repository,
+        &pending.remote_name,
+        &expected_branch,
+        &pending.expected_head,
+        &published_remote_state,
+        || {
+            let (confirmed_remote_head, confirmed_fetch_url) = git
+                .remote_branch_tip(
+                    repository,
+                    &pending.remote_name,
+                    &expected_branch,
+                    &environment,
+                )
+                .map_err(|_| reconciliation_error())?;
+            // The remote query owns the configuration lock only while its Git
+            // child runs. Reacquire it before reading the final URL snapshot
+            // and retain it through profile persistence, so an ordinary Git
+            // writer cannot substitute origin between validation and binding.
+            let configuration_lock = git.lock_network_configuration(repository)?;
+            let persistence_result = (|| {
+                git.ensure_network_configuration_is_safe(repository)
+                    .map_err(|_| reconciliation_error())?;
+                let confirmed_fetch_urls = git
+                    .remote_urls_for_operation(repository, &pending.remote_name, false)
+                    .map_err(|_| reconciliation_error())?;
+                let confirmed_push_urls = git
+                    .remote_urls_for_operation(repository, &pending.remote_name, true)
+                    .map_err(|_| reconciliation_error())?;
+                git.verify_published_branch_upstream(
+                    repository,
+                    &pending.remote_name,
+                    &expected_branch,
+                    &pending.expected_head,
+                )
+                .map_err(|_| reconciliation_error())?;
+                if confirmed_remote_head.as_deref() != Some(pending.expected_head.as_str())
+                    || confirmed_fetch_url != verified_fetch_url
+                    || confirmed_fetch_urls != fetch_urls
+                    || confirmed_push_urls != push_urls
+                {
+                    return Err(AppError::new(
+                        "github_publish_reconciliation_required",
+                        "远程发布分支在本地跟踪状态写入期间发生变化，请检查远程状态后重试。",
+                    ));
+                }
 
-    state.mutate(|store| {
-        let account_is_current = store
-            .accounts
-            .iter()
-            .any(|current| current.id == account.id && current.endpoint_id == endpoint.id);
-        let pending_is_current =
-            store.pending_publish_for(&repository_record.path).as_ref() == Some(&pending);
-        if !account_is_current || !pending_is_current {
-            return Err(reconciliation_error());
-        }
-        store.upsert_repository(repository_record.clone());
-        store.upsert_binding(RemoteBinding {
-            repository_path: repository_record.path.clone(),
-            remote_name: pending.remote_name.clone(),
-            endpoint_id: endpoint.id.clone(),
-            account_selection: AccountSelection::Profile(account.id.clone()),
-        });
-        store.clear_pending_publish(&repository_record.path);
-        Ok(())
-    })?;
-    Ok(true)
+                let result = state.mutate_with_outcome(|store| {
+                    let endpoint_is_current =
+                        store.endpoint(&endpoint.id).as_ref() == Some(&endpoint);
+                    let account_is_current =
+                        store.accounts.iter().any(|current| current == &account);
+                    let pending_is_current = store
+                        .pending_publish_for(&repository_record.path)
+                        .as_ref()
+                        == Some(&pending);
+                    if !endpoint_is_current || !account_is_current || !pending_is_current {
+                        return Err(reconciliation_error());
+                    }
+                    store.upsert_repository(repository_record.clone());
+                    store.upsert_binding(RemoteBinding {
+                        repository_path: repository_record.path.clone(),
+                        remote_name: pending.remote_name.clone(),
+                        endpoint_id: endpoint.id.clone(),
+                        account_selection: AccountSelection::Profile(account.id.clone()),
+                    });
+                    store.clear_pending_publish(&repository_record.path);
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => Ok(true),
+                    // The atomic replacement already made the binding and pending-record
+                    // cleanup durable. Reporting failure here would send a retry down the
+                    // normal publish path even though reconciliation has completed.
+                    Err(failure) if failure.committed() => Ok(true),
+                    // Before replacement, the durable pending record remains the recovery
+                    // journal. Git finalization is idempotent, so a retry can revalidate
+                    // the remote and local branch and repair either tracking component.
+                    Err(failure) => Err(failure.into_error()),
+                }
+            })();
+            let cleanup_result = configuration_lock.release();
+            match (persistence_result, cleanup_result) {
+                (Ok(_), Err(_)) => Err(AppError::with_safe_details(
+                    "push_finalized_cleanup_failed",
+                    "发布与本地绑定已完成，但 Git 配置锁未能清理。",
+                    "请勿直接重试发布；关闭应用并检查 Git 锁文件后再继续操作。",
+                )),
+                (Err(_), Err(_)) => Err(AppError::with_safe_details(
+                    "push_finalization_cleanup_blocked",
+                    "发布分支的本地跟踪状态已写入，但账户绑定尚未完成。",
+                    "请关闭应用并检查残留的 Git 配置锁；清理后重新发布会继续恢复，不会重复创建远程仓库。",
+                )),
+                (result, Ok(())) => result,
+            }
+        },
+    )
 }
 
 pub(super) fn pending_publish_matches_requested_identity(

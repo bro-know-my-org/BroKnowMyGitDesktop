@@ -199,6 +199,8 @@
   "errors.pull_upstream_remote_mismatch": "The current branch does not track the selected remote.",
   "errors.push_upstream_not_a_branch": "The current branch upstream is not a remote branch.",
   "errors.push_upstream_fetch_mapping_unavailable": "A unique remote-tracking ref mapping could not be established for the initially pushed branch.",
+  "errors.push_finalized_cleanup_failed": "Publishing and the local binding completed, but a Git lock file could not be removed. Do not retry publishing directly; close the app and inspect the lock file before continuing.",
+  "errors.push_finalization_cleanup_blocked": "Local tracking was written, but account binding is still pending. Close the app, inspect the Git config locks, then retry recovery.",
   "errors.push_tracking_setup_incomplete": "The remote push succeeded, but the local remote-tracking ref changed concurrently, so upstream setup could not finish. Refresh the repository and retry the tracking setup.",
   "errors.remote_already_exists": "A remote with this name already exists.",
   "errors.remote_binding_reconciliation_failed": "The remote changed but its account binding could not be saved or restored. Rebind it before network operations.",

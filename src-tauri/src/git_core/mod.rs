@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -80,6 +80,7 @@ pub use models::{
     CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions, RemoteUrlKind,
     RepositorySnapshot,
 };
+pub(crate) use network::PublishedRemoteState;
 pub(crate) use remotes::NetworkConfigurationAssessment;
 pub(crate) use validation::{validate_git_remote_url, validate_ref_name};
 

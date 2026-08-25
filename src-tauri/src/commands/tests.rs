@@ -1,6 +1,9 @@
 use super::account_support::account_profile_identity_matches;
+use super::codehost::pending_publish_checkout_changed_before_remote_added;
 use super::credential_support::resolve_clone_credential_target_from_store;
-use super::repository_support::pending_publish_matches_requested_identity;
+use super::repository_support::{
+    pending_publish_matches_requested_identity, reconcile_pending_publish,
+};
 use super::support::*;
 use super::*;
 
@@ -820,6 +823,7 @@ fn pending_publish_reconciliation_requires_the_original_identity() {
         account_profile_id: "account-a".into(),
         remote_name: "origin".into(),
         expected_head: "a".repeat(40),
+        expected_branch: "main".into(),
         expected_repository_slug: "owner/project".into(),
         remote_repository_id: Some("R_kgDOExample".into()),
     };
@@ -848,6 +852,149 @@ fn pending_publish_reconciliation_requires_the_original_identity() {
         "account-a",
         "another/project"
     ));
+}
+
+#[test]
+fn pending_publish_with_an_existing_remote_uses_its_durable_branch_identity() {
+    let pending = PendingPublish {
+        repository_path: "/work/project".into(),
+        endpoint_id: "github.com".into(),
+        account_profile_id: "account-a".into(),
+        remote_name: "origin".into(),
+        expected_head: "a".repeat(40),
+        expected_branch: "main".into(),
+        expected_repository_slug: "owner/project".into(),
+        remote_repository_id: Some("R_kgDOExample".into()),
+    };
+
+    assert!(!pending_publish_checkout_changed_before_remote_added(
+        &pending,
+        true,
+        &"b".repeat(40),
+        "work-in-progress",
+    ));
+    let mut legacy = pending;
+    legacy.expected_branch.clear();
+    assert!(!pending_publish_checkout_changed_before_remote_added(
+        &legacy,
+        true,
+        &"b".repeat(40),
+        "work-in-progress",
+    ));
+}
+
+#[test]
+fn pending_publish_without_a_remote_requires_the_original_checkout() {
+    let pending = PendingPublish {
+        repository_path: "/work/project".into(),
+        endpoint_id: "github.com".into(),
+        account_profile_id: "account-a".into(),
+        remote_name: "origin".into(),
+        expected_head: "a".repeat(40),
+        expected_branch: "main".into(),
+        expected_repository_slug: "owner/project".into(),
+        remote_repository_id: Some("R_kgDOExample".into()),
+    };
+
+    assert!(pending_publish_checkout_changed_before_remote_added(
+        &pending,
+        false,
+        &"a".repeat(40),
+        "work-in-progress",
+    ));
+    assert!(pending_publish_checkout_changed_before_remote_added(
+        &pending,
+        false,
+        &"b".repeat(40),
+        "main",
+    ));
+    assert!(!pending_publish_checkout_changed_before_remote_added(
+        &pending,
+        false,
+        &"a".repeat(40),
+        "main",
+    ));
+}
+
+#[test]
+fn legacy_pending_publish_retry_keeps_branch_inference_retryable() {
+    let root = std::env::temp_dir().join(format!("bkm-legacy-publish-{}", Uuid::new_v4()));
+    let _cleanup = TestDirectoryCleanup(root.clone());
+    let repository = root.join("repository");
+    let app_data = root.join("app-data");
+    std::fs::create_dir_all(&repository).expect("temporary repository is created");
+    std::fs::create_dir_all(&app_data).expect("temporary app data is created");
+
+    let run_git = |arguments: &[&str]| {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(arguments)
+            .output()
+            .expect("git command starts");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            arguments,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.name", "BKM Test"]);
+    run_git(&["config", "user.email", "bkm@example.test"]);
+    std::fs::write(repository.join("README.md"), "legacy publish\n")
+        .expect("test content is written");
+    run_git(&["add", "README.md"]);
+    run_git(&["commit", "-q", "-m", "initial"]);
+    let expected_head = String::from_utf8(run_git(&["rev-parse", "HEAD"]).stdout)
+        .expect("commit id is UTF-8")
+        .trim()
+        .to_owned();
+
+    let state = AppState::load(&app_data).expect("test state loads");
+    let repository_record = GitCore::new()
+        .repository_record(&repository)
+        .expect("repository record is available");
+    let pending = PendingPublish {
+        repository_path: repository_record.path.clone(),
+        endpoint_id: "github.com".into(),
+        account_profile_id: "account-a".into(),
+        remote_name: "origin".into(),
+        expected_head,
+        expected_branch: String::new(),
+        expected_repository_slug: "owner/project".into(),
+        remote_repository_id: Some("R_kgDOExample".into()),
+    };
+    state
+        .mutate(|store| {
+            store.queue_pending_publish(pending.clone());
+            Ok(())
+        })
+        .expect("legacy pending publish is stored");
+    let profile_path = app_data.join("profiles.json");
+    let before_retry = std::fs::read(&profile_path).expect("durable profile is readable");
+
+    assert!(!reconcile_pending_publish(
+        &state,
+        &repository,
+        "github.com",
+        "account-a",
+        "owner/project",
+    )
+    .expect("a retry without origin remains recoverable"));
+    let after_retry = std::fs::read(&profile_path).expect("durable profile remains readable");
+    assert_eq!(
+        after_retry, before_retry,
+        "branch inference must not rewrite the durable journal",
+    );
+    let reloaded: ProfileStore =
+        serde_json::from_slice(&after_retry).expect("persisted profile JSON reloads");
+    assert_eq!(
+        reloaded.pending_publish_for(&repository_record.path),
+        Some(pending),
+        "branch inference must not permanently migrate the durable journal",
+    );
 }
 
 #[test]

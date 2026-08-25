@@ -37,6 +37,10 @@ pub struct PendingPublish {
     /// local path.
     #[serde(default)]
     pub expected_head: String,
+    /// Local branch whose immutable tip was published. Reconciliation must
+    /// not rediscover this from whichever branch is checked out on retry.
+    #[serde(default)]
+    pub expected_branch: String,
     /// Expected GitHub `owner/repository` path derived before `gh` runs.
     /// Kept separate from a transport URL because gh may choose HTTPS or SSH.
     #[serde(default)]
@@ -116,7 +120,7 @@ pub struct ProfileStore {
 }
 
 fn default_schema_version() -> u32 {
-    6
+    7
 }
 
 // Preserve the existing private state boundary while separating storage,
