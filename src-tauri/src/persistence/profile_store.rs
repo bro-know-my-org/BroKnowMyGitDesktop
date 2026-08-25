@@ -31,6 +31,27 @@ impl ProfileStore {
             .cloned()
     }
 
+    pub fn repository_network_trust_for(
+        &self,
+        repository_path: &str,
+    ) -> Option<RepositoryNetworkTrust> {
+        self.repository_network_trusts
+            .iter()
+            .find(|trust| trust.repository_path == repository_path)
+            .cloned()
+    }
+
+    pub fn upsert_repository_network_trust(&mut self, trust: RepositoryNetworkTrust) {
+        self.repository_network_trusts
+            .retain(|existing| existing.repository_path != trust.repository_path);
+        self.repository_network_trusts.push(trust);
+    }
+
+    pub fn revoke_repository_network_trust(&mut self, repository_path: &str) {
+        self.repository_network_trusts
+            .retain(|trust| trust.repository_path != repository_path);
+    }
+
     pub fn remove_account(&mut self, account_id: &str) -> Option<AccountProfile> {
         let index = self
             .accounts
@@ -108,6 +129,8 @@ impl ProfileStore {
             .retain(|repository| repository.path != repository_path);
         self.remote_bindings
             .retain(|binding| binding.repository_path != repository_path);
+        self.repository_network_trusts
+            .retain(|trust| trust.repository_path != repository_path);
         self.pending_publishes
             .retain(|pending| pending.repository_path != repository_path);
         self.pending_clones
@@ -210,4 +233,3 @@ impl ProfileStore {
         existing.clone()
     }
 }
-

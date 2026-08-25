@@ -42,6 +42,7 @@ import type {
   RemoteUrlKind,
   RemoteBinding,
   RepositoryRecord,
+  RepositoryNetworkSecurityStatus,
   RepositorySnapshot,
   SaveAccountProfileInput,
   SavePatAccountInput,
@@ -142,6 +143,21 @@ function browserCapabilities(endpointId: string): CodeHostCapabilities {
     };
   }
   return unavailableCapabilities;
+}
+
+function emptyBrowserRepositoryNetworkSecurityStatus(
+  repositoryPath: string,
+): RepositoryNetworkSecurityStatus {
+  return {
+    repositoryPath,
+    unsafeKeys: [],
+    currentFingerprint: null,
+    authorizationAllowed: true,
+    trusted: false,
+    authorizedKeys: [],
+    authorizedFingerprint: null,
+    authorizationStale: false,
+  };
 }
 
 let browserSnapshot = rawCopy(mockSnapshot);
@@ -1738,6 +1754,37 @@ export const api = {
         }
       });
       return { summary: t("demo.network.fetch", { remote: remoteName }) };
+    });
+  },
+
+  getRepositoryNetworkSecurity(repositoryPath: string): Promise<RepositoryNetworkSecurityStatus> {
+    return request("get_repository_network_security", { repositoryPath }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      return emptyBrowserRepositoryNetworkSecurityStatus(repositoryPath);
+    });
+  },
+
+  approveRepositoryNetworkConfiguration(
+    repositoryPath: string,
+    expectedFingerprint: string,
+  ): Promise<RepositoryNetworkSecurityStatus> {
+    return request(
+      "approve_repository_network_configuration",
+      { repositoryPath, expectedFingerprint },
+      () => {
+        requireBrowserSnapshot(repositoryPath);
+        throw browserError("repository_network_trust_not_required");
+      },
+    );
+  },
+
+  revokeRepositoryNetworkTrust(
+    repositoryPath: string,
+    expectedFingerprint: string,
+  ): Promise<void> {
+    return request("revoke_repository_network_trust", { repositoryPath, expectedFingerprint }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      throw browserError("repository_network_trust_changed");
     });
   },
 

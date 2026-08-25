@@ -5,7 +5,7 @@ use crate::codehost::{
 };
 use crate::command_models::{
     CleanUntrackedPreview, CreateBranchResult, DiscardChangesPreview, GitOperationState,
-    NetworkOperationResult, RepositorySnapshot,
+    NetworkOperationResult, RepositoryNetworkSecurityStatus, RepositorySnapshot,
 };
 use crate::credential_broker::{
     default_pat_keychain_reference, delete_personal_access_token, gh_auth_status, glab_auth_status,
@@ -24,10 +24,13 @@ use crate::domain::{
 };
 use crate::git_core::{
     normalize_external_editor_config, validate_git_remote_url, validate_ref_name, CloneOptions,
-    DiffOptions, FetchOptions, GitCore, GitEnvironment, PullOptions, PushOptions, RemoteUrlKind,
+    DiffOptions, FetchOptions, GitCore, GitEnvironment, NetworkConfigurationAssessment,
+    PullOptions, PushOptions, RemoteUrlKind,
 };
 use crate::github_adapter::GitHubAdapter;
-use crate::persistence::{AppState, PendingClone, PendingPublish, ProfileStore};
+use crate::persistence::{
+    AppState, PendingClone, PendingPublish, ProfileStore, RepositoryNetworkTrust,
+};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -52,6 +55,7 @@ mod remotes;
 mod repositories;
 mod repository_support;
 mod repository_watcher;
+mod security;
 mod support;
 mod system;
 mod workspace;
@@ -69,5 +73,6 @@ pub use network::*;
 pub use remotes::*;
 pub use repositories::*;
 pub use repository_watcher::*;
+pub use security::*;
 pub use system::*;
 pub use workspace::*;

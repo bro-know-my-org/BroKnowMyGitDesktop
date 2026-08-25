@@ -272,7 +272,7 @@ pub(super) fn reconcile_pending_publish(
     requested_account_profile_id: &str,
     requested_repository_slug: &str,
 ) -> Result<bool, AppError> {
-    let git = GitCore::new();
+    let git = git_for_network_operation(state, repository)?;
     let repository_record = git.repository_record(repository)?;
     let store = state.snapshot()?;
     let Some(pending) = store.pending_publish_for(&repository_record.path) else {

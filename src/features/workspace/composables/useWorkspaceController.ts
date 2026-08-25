@@ -1,11 +1,12 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { NButton, NSpace, useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
 import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, localizedErrorDetails, localizedErrorMessage, setAppLocale, t } from "../../../shared/i18n";
 import { completeStartupPerformance, markPerformance, measurePerformance } from "../../../shared/performance";
 import { colorMode, resetThemeColor, setColorMode, themeColor } from "../../../shared/theme";
+import { settingsSection } from "../../../shared/settingsNavigation";
 import {
   type AppError,
   type CodeHostCapabilities,
@@ -89,11 +90,13 @@ const snapshot = ref<RepositorySnapshot | null>(null);
 const selectedRemoteName = ref("");
 const activeCapabilities = ref<CodeHostCapabilities>(emptyCapabilities);
 let activeErrorNotification: NotificationReactive | null = null;
+let activeErrorNotificationOwner: symbol | null = null;
 
 const workspaceInitializing = ref(true);
 const snapshotLoading = ref(false);
 let repositoryTabLoadGeneration = 0;
 const networkBusy = ref<NetworkAction | null>(null);
+const networkTrustActionBusyOwners = reactive(new Set<symbol>());
 let networkOperationGeneration = 0;
 const nonRepositoryMutationBusy = ref(false);
 const mutationBusy = computed({
@@ -613,13 +616,21 @@ function remoteAuthenticationLabel(remote: RemoteProfile): string {
   return `${authenticationMethodLabel(account.authMethod)} · ${authenticationStatusLabel(account.status)}`;
 }
 
-function reportError(error: unknown, action: string): void {
+function normalizedAppError(error: unknown): AppError {
   const appError: AppError = isAppError(error)
     ? error
     : { code: "unexpected_error", message: t("workspace.controller.anUnexpectedErrorOccurred"), details: null };
-  appError.message = localizedErrorMessage(appError.code);
-  appError.details = localizedErrorDetails(appError.code) || null;
+  return {
+    ...appError,
+    message: localizedErrorMessage(appError.code),
+    details: localizedErrorDetails(appError.code) || null,
+  };
+}
+
+function reportError(error: unknown, action: string): void {
+  const appError = normalizedAppError(error);
   activeErrorNotification?.destroy();
+  activeErrorNotificationOwner = null;
   activeErrorNotification = notification.error({
     title: action,
     content: appError.message,
@@ -632,6 +643,162 @@ function reportError(error: unknown, action: string): void {
     message.warning(t("workspace.controller.thisRemoteHasMultipleOrNoUsableAccountsSelectOneExplicitlyAndRetry"));
     openBindingDrawer(activeRemote.value);
   }
+}
+
+function networkActionTargetIsCurrent(target: NetworkActionTarget): boolean {
+  return repositorySelectionIsCurrent(target.repositoryPath, target.selectionGeneration)
+    && activeRemote.value?.name === target.remoteName
+    && remoteProfileIdentity(activeRemote.value) === target.remoteIdentity;
+}
+
+function networkActionAttemptIsCurrent(
+  target: NetworkActionTarget,
+  operationGeneration: number,
+): boolean {
+  return controllerMounted
+    && operationGeneration === networkOperationGeneration
+    && networkActionTargetIsCurrent(target);
+}
+
+function networkActionPromptIsCurrent(
+  target: NetworkActionTarget,
+  operationGeneration: number,
+  owner: symbol,
+): boolean {
+  return activeErrorNotificationOwner === owner
+    && networkActionAttemptIsCurrent(target, operationGeneration);
+}
+
+function destroyOwnedErrorNotification(owner: symbol): void {
+  if (activeErrorNotificationOwner !== owner) return;
+  activeErrorNotification?.destroy();
+  activeErrorNotification = null;
+  activeErrorNotificationOwner = null;
+}
+
+function clearActiveErrorNotification(): void {
+  activeErrorNotification?.destroy();
+  activeErrorNotification = null;
+  activeErrorNotificationOwner = null;
+}
+
+function openRepositorySecuritySettings(
+  target: NetworkActionTarget,
+  operationGeneration: number,
+  owner: symbol,
+): void {
+  if (!networkActionPromptIsCurrent(target, operationGeneration, owner)) {
+    message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+    return;
+  }
+  destroyOwnedErrorNotification(owner);
+  settingsSection.value = "repository";
+  settingsModalShown.value = true;
+}
+
+async function approveNetworkConfigurationAndRetry(
+  action: NetworkAction,
+  forceWithLease: boolean,
+  target: NetworkActionTarget,
+  operationGeneration: number,
+  notificationOwner: symbol,
+): Promise<void> {
+  if (networkTrustActionBusyOwners.has(notificationOwner)) return;
+  if (!networkActionPromptIsCurrent(target, operationGeneration, notificationOwner)) {
+    message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+    return;
+  }
+  networkTrustActionBusyOwners.add(notificationOwner);
+  try {
+    const status = await api.getRepositoryNetworkSecurity(target.repositoryPath);
+    if (!networkActionPromptIsCurrent(target, operationGeneration, notificationOwner)) {
+      message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+      return;
+    }
+    if (!status.currentFingerprint) {
+      destroyOwnedErrorNotification(notificationOwner);
+      message.info(t("workspace.controller.dangerousGitConfigurationNoLongerPresentRetrying"));
+      await runNetworkAction(action, forceWithLease, target);
+      return;
+    }
+    await api.approveRepositoryNetworkConfiguration(
+      target.repositoryPath,
+      status.currentFingerprint,
+    );
+    if (!networkActionAttemptIsCurrent(target, operationGeneration)) {
+      destroyOwnedErrorNotification(notificationOwner);
+      message.warning(t("workspace.controller.repositoryConfigurationAuthorizedButSelectionChanged"));
+      return;
+    }
+    destroyOwnedErrorNotification(notificationOwner);
+    message.success(t("workspace.controller.currentDangerousGitConfigurationAuthorized"));
+    await runNetworkAction(action, forceWithLease, target);
+  } catch (error) {
+    if (!networkActionAttemptIsCurrent(target, operationGeneration)) {
+      destroyOwnedErrorNotification(notificationOwner);
+      message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+    } else if (activeErrorNotificationOwner === notificationOwner) {
+      reportError(error, t("workspace.controller.couldNotAuthorizeRepositoryGitConfiguration"));
+    } else {
+      message.error(t("workspace.controller.couldNotAuthorizeRepositoryGitConfiguration"));
+    }
+  } finally {
+    networkTrustActionBusyOwners.delete(notificationOwner);
+  }
+}
+
+function reportUnsafeNetworkConfiguration(
+  error: unknown,
+  actionLabel: string,
+  action: NetworkAction,
+  forceWithLease: boolean,
+  target: NetworkActionTarget,
+  operationGeneration: number,
+): void {
+  const appError = normalizedAppError(error);
+  const notificationOwner = Symbol("unsafe-network-configuration");
+  activeErrorNotification?.destroy();
+  activeErrorNotificationOwner = notificationOwner;
+  activeErrorNotification = notification.error({
+    title: actionLabel,
+    content: appError.message,
+    meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
+    description: appError.details || undefined,
+    action: () => h(NSpace, { size: 8 }, {
+      default: () => [
+        h(NButton, {
+          size: "small",
+          tertiary: true,
+          onClick: () => openRepositorySecuritySettings(
+            target,
+            operationGeneration,
+            notificationOwner,
+          ),
+        }, { default: () => t("workspace.controller.goToSecuritySettings") }),
+        h(NButton, {
+          size: "small",
+          type: "primary",
+          loading: networkTrustActionBusyOwners.has(notificationOwner),
+          disabled: networkTrustActionBusyOwners.has(notificationOwner),
+          onClick: () => void approveNetworkConfigurationAndRetry(
+            action,
+            forceWithLease,
+            target,
+            operationGeneration,
+            notificationOwner,
+          ),
+        }, { default: () => t("workspace.controller.allowAndRetry") }),
+      ],
+    }),
+    duration: 0,
+    closable: true,
+    onClose: () => {
+      if (activeErrorNotificationOwner === notificationOwner) {
+        activeErrorNotification = null;
+        activeErrorNotificationOwner = null;
+      }
+    },
+  });
 }
 
 async function refreshBrowserDemoLocalizedData(): Promise<void> {
@@ -897,6 +1064,7 @@ async function selectRepository(
   resetRepositoryHistory();
   resetRepositoryAuxiliary();
   networkOperationGeneration += 1;
+  clearActiveErrorNotification();
   networkBusy.value = null;
   resetRepositoryOperations();
   snapshot.value = null;
@@ -1440,6 +1608,12 @@ async function runNetworkAction(
     message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
     return;
   }
+  const target: NetworkActionTarget = {
+    repositoryPath,
+    remoteName,
+    remoteIdentity,
+    selectionGeneration,
+  };
   const releaseOperation = acquireRepositoryOperation(repositoryPath);
   if (!releaseOperation) {
     message.warning(t("workspace.controller.aRepositoryOperationIsAlreadyInProgressWaitForItToFinish"));
@@ -1482,7 +1656,20 @@ async function runNetworkAction(
         && error.code === "git_push_permission_denied"
         && activeCapabilities.value.repositoryFork
         && activeRemoteMatchesTarget();
-      if (!canOfferFork) {
+      if (
+        operationGeneration === networkOperationGeneration
+        && isAppError(error)
+        && error.code === "unsafe_git_config"
+      ) {
+        reportUnsafeNetworkConfiguration(
+          error,
+          failureAction,
+          action,
+          forceWithLease,
+          target,
+          operationGeneration,
+        );
+      } else if (!canOfferFork) {
         reportError(error, failureAction);
       } else {
         const deniedBranch = snapshot.value?.status.branch;
@@ -1677,11 +1864,22 @@ watch(appLocale, () => {
 });
 
 watch(selectedRemoteName, () => {
+  networkOperationGeneration += 1;
+  clearActiveErrorNotification();
   invalidatePlatformRequests();
   repositoryInfo.value = null;
   pullRequests.value = [];
   void loadCapabilities();
 });
+
+watch(
+  () => activeRemote.value ? remoteProfileIdentity(activeRemote.value) : null,
+  (identity, previousIdentity) => {
+    if (identity === previousIdentity) return;
+    networkOperationGeneration += 1;
+    clearActiveErrorNotification();
+  },
+);
 
 watch(activeTab, scheduleRepositoryTabLoad, { flush: "post" });
 
@@ -1840,6 +2038,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   controllerMounted = false;
+  networkOperationGeneration += 1;
+  clearActiveErrorNotification();
   repositoryTabLoadGeneration += 1;
   disposeRepositoryHistory();
   const stopWatcherGeneration = ++repositoryWatchRequestGeneration;

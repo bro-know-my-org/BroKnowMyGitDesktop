@@ -136,6 +136,16 @@ impl AppState {
             .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
     }
 
+    pub(crate) fn repository_network_trust(
+        &self,
+        repository_path: &str,
+    ) -> Result<Option<RepositoryNetworkTrust>, AppError> {
+        self.profiles
+            .lock()
+            .map(|store| store.data().repository_network_trust_for(repository_path))
+            .map_err(|_| AppError::new("state_poisoned", "应用账号状态不可用，请重启应用。"))
+    }
+
     /// Copies only the Endpoint and binding metadata required to enrich one
     /// repository's remotes. Context-menu reads must not clone accounts,
     /// recent repositories, or pending-operation state along with it.

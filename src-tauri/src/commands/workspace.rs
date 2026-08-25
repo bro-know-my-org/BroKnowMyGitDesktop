@@ -105,21 +105,44 @@ pub async fn update_submodules(
     tauri::async_runtime::spawn_blocking(move || {
         let repository = repository_root(&repository_path)?;
         let git = GitCore::new();
-        let mut lease_paths = git.submodule_operation_repository_paths(&repository, recursive)?;
-        // Linked worktrees share the parent repository's config and module
-        // administration. Reserve every sibling root as well as the module
-        // destinations, so an update started from one worktree cannot race an
-        // update initiated from another.
-        lease_paths.extend(
-            git.worktrees(&repository)?
-                .into_iter()
-                .map(|worktree| worktree.path),
-        );
-        lease_paths.sort_unstable();
-        lease_paths.dedup();
-        let lease_path_refs = lease_paths.iter().map(String::as_str).collect::<Vec<_>>();
-        let _repository_operation_lease =
-            state.acquire_repository_operation_leases(&lease_path_refs)?;
+        let discover_paths = || -> Result<(Vec<String>, Vec<String>), AppError> {
+            let initialized = git.initialized_submodule_repository_paths(&repository, recursive)?;
+            let mut leased = git.submodule_operation_repository_paths(&repository, recursive)?;
+            // Linked worktrees share the parent repository's config and
+            // module administration. Reserve every sibling root as well as
+            // the module destinations.
+            leased.extend(
+                git.worktrees(&repository)?
+                    .into_iter()
+                    .map(|worktree| worktree.path),
+            );
+            leased.sort_unstable();
+            leased.dedup();
+            Ok((initialized, leased))
+        };
+        // Another recursive update can initialize nested repositories while
+        // this command waits for the parent lease. Re-snapshot after all
+        // discovered leases are held and retry until both the initialized
+        // trust set and the mutation set are stable.
+        let mut stable_paths = None;
+        for _ in 0..4 {
+            let (initialized, leased) = discover_paths()?;
+            let lease_path_refs = leased.iter().map(String::as_str).collect::<Vec<_>>();
+            let operation_lease = state.acquire_repository_operation_leases(&lease_path_refs)?;
+            let (current_initialized, current_leased) = discover_paths()?;
+            if initialized == current_initialized && leased == current_leased {
+                stable_paths = Some((current_initialized, operation_lease));
+                break;
+            }
+        }
+        let (initialized_repository_paths, _repository_operation_lease) =
+            stable_paths.ok_or_else(|| {
+                AppError::new(
+                    "repository_topology_changed",
+                    "子模块拓扑持续变化，请稍后重试。",
+                )
+            })?;
+        let git = git_for_network_operation_paths(&state, git, &initialized_repository_paths)?;
         git.update_submodules(&repository, initialize, recursive)?;
         git.submodules(&repository)
     })

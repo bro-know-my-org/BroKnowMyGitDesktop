@@ -34,6 +34,17 @@ export interface AppError {
   details?: string | null;
 }
 
+export interface RepositoryNetworkSecurityStatus {
+  repositoryPath: string;
+  unsafeKeys: string[];
+  currentFingerprint: string | null;
+  authorizationAllowed: boolean;
+  trusted: boolean;
+  authorizedKeys: string[];
+  authorizedFingerprint: string | null;
+  authorizationStale: boolean;
+}
+
 export interface CodeHostEndpoint {
   id: string;
   kind: CodeHostKind;

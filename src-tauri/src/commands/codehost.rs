@@ -1,6 +1,59 @@
 use super::support::*;
 use super::*;
 
+struct TemporaryPublishSource(PathBuf);
+
+impl TemporaryPublishSource {
+    fn clone_from(git: &GitCore, repository: &Path) -> Result<Self, AppError> {
+        let root =
+            std::env::temp_dir().join(format!("broknowmygitdesktop-publish-{}", Uuid::new_v4()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder
+            .create(&root)
+            .map_err(|error| AppError::io("创建隔离发布目录", error))?;
+        let source = root.join("source");
+        let result = (|| {
+            let _configuration_lock = git.lock_network_configuration(repository)?;
+            git.ensure_network_configuration_is_safe(repository)?;
+            let mut environment = GitEnvironment::new();
+            environment.isolate_network_credentials_and_disable_hooks();
+            let repository_path = repository.to_str().ok_or_else(|| {
+                AppError::new(
+                    "unsupported_repository_path_encoding",
+                    "仓库路径无法用于隔离发布。",
+                )
+            })?;
+            git.clone_repository_with_environment(
+                repository_path,
+                &source,
+                &CloneOptions::default(),
+                &environment,
+            )?;
+            // gh must create its own remote inside this disposable clone; the
+            // source repository path must never remain a candidate push URL.
+            git.remove_remote(&source, "origin")?;
+            Ok(Self(source))
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        result
+    }
+}
+
+impl Drop for TemporaryPublishSource {
+    fn drop(&mut self) {
+        if let Some(root) = self.0.parent() {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn list_github_publish_owners(
     endpoint_id: String,
@@ -227,49 +280,24 @@ pub async fn publish_github_repository(
         let _account_operation_lease =
             state.acquire_account_operation_lease(&account_profile_id)?;
         let git = GitCore::new();
-        git.ensure_network_configuration_is_safe(&repository)?;
-        let requested_repository_slug = github_publish_expected_slug(&owner_login, &name)?;
-        if reconcile_pending_publish(
-            &state,
-            &repository,
-            &endpoint_id,
-            &account_profile_id,
-            &requested_repository_slug,
-        )? {
-            return snapshot_for(&state, &repository);
-        }
         let repository_record = git.repository_record(&repository)?;
-        // A previous `gh repo create --push` can fail before creating either
-        // the GitHub repository or local `origin`. `reconcile_pending_publish`
-        // above already handled every locally provable completion; when there
-        // is still no origin, this explicit user retry safely replaces the
-        // stale intent. GitHub enforces repository-name uniqueness, so an
-        // ambiguous remote-side creation cannot become a duplicate publish.
-        if let Some(pending) = state
+        // `reconcile_pending_publish` returns false for a matching durable
+        // intent only when local origin is still absent. Keep that intent so
+        // the remote create/push can be retried idempotently.
+        let existing_pending = state
             .snapshot()?
-            .pending_publish_for(&repository_record.path)
-        {
-            state.mutate(|store| {
-                if store.pending_publish_for(&repository_record.path).as_ref() != Some(&pending) {
-                    return Err(AppError::new(
-                        "github_publish_reconciliation_required",
-                        "待完成的 GitHub 发布状态已变化，请刷新后重试。",
-                    ));
-                }
-                store.clear_pending_publish(&repository_record.path);
-                Ok(())
-            })?;
-        }
-        if !git.remotes(&repository)?.is_empty() {
-            return Err(AppError::new(
-                "repository_already_has_remote",
-                "当前仓库已有 remote，不能使用发布流程覆盖它。",
-            ));
-        }
+            .pending_publish_for(&repository_record.path);
+        let existing_remotes = git.remotes(&repository)?;
         if !git.has_head(&repository)? {
             return Err(AppError::new(
                 "nothing_to_publish",
                 "请先创建至少一个本地提交，再发布到 GitHub。",
+            ));
+        }
+        if git.branch_history_contains_lfs_pointers(&repository)? {
+            return Err(AppError::new(
+                "github_publish_lfs_unsupported",
+                "当前安全发布流程暂不支持包含 Git LFS 指针的仓库。",
             ));
         }
 
@@ -306,6 +334,27 @@ pub async fn publish_github_repository(
         let expected_repository_slug =
             github_publish_expected_slug(validated_owner.login(), &name)?;
         let expected_head = git.head_commit_id(&repository)?;
+        let branch = git.current_branch_name(&repository)?;
+        if let Some(existing) = &existing_pending {
+            if !pending_publish_matches_requested_identity(
+                existing,
+                &endpoint_id,
+                &account_profile_id,
+                &expected_repository_slug,
+            ) || existing.expected_head != expected_head
+                || existing.remote_repository_id.is_none()
+            {
+                return Err(AppError::new(
+                    "github_publish_reconciliation_required",
+                    "待完成的 GitHub 发布缺少可验证的远端身份或已变化，请手动检查后重试。",
+                ));
+            }
+        } else if !existing_remotes.is_empty() {
+            return Err(AppError::new(
+                "repository_already_has_remote",
+                "当前仓库已有 remote，不能使用发布流程覆盖它。",
+            ));
+        }
         let pending = PendingPublish {
             repository_path: repository_record.path.clone(),
             endpoint_id: endpoint.id.clone(),
@@ -313,25 +362,110 @@ pub async fn publish_github_repository(
             remote_name: "origin".into(),
             expected_head,
             expected_repository_slug: expected_repository_slug.clone(),
+            remote_repository_id: existing_pending
+                .as_ref()
+                .and_then(|pending| pending.remote_repository_id.clone()),
         };
-        state.mutate(|store| {
-            store.queue_pending_publish(pending.clone());
-            Ok(())
-        })?;
+        if existing_pending.is_none() {
+            git.ensure_network_configuration_is_safe(&repository)?;
+            state.mutate(|store| {
+                store.queue_pending_publish(pending.clone());
+                Ok(())
+            })?;
+        }
 
-        // `gh repo create --push` can create the remote through GitHub's API
-        // before a later local-origin or push step fails. The absence of a
-        // local origin therefore proves nothing about the remote side effect;
-        // retain the durable intent for every post-invocation failure so a
-        // retry can reconcile instead of attempting a duplicate publish.
-        GitHubAdapter.publish_repository(
+        // gh receives a disposable clone whose config was created while the
+        // source config lock was held. Its Git child therefore cannot consume
+        // repository-controlled configuration changed after preflight.
+        let publish_target = GitHubAdapter.prepare_publish_repository(
             &endpoint,
-            &repository,
             &name,
-            validated_owner,
+            &validated_owner,
             is_private,
+            pending.remote_repository_id.as_deref(),
             deadline,
         )?;
+        let mut created_pending = pending.clone();
+        created_pending.remote_repository_id = Some(publish_target.repository_id().to_owned());
+        if created_pending != pending {
+            let persist_result = state.mutate_with_outcome(|store| {
+                if store.pending_publish_for(&repository_record.path).as_ref() != Some(&pending) {
+                    return Err(AppError::new(
+                        "github_publish_reconciliation_required",
+                        "待完成的 GitHub 发布状态已变化，请刷新后重试。",
+                    ));
+                }
+                store.queue_pending_publish(created_pending.clone());
+                Ok(())
+            });
+            if let Err(failure) = persist_result {
+                if failure.committed() {
+                    return Err(failure.into_error());
+                }
+                let error = failure.into_error();
+                let rollback_failed = publish_target.was_created()
+                    && GitHubAdapter
+                        .rollback_created_publish_repository(
+                            &endpoint,
+                            &validated_owner,
+                            &publish_target,
+                            deadline,
+                        )
+                        .is_err();
+                let cleanup_failed = !rollback_failed
+                    && state
+                        .mutate(|store| {
+                            if store.pending_publish_for(&repository_record.path).as_ref()
+                                == Some(&pending)
+                            {
+                                store.clear_pending_publish(&repository_record.path);
+                            }
+                            Ok(())
+                        })
+                        .is_err();
+                if rollback_failed || cleanup_failed {
+                    return Err(AppError::with_safe_details(
+                        "github_publish_reconciliation_required",
+                        "GitHub 仓库已创建，但本地状态保存和自动回滚均失败。",
+                        "请在 GitHub 检查并删除刚创建的同名仓库，再重试发布。",
+                    ));
+                }
+                return Err(error);
+            }
+        }
+        if existing_remotes.iter().any(|remote| remote.name == "origin")
+            && reconcile_pending_publish(
+                &state,
+                &repository,
+                &endpoint_id,
+                &account_profile_id,
+                &expected_repository_slug,
+            )?
+        {
+            return snapshot_for(&state, &repository);
+        }
+        git.ensure_network_configuration_is_safe(&repository)?;
+        let publish_source = TemporaryPublishSource::clone_from(&git, &repository)?;
+        if git.head_commit_id(&publish_source.0)? != pending.expected_head
+            || git.current_branch_name(&repository)? != branch
+            || git.head_commit_id(&repository)? != pending.expected_head
+        {
+            return Err(AppError::new(
+                "github_publish_reconciliation_required",
+                "发布期间本地分支或提交已变化，请检查后重试。",
+            ));
+        }
+        GitHubAdapter.push_publish_repository(
+            &endpoint,
+            &publish_source.0,
+            validated_owner,
+            &publish_target,
+            &branch,
+            deadline,
+        )?;
+        let published_remote_url = publish_target.remote_url().to_owned();
+        validate_git_remote_url(&published_remote_url)?;
+        git.add_remote(&repository, "origin", &published_remote_url)?;
         let origin_exists = git
             .remotes(&repository)?
             .iter()

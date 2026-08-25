@@ -22,7 +22,7 @@ const MAX_CLEAN_UNTRACKED_CONFIRMATIONS: usize = 256;
 const DISCARD_CHANGES_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 const MAX_DISCARD_CHANGES_CONFIRMATIONS: usize = 256;
 
-/// Durable intent recorded before `gh repo create --push`. It contains only
+/// Durable intent recorded before GitHub repository creation. It contains only
 /// local metadata needed to reconcile an origin that was created successfully
 /// if persisting the final account binding fails afterward.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -41,6 +41,10 @@ pub struct PendingPublish {
     /// Kept separate from a transport URL because gh may choose HTTPS or SSH.
     #[serde(default)]
     pub expected_repository_slug: String,
+    /// Immutable GitHub GraphQL node ID persisted after successful creation.
+    /// An existing slug is never reused on retry without this proof.
+    #[serde(default)]
+    pub remote_repository_id: Option<String>,
 }
 
 /// Durable clone metadata intent written before Git creates the destination.
@@ -61,6 +65,18 @@ pub struct PendingClone {
     /// remote URLs still identify this exact repository.
     #[serde(default)]
     pub expected_repository_slug: String,
+}
+
+/// App-local approval for one exact repository-scoped dangerous Git
+/// configuration. Values are represented only by a digest so credentials or
+/// executable command text never enter the profile store.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryNetworkTrust {
+    pub repository_path: String,
+    pub fingerprint: String,
+    #[serde(default)]
+    pub approved_keys: Vec<String>,
 }
 
 /// Persisted application metadata. It intentionally has no field capable of holding a PAT.
@@ -84,6 +100,8 @@ pub struct ProfileStore {
     pub pending_clones: Vec<PendingClone>,
     #[serde(default)]
     pub remote_bindings: Vec<RemoteBinding>,
+    #[serde(default)]
+    pub repository_network_trusts: Vec<RepositoryNetworkTrust>,
     /// The editor is app-local rather than repository configuration. It is
     /// launched with direct process arguments only after an explicit user
     /// action from the conflict workflow.
@@ -98,7 +116,7 @@ pub struct ProfileStore {
 }
 
 fn default_schema_version() -> u32 {
-    5
+    6
 }
 
 // Preserve the existing private state boundary while separating storage,

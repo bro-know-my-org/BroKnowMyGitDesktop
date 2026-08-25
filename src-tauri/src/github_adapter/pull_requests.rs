@@ -311,6 +311,8 @@ fn github_api_error_code(stderr: &[u8]) -> &'static str {
     let diagnostic = String::from_utf8_lossy(stderr).to_ascii_lowercase();
     if diagnostic.contains("not logged") || diagnostic.contains("authentication") {
         "github_api_failed"
+    } else if diagnostic.contains("already exists") {
+        "github_repository_exists"
     } else if diagnostic.contains("http 404") {
         "github_api_not_found"
     } else {

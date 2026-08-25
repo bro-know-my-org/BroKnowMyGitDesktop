@@ -32,7 +32,7 @@ import {
   systemInterfaceFontWeight,
 } from "../../../shared/fonts";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
-import type { SystemTerminalInfo, TerminalConfig } from "../../../shared/types/domain";
+import type { RepositoryNetworkSecurityStatus, SystemTerminalInfo, TerminalConfig } from "../../../shared/types/domain";
 import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
@@ -52,6 +52,7 @@ export default defineComponent({
       narrowSettingsViewport?.removeEventListener("change", updateSettingsTabsPlacement);
       systemTerminalRequestId += 1;
       preferredTerminalRequestId += 1;
+      repositorySecurityRequestId += 1;
     });
     const systemTerminal = ref<SystemTerminalInfo | null>(null);
     const preferredTerminal = ref<TerminalConfig | null>(null);
@@ -73,6 +74,98 @@ export default defineComponent({
     let terminalSettingsLoadedForCurrentOpen = false;
     let systemTerminalRequestId = 0;
     let preferredTerminalRequestId = 0;
+    const repositorySecurityStatus = ref<RepositoryNetworkSecurityStatus | null>(null);
+    const repositorySecurityLoading = ref(false);
+    const repositorySecurityLoadFailed = ref(false);
+    let repositorySecurityRequestId = 0;
+
+    function displayFingerprint(fingerprint: string | null): string {
+      return fingerprint ?? workspace.t("workspace.dialogs.none");
+    }
+
+    async function loadRepositorySecurity(): Promise<void> {
+      const repositoryPath = workspace.activeRepositoryPath.value;
+      const requestId = ++repositorySecurityRequestId;
+      repositorySecurityStatus.value = null;
+      repositorySecurityLoadFailed.value = false;
+      if (!repositoryPath) {
+        repositorySecurityLoading.value = false;
+        return;
+      }
+      repositorySecurityLoading.value = true;
+      try {
+        const status = await api.getRepositoryNetworkSecurity(repositoryPath);
+        if (
+          requestId !== repositorySecurityRequestId
+          || workspace.activeRepositoryPath.value !== repositoryPath
+        ) return;
+        repositorySecurityStatus.value = status;
+      } catch (error) {
+        if (
+          requestId !== repositorySecurityRequestId
+          || workspace.activeRepositoryPath.value !== repositoryPath
+        ) return;
+        repositorySecurityLoadFailed.value = true;
+        workspace.reportError(error, workspace.t("workspace.controller.couldNotLoadRepositorySecurityStatus"));
+      } finally {
+        if (requestId === repositorySecurityRequestId) repositorySecurityLoading.value = false;
+      }
+    }
+
+    function confirmRevokeRepositoryNetworkTrust(): void {
+      const repositoryPath = workspace.activeRepositoryPath.value;
+      const authorizedFingerprint = repositorySecurityStatus.value?.authorizedFingerprint;
+      if (!repositoryPath || !authorizedFingerprint) return;
+      workspace.dialog.warning({
+        title: workspace.t("workspace.dialogs.revokeRepositoryTrust"),
+        content: workspace.t("workspace.dialogs.revokeRepositoryTrustDescription"),
+        positiveText: workspace.t("workspace.dialogs.revokeAuthorization"),
+        negativeText: workspace.t("workspace.controller.cancel"),
+        onPositiveClick: async () => {
+          if (workspace.activeRepositoryPath.value !== repositoryPath) {
+            workspace.message.warning(workspace.t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
+            return;
+          }
+          if (workspace.mutationBusy.value) {
+            workspace.message.warning(workspace.t("workspace.controller.waitForTheCurrentSettingsChangeToFinish"));
+            return;
+          }
+          const requestId = ++repositorySecurityRequestId;
+          repositorySecurityLoading.value = false;
+          workspace.mutationBusy.value = true;
+          try {
+            await api.revokeRepositoryNetworkTrust(
+              repositoryPath,
+              authorizedFingerprint,
+            );
+            if (
+              requestId !== repositorySecurityRequestId
+              || workspace.activeRepositoryPath.value !== repositoryPath
+            ) return;
+            const status = repositorySecurityStatus.value;
+            if (status?.authorizedFingerprint === authorizedFingerprint) {
+              repositorySecurityStatus.value = {
+                ...status,
+                trusted: false,
+                authorizedKeys: [],
+                authorizedFingerprint: null,
+                authorizationStale: false,
+              };
+            }
+            workspace.message.success(workspace.t("workspace.controller.repositoryNetworkTrustRevoked"));
+          } catch (error) {
+            if (
+              requestId === repositorySecurityRequestId
+              && workspace.activeRepositoryPath.value === repositoryPath
+            ) {
+              workspace.reportError(error, workspace.t("workspace.controller.couldNotRevokeRepositoryNetworkTrust"));
+            }
+          } finally {
+            workspace.mutationBusy.value = false;
+          }
+        },
+      });
+    }
 
     async function loadSystemTerminalSettings(): Promise<void> {
       if (workspace.mutationBusy.value) {
@@ -204,6 +297,25 @@ export default defineComponent({
     watch(workspace.settingsModalShown, (shown) => {
       if (shown) void loadSystemFonts();
     });
+    watch(
+      [workspace.settingsModalShown, settingsSection, workspace.activeRepositoryPath, workspace.mutationBusy],
+      ([shown, section, repositoryPath, busy], previous) => {
+        const previousRepositoryPath = previous?.[2];
+        if (repositoryPath !== previousRepositoryPath) {
+          repositorySecurityRequestId += 1;
+          repositorySecurityLoading.value = false;
+          repositorySecurityStatus.value = null;
+          repositorySecurityLoadFailed.value = false;
+        }
+        if (shown && section === "repository" && !busy) void loadRepositorySecurity();
+        else if (!shown || section !== "repository") {
+          repositorySecurityRequestId += 1;
+          repositorySecurityLoading.value = false;
+          repositorySecurityStatus.value = null;
+          repositorySecurityLoadFailed.value = false;
+        }
+      },
+    );
     watch([workspace.settingsModalShown, workspace.mutationBusy, settingsSection], ([shown, busy, section], previous) => {
       const [wasShown, , previousSection] = previous ?? [false, false, "general"];
       const terminalSettingsActive = shown && section === "general";
@@ -319,6 +431,12 @@ export default defineComponent({
       loadPreferredTerminalSettings,
       savePreferredTerminal,
       confirmClearPreferredTerminal,
+      repositorySecurityStatus,
+      repositorySecurityLoading,
+      repositorySecurityLoadFailed,
+      displayFingerprint,
+      loadRepositorySecurity,
+      confirmRevokeRepositoryNetworkTrust,
       settingsSection,
       settingsTabsPlacement,
     };
@@ -492,6 +610,101 @@ export default defineComponent({
               </n-button>
             </n-space>
           </n-form>
+        </section>
+      </n-tab-pane>
+      <n-tab-pane name="repository" :tab="t('workspace.dialogs.currentRepository')">
+        <section class="settings-section">
+          <div class="settings-section-heading">
+            <strong>{{ t('workspace.dialogs.securityAndTrust') }}</strong>
+            <n-text depth="3">{{ t('workspace.dialogs.repositoryTrustOnlyAppliesToTheExactDangerousGitConfigurationFingerprint') }}</n-text>
+          </div>
+          <n-alert v-if="!activeRepositoryPath" type="info" :bordered="false">
+            {{ t('workspace.dialogs.openARepositoryToViewItsSecurityAndTrustSettings') }}
+          </n-alert>
+          <n-spin v-else :show="repositorySecurityLoading">
+            <n-alert v-if="repositorySecurityLoadFailed" type="warning" :bordered="false">
+              <n-space justify="space-between" align="center">
+                <span>{{ t('workspace.dialogs.repositorySecurityStatusCouldNotBeLoaded') }}</span>
+                <n-button
+                  size="small"
+                  tertiary
+                  :loading="repositorySecurityLoading"
+                  :disabled="mutationBusy"
+                  @click="loadRepositorySecurity"
+                >
+                  {{ t('workspace.dialogs.retry') }}
+                </n-button>
+              </n-space>
+            </n-alert>
+            <div v-else-if="repositorySecurityStatus" class="repository-security-settings">
+              <n-alert
+                :type="repositorySecurityStatus.trusted
+                  ? 'success'
+                  : !repositorySecurityStatus.authorizationAllowed && repositorySecurityStatus.unsafeKeys.length
+                    ? 'error'
+                    : repositorySecurityStatus.unsafeKeys.length ? 'warning' : 'info'"
+                :bordered="false"
+              >
+                {{ repositorySecurityStatus.trusted
+                  ? t('workspace.dialogs.currentDangerousGitConfigurationIsAuthorized')
+                  : !repositorySecurityStatus.authorizationAllowed && repositorySecurityStatus.unsafeKeys.length
+                    ? t('workspace.dialogs.dangerousGitConfigurationCannotBeAuthorized')
+                  : repositorySecurityStatus.unsafeKeys.length
+                    ? t('workspace.dialogs.dangerousGitConfigurationRequiresConfirmation')
+                    : t('workspace.dialogs.noDangerousRepositoryGitConfigurationDetected') }}
+              </n-alert>
+              <n-space justify="end">
+                <n-button
+                  size="small"
+                  tertiary
+                  :loading="repositorySecurityLoading"
+                  :disabled="mutationBusy"
+                  @click="loadRepositorySecurity"
+                >
+                  {{ t('repository.history.refresh') }}
+                </n-button>
+              </n-space>
+              <div v-if="repositorySecurityStatus.unsafeKeys.length" class="repository-security-block">
+                <strong>{{ t('workspace.dialogs.currentDangerousConfigurationKeys') }}</strong>
+                <ul class="repository-security-key-list">
+                  <li v-for="key in repositorySecurityStatus.unsafeKeys" :key="key"><code>{{ key }}</code></li>
+                </ul>
+                <n-text depth="3">
+                  {{ t('workspace.dialogs.configurationValuesAreHiddenBecauseTheyMayContainCredentialsOrCommands') }}
+                </n-text>
+                <div class="repository-security-fingerprint">
+                  <span>{{ t('workspace.dialogs.currentFingerprint') }}</span>
+                  <code>{{ displayFingerprint(repositorySecurityStatus.currentFingerprint) }}</code>
+                </div>
+              </div>
+              <n-divider />
+              <div class="repository-security-block">
+                <strong>{{ t('workspace.dialogs.savedAuthorization') }}</strong>
+                <template v-if="repositorySecurityStatus.authorizedFingerprint">
+                  <n-alert v-if="repositorySecurityStatus.authorizationStale" type="warning" :bordered="false">
+                    {{ t('workspace.dialogs.savedAuthorizationNoLongerMatchesCurrentConfiguration') }}
+                  </n-alert>
+                  <ul class="repository-security-key-list">
+                    <li v-for="key in repositorySecurityStatus.authorizedKeys" :key="key"><code>{{ key }}</code></li>
+                  </ul>
+                  <div class="repository-security-fingerprint">
+                    <span>{{ t('workspace.dialogs.authorizedFingerprint') }}</span>
+                    <code>{{ displayFingerprint(repositorySecurityStatus.authorizedFingerprint) }}</code>
+                  </div>
+                  <n-button
+                    type="error"
+                    tertiary
+                    :loading="mutationBusy"
+                    :disabled="mutationBusy"
+                    @click="confirmRevokeRepositoryNetworkTrust"
+                  >
+                    {{ t('workspace.dialogs.revokeAuthorization') }}
+                  </n-button>
+                </template>
+                <n-text v-else depth="3">{{ t('workspace.dialogs.noSavedAuthorizationForThisRepository') }}</n-text>
+              </div>
+            </div>
+          </n-spin>
         </section>
       </n-tab-pane>
       <n-tab-pane name="about" :tab="t('workspace.dialogs.about')">

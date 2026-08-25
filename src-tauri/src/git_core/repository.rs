@@ -13,6 +13,7 @@ impl GitCore {
     pub fn new() -> Self {
         Self {
             executable: PathBuf::from("git"),
+            trusted_network_configurations: HashMap::new(),
         }
     }
 
@@ -20,7 +21,23 @@ impl GitCore {
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            trusted_network_configurations: HashMap::new(),
         }
+    }
+
+    /// Applies one app-approved repository configuration fingerprint. Every
+    /// network preflight still rescans the effective configuration; the grant
+    /// is accepted only while both the canonical repository and fingerprint
+    /// continue to match.
+    pub(crate) fn with_trusted_network_configuration(
+        mut self,
+        repository: &Path,
+        fingerprint: impl Into<String>,
+    ) -> Result<Self, AppError> {
+        let repository_root = self.repository_root(repository)?;
+        self.trusted_network_configurations
+            .insert(repository_root, fingerprint.into());
+        Ok(self)
     }
 
     /// Returns the configured executable path without attempting to run it.

@@ -821,6 +821,7 @@ fn pending_publish_reconciliation_requires_the_original_identity() {
         remote_name: "origin".into(),
         expected_head: "a".repeat(40),
         expected_repository_slug: "owner/project".into(),
+        remote_repository_id: Some("R_kgDOExample".into()),
     };
 
     assert!(pending_publish_matches_requested_identity(

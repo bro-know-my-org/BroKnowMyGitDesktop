@@ -58,6 +58,17 @@ struct GitHubPublishOwnersPage {
     end_cursor: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubPublishRepositoryResponse {
+    node_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GitHubCreateRepositoryRequest<'a> {
+    name: &'a str,
+    private: bool,
+}
+
 fn parse_publish_owners_page(
     response: &str,
     expected_login: &str,
@@ -476,4 +487,3 @@ fn terminate_gh_process_group(process_id: u32) {
 
 #[cfg(all(not(unix), not(windows)))]
 fn terminate_gh_process_group(_process_id: u32) {}
-

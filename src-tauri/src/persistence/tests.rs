@@ -528,7 +528,10 @@ mod tests {
         std::fs::create_dir_all(&directory).unwrap();
         std::fs::write(
             directory.join(STORE_FILE_NAME),
-            br#"{"schemaVersion":6,"futureField":{"preserve":true}}"#,
+            format!(
+                r#"{{"schemaVersion":{},"futureField":{{"preserve":true}}}}"#,
+                default_schema_version() + 1
+            ),
         )
         .unwrap();
 
@@ -656,6 +659,12 @@ mod tests {
                 remote_name: "origin".into(),
                 expected_head: "0123456789012345678901234567890123456789".into(),
                 expected_repository_slug: "octo/project".into(),
+                remote_repository_id: Some("R_kgDOExample".into()),
+            }],
+            repository_network_trusts: vec![RepositoryNetworkTrust {
+                repository_path: path.into(),
+                fingerprint: "abc123".into(),
+                approved_keys: vec!["merge.translation.driver".into()],
             }],
             ..ProfileStore::default()
         };
@@ -665,6 +674,7 @@ mod tests {
         assert!(store.recent_repositories.is_empty());
         assert!(store.remote_bindings.is_empty());
         assert!(store.pending_publishes.is_empty());
+        assert!(store.repository_network_trusts.is_empty());
     }
 
     #[test]

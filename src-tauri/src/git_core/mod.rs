@@ -13,7 +13,8 @@ use crate::domain::{
     SubmoduleInfo, SubmoduleStatus, TagInfo, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -50,6 +51,7 @@ const DISABLED_GIT_HOOKS_PATH: &str = "/dev/null";
 #[derive(Debug, Clone)]
 pub struct GitCore {
     executable: PathBuf,
+    trusted_network_configurations: HashMap<PathBuf, String>,
 }
 
 mod branches;
@@ -78,6 +80,7 @@ pub use models::{
     CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions, RemoteUrlKind,
     RepositorySnapshot,
 };
+pub(crate) use remotes::NetworkConfigurationAssessment;
 pub(crate) use validation::{validate_git_remote_url, validate_ref_name};
 
 impl Default for GitCore {

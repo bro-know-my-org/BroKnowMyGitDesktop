@@ -36,6 +36,405 @@ fn local_credential_helper_configuration_is_rejected_before_network_git() {
 }
 
 #[test]
+fn oversized_network_configuration_fails_closed() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-oversized-config-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    assert!(test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    let config = repository.join(".git").join("config");
+    let mut file = fs::OpenOptions::new().append(true).open(&config).unwrap();
+    writeln!(file, "[merge \"oversized\"]").unwrap();
+    writeln!(
+        file,
+        "\tdriver = {}",
+        "x".repeat(1024 * 1024 + 1024)
+    )
+    .unwrap();
+
+    assert_eq!(
+        GitCore::new()
+            .network_configuration_assessment(&repository)
+            .expect_err("oversized repository config must fail closed")
+            .code(),
+        "git_output_too_large"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn exact_dangerous_configuration_fingerprint_can_be_trusted_until_it_changes() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&[
+        "config",
+        "merge.translation.driver",
+        "scripts/merge-translation.sh %O %A %B %P",
+    ]);
+
+    let assessment = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .expect("dangerous configuration is classified");
+    assert_eq!(assessment.unsafe_keys, vec!["merge.*.driver"]);
+    let fingerprint = assessment.fingerprint.expect("dangerous config has a digest");
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(&repository, fingerprint)
+        .expect("repository trust is scoped to a canonical root");
+    assert!(trusted
+        .ensure_network_configuration_is_safe(&repository)
+        .is_ok());
+
+    run_git(&[
+        "config",
+        "merge.translation.driver",
+        "scripts/replaced-driver.sh %O %A %B %P",
+    ]);
+    assert_eq!(
+        trusted
+            .ensure_network_configuration_is_safe(&repository)
+            .expect_err("a changed command invalidates the approval")
+            .code(),
+        "unsafe_git_config"
+    );
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn safe_configuration_changes_do_not_invalidate_a_dangerous_config_approval() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-safe-change-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "merge.translation.driver", "trusted-driver %A"]);
+    let fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(&repository, fingerprint)
+        .unwrap();
+
+    run_git(&["config", "user.name", "Updated display name"]);
+    assert!(trusted
+        .ensure_network_configuration_is_safe(&repository)
+        .is_ok());
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn dangerous_multi_value_order_is_part_of_the_configuration_fingerprint() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-order-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "--add", "credential.helper", "first-helper"]);
+    run_git(&["config", "--add", "credential.helper", "second-helper"]);
+    let first_fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+
+    run_git(&["config", "--unset-all", "credential.helper"]);
+    run_git(&["config", "--add", "credential.helper", "second-helper"]);
+    run_git(&["config", "--add", "credential.helper", "first-helper"]);
+    let reordered_fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+
+    assert_ne!(first_fingerprint, reordered_fingerprint);
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(&repository, first_fingerprint)
+        .unwrap();
+    assert_eq!(
+        trusted
+            .ensure_network_configuration_is_safe(&repository)
+            .expect_err("reordering dangerous values invalidates approval")
+            .code(),
+        "unsafe_git_config"
+    );
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn subsection_case_is_part_of_the_configuration_fingerprint() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-subsection-case-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&["config", "merge.DriverA.driver", "trusted-driver %A"]);
+    let first_fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+
+    run_git(&["config", "--unset-all", "merge.DriverA.driver"]);
+    run_git(&["config", "merge.drivera.driver", "trusted-driver %A"]);
+    let changed_fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+
+    assert_ne!(first_fingerprint, changed_fingerprint);
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(&repository, first_fingerprint)
+        .unwrap();
+    assert_eq!(
+        trusted
+            .ensure_network_configuration_is_safe(&repository)
+            .expect_err("changing subsection case invalidates approval")
+            .code(),
+        "unsafe_git_config"
+    );
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn external_config_includes_cannot_be_authorized() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let repository = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-include-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&repository).unwrap();
+    let included = repository.join("included.config");
+    fs::write(&included, "[user]\n\tname = Included User\n").unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    run_git(&["init", "-q"]);
+    run_git(&[
+        "config",
+        "include.path",
+        included.to_str().expect("temporary path is UTF-8"),
+    ]);
+    let assessment = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap();
+    assert!(!assessment.authorization_allowed);
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(
+            &repository,
+            assessment.fingerprint.expect("include has a fingerprint"),
+        )
+        .unwrap();
+    assert_eq!(
+        trusted
+            .ensure_network_configuration_is_safe(&repository)
+            .expect_err("external includes remain unapprovable")
+            .code(),
+        "unsafe_git_config_unapprovable"
+    );
+
+    run_git(&["config", "--unset-all", "include.path"]);
+    for conditional_key in [
+        "includeIf.onbranch:master.path",
+        "includeIf.gitdir:/work/example/**.path",
+    ] {
+        run_git(&[
+            "config",
+            conditional_key,
+            included.to_str().expect("temporary path is UTF-8"),
+        ]);
+        let conditional_assessment = GitCore::new()
+            .network_configuration_assessment(&repository)
+            .unwrap();
+        assert!(
+            !conditional_assessment.authorization_allowed,
+            "{conditional_key} must remain unapprovable"
+        );
+        let conditional_trusted = GitCore::new()
+            .with_trusted_network_configuration(
+                &repository,
+                conditional_assessment
+                    .fingerprint
+                    .expect("conditional include has a fingerprint"),
+            )
+            .unwrap();
+        assert_eq!(
+            conditional_trusted
+                .ensure_network_configuration_is_safe(&repository)
+                .expect_err("conditional includes remain unapprovable")
+                .code(),
+            "unsafe_git_config_unapprovable"
+        );
+        run_git(&["config", "--unset-all", conditional_key]);
+    }
+
+    let _ = fs::remove_dir_all(repository);
+}
+
+#[test]
+fn one_git_core_can_hold_independent_trust_for_parent_and_submodule_roots() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let parent = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-parent-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let child = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-network-trust-child-test-{}-{suffix}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&parent).unwrap();
+    fs::create_dir_all(&child).unwrap();
+    let run_git = |repository: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .arg("-C")
+            .arg(repository)
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+    for repository in [&parent, &child] {
+        run_git(repository, &["init", "-q"]);
+        run_git(repository, &["config", "user.email", "trust@example.invalid"]);
+        run_git(repository, &["config", "user.name", "Trust Test"]);
+    }
+    fs::write(child.join("tracked.txt"), "child\n").unwrap();
+    run_git(&child, &["add", "tracked.txt"]);
+    run_git(&child, &["commit", "-qm", "child"]);
+    let added = test_git_command()
+        .arg("-C")
+        .arg(&parent)
+        .args(["-c", "protocol.file.allow=always", "submodule", "add"])
+        .arg(&child)
+        .arg("modules/child")
+        .status()
+        .unwrap();
+    assert!(added.success());
+    run_git(&parent, &["commit", "-qam", "add child"]);
+
+    let child_checkout = parent.join("modules/child");
+    run_git(
+        &parent,
+        &["config", "merge.parent.driver", "trusted-parent-driver %A"],
+    );
+    run_git(
+        &child_checkout,
+        &["config", "merge.child.driver", "trusted-child-driver %A"],
+    );
+    let parent_fingerprint = GitCore::new()
+        .network_configuration_assessment(&parent)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+    let child_fingerprint = GitCore::new()
+        .network_configuration_assessment(&child_checkout)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+    let parent_only = GitCore::new()
+        .with_trusted_network_configuration(&parent, parent_fingerprint.clone())
+        .unwrap();
+    assert_eq!(
+        parent_only
+            .update_submodules(&parent, false, true)
+            .expect_err("the initialized child requires its own grant")
+            .code(),
+        "unsafe_git_config"
+    );
+
+    let trusted = GitCore::new()
+        .with_trusted_network_configuration(&parent, parent_fingerprint)
+        .unwrap()
+        .with_trusted_network_configuration(&child_checkout, child_fingerprint)
+        .unwrap();
+    trusted
+        .update_submodules(&parent, false, true)
+        .expect("parent and initialized child grants are both applied");
+
+    let _ = fs::remove_dir_all(parent);
+    let _ = fs::remove_dir_all(child);
+}
+
+#[test]
 fn repository_hooks_path_does_not_block_network_preflight() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1148,6 +1547,97 @@ fn network_configuration_lock_blocks_a_concurrent_git_config_write() {
     assert!(updated.success());
 
     let _ = fs::remove_dir_all(repository);
+}
+
+#[cfg(unix)]
+#[test]
+fn approved_network_operation_holds_config_lock_through_git_process_start() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-approved-config-lock-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let repository = root.join("repository");
+    let remote = root.join("remote.git");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&remote).unwrap();
+    assert!(test_git_command()
+        .arg("-C")
+        .arg(&repository)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(test_git_command()
+        .arg("-C")
+        .arg(&remote)
+        .args(["init", "--bare", "-q"])
+        .status()
+        .unwrap()
+        .success());
+    assert!(test_git_command()
+        .arg("-C")
+        .arg(&repository)
+        .args(["remote", "add", "origin"])
+        .arg(&remote)
+        .status()
+        .unwrap()
+        .success());
+    assert!(test_git_command()
+        .arg("-C")
+        .arg(&repository)
+        .args([
+            "config",
+            "merge.translation.driver",
+            "approved-driver %A",
+        ])
+        .status()
+        .unwrap()
+        .success());
+
+    let fingerprint = GitCore::new()
+        .network_configuration_assessment(&repository)
+        .unwrap()
+        .fingerprint
+        .unwrap();
+    let marker = root.join("config-write-result");
+    let wrapper = root.join("git-wrapper.sh");
+    fs::write(
+        &wrapper,
+        "#!/bin/sh\nrepository=''\nprevious=''\nis_fetch=0\nmarker=$(dirname \"$0\")/config-write-result\nfor argument in \"$@\"; do\n  if [ \"$previous\" = '-C' ]; then repository=$argument; fi\n  if [ \"$argument\" = 'fetch' ]; then is_fetch=1; fi\n  previous=$argument\ndone\nif [ \"$is_fetch\" = 1 ]; then\n  if git -C \"$repository\" config merge.translation.driver 'replacement-driver %A'; then\n    printf changed > \"$marker\"\n  else\n    printf blocked > \"$marker\"\n  fi\nfi\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let git = GitCore::with_executable(&wrapper)
+        .with_trusted_network_configuration(&repository, fingerprint)
+        .unwrap();
+    git.fetch(
+        &repository,
+        &FetchOptions {
+            remote: "origin".into(),
+            refspecs: Vec::new(),
+            prune: false,
+        },
+    )
+    .expect("the approved fetch completes with the configuration lock held");
+
+    assert_eq!(fs::read_to_string(&marker).unwrap(), "blocked");
+    let driver = test_git_command()
+        .arg("-C")
+        .arg(&repository)
+        .args(["config", "--get", "merge.translation.driver"])
+        .output()
+        .unwrap();
+    assert!(driver.status.success());
+    assert_eq!(output_text(&driver.stdout).trim(), "approved-driver %A");
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[cfg(unix)]

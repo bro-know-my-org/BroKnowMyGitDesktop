@@ -20,12 +20,16 @@ mod tests {
     }
 
     #[test]
-    fn github_api_error_code_only_marks_missing_resources_as_not_found() {
+    fn github_api_error_code_classifies_missing_and_existing_resources() {
         assert_eq!(
             github_api_error_code(b"HTTP 404: Not Found"),
             "github_api_not_found"
         );
         assert_eq!(github_api_error_code(b"resource not found"), "github_api_failed");
+        assert_eq!(
+            github_api_error_code(b"name already exists on this account"),
+            "github_repository_exists"
+        );
         assert_eq!(
             github_api_error_code(b"authentication token expired"),
             "github_api_failed"
@@ -172,8 +176,24 @@ mod tests {
             Some(&Some(OsString::from("test-token")))
         );
         assert_eq!(
-            environment.get(OsStr::new("GIT_CONFIG_VALUE_5")),
+            environment.get(OsStr::new("GIT_CONFIG_VALUE_7")),
             Some(&Some(OsString::from(DISABLED_PUBLISH_GIT_PATH)))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("GIT_CONFIG_KEY_0")),
+            Some(&Some(OsString::from("credential.helper")))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("GIT_CONFIG_VALUE_0")),
+            Some(&Some(OsString::new()))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("GIT_CONFIG_KEY_1")),
+            Some(&Some(OsString::from("credential.helper")))
+        );
+        assert_eq!(
+            environment.get(OsStr::new("GIT_CONFIG_VALUE_1")),
+            Some(&Some(OsString::from("!gh auth git-credential")))
         );
         assert_eq!(environment.get(OsStr::new("GIT_DIR")), Some(&None));
     }

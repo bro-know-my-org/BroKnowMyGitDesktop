@@ -82,7 +82,7 @@ struct GitOutputPreviewRead {
 /// Git serializes configuration writers through sibling .lock files. Retain
 /// those locks from the final safety preflight until the network child exits,
 /// so another ordinary Git client cannot add a URL rewrite after it is checked.
-pub(super) struct NetworkConfigurationLock {
+pub(crate) struct NetworkConfigurationLock {
     files: Vec<NetworkConfigurationLockFile>,
 }
 
@@ -352,10 +352,14 @@ impl GitCore {
         }
     }
 
-    pub(super) fn lock_network_configuration(
+    pub(crate) fn lock_network_configuration(
         &self,
         repository: &Path,
     ) -> Result<NetworkConfigurationLock, AppError> {
+        NetworkConfigurationLock::acquire(self.network_configuration_paths(repository)?)
+    }
+
+    fn network_configuration_paths(&self, repository: &Path) -> Result<Vec<PathBuf>, AppError> {
         let mut configurations = Vec::new();
         for name in ["config", "config.worktree"] {
             let output = self.execute(
@@ -376,7 +380,7 @@ impl GitCore {
                 configurations.push(path);
             }
         }
-        NetworkConfigurationLock::acquire(configurations)
+        Ok(configurations)
     }
 
     /// Executes a local Git query with a bounded stdout capture. This is used

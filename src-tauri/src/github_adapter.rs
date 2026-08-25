@@ -100,12 +100,34 @@ pub struct GitHubAdapter;
 pub(crate) struct ValidatedGitHubPublishOwner {
     endpoint_id: String,
     login: String,
+    organization: bool,
     identity: PinnedGhIdentity,
 }
 
 impl ValidatedGitHubPublishOwner {
     pub(crate) fn login(&self) -> &str {
         &self.login
+    }
+}
+
+pub(crate) struct ValidatedGitHubPublishRepository {
+    created: bool,
+    repository_id: String,
+    repository_slug: String,
+    remote_url: String,
+}
+
+impl ValidatedGitHubPublishRepository {
+    pub(crate) fn was_created(&self) -> bool {
+        self.created
+    }
+
+    pub(crate) fn repository_id(&self) -> &str {
+        &self.repository_id
+    }
+
+    pub(crate) fn remote_url(&self) -> &str {
+        &self.remote_url
     }
 }
 

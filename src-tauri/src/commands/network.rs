@@ -12,9 +12,9 @@ pub async fn fetch_remote(
         let repository = repository_root(&repository_path)?;
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-        let git = GitCore::new();
+        let git = git_for_network_operation(&state, &repository)?;
         let refspecs = git.fetch_refspecs_for_remote(&repository, &remote_name)?;
-        let target = network_environment(&state, &repository, &remote_name, false)?;
+        let target = network_environment(&state, &git, &repository, &remote_name, false)?;
         let remote_url = target
             .urls
             .first()
@@ -48,10 +48,10 @@ pub async fn pull_remote(
         let repository = repository_root(&repository_path)?;
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-        let git = GitCore::new();
+        let git = git_for_network_operation(&state, &repository)?;
         let branch = git.current_branch_name(&repository)?;
         let refspec = git.pull_refspec_for_remote(&repository, &remote_name)?;
-        let target = network_environment(&state, &repository, &remote_name, false)?;
+        let target = network_environment(&state, &git, &repository, &remote_name, false)?;
         let remote_url = target
             .urls
             .first()
@@ -91,8 +91,8 @@ pub async fn push_remote(
         let repository = repository_root(&repository_path)?;
         let _repository_operation_lease =
             state.acquire_repository_operation_lease(&repository.to_string_lossy())?;
-        let target = network_environment(&state, &repository, &remote_name, true)?;
-        let git = GitCore::new();
+        let git = git_for_network_operation(&state, &repository)?;
+        let target = network_environment(&state, &git, &repository, &remote_name, true)?;
         let (refspecs, set_upstream) = git.push_plan_for_remote(&repository, &remote_name)?;
         git.push_with_environment_at_urls(
             &repository,

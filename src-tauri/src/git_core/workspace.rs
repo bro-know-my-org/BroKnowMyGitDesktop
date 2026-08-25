@@ -432,6 +432,28 @@ impl GitCore {
         })
     }
 
+    pub(crate) fn branch_history_contains_lfs_pointers(
+        &self,
+        repository: &Path,
+    ) -> Result<bool, AppError> {
+        let output = self.run_with_output_limit(
+            Some(repository),
+            &os_arguments(&[
+                "log",
+                "--format=%H",
+                "--max-count=1",
+                "--root",
+                r"-G^version https://git-lfs\.github\.com/spec/v1$",
+                "HEAD",
+                "--",
+            ]),
+            &GitEnvironment::default(),
+            80,
+            "检查 Git LFS 历史",
+        )?;
+        Ok(!output.stdout.is_empty())
+    }
+
     /// Configures Git LFS for this repository only, leaving global Git
     /// configuration unchanged.
     pub fn install_lfs(&self, repository: &Path) -> Result<(), AppError> {

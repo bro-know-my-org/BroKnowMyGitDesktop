@@ -118,7 +118,7 @@ impl GitHubAdapter {
         let output = run_gh_with_timeout(command, Some(&serialized), deadline)?;
         if !output.status.success() {
             return Err(AppError::with_safe_details(
-                "github_api_failed",
+                github_api_error_code(&output.stderr),
                 "GitHub 请求失败，请检查 gh 登录状态和仓库访问权限。",
                 safe_command_error(&output.stderr),
             ));
@@ -229,7 +229,8 @@ impl GitHubAdapter {
     ) -> Result<ValidatedGitHubPublishOwner, AppError> {
         validate_repository_segment(requested_owner)?;
         let identity = pin_gh_identity_until(endpoint, expected_login, deadline)?;
-        let login = if requested_owner.eq_ignore_ascii_case(expected_login) {
+        let organization = !requested_owner.eq_ignore_ascii_case(expected_login);
+        let login = if !organization {
             let response =
                 self.gh_api_until_with_identity(endpoint, "user", deadline, Some(&identity))?;
             let viewer: GitHubUser = serde_json::from_str(&response).map_err(|_| {
@@ -269,22 +270,22 @@ impl GitHubAdapter {
         Ok(ValidatedGitHubPublishOwner {
             endpoint_id: endpoint.id.clone(),
             login,
+            organization,
             identity,
         })
     }
 
-    /// Creates a GitHub repository from an existing local worktree, configures
-    /// origin, and pushes through the currently active matching gh identity.
-    /// The caller validates account identity and confirms the external write.
-    pub(crate) fn publish_repository(
+    /// Creates a GitHub repository, or verifies the immutable ID recorded by a
+    /// prior attempt before allowing an existing slug to be reused.
+    pub(crate) fn prepare_publish_repository(
         &self,
         endpoint: &CodeHostEndpoint,
-        repository: &Path,
         name: &str,
-        owner: ValidatedGitHubPublishOwner,
+        owner: &ValidatedGitHubPublishOwner,
         private: bool,
+        expected_repository_id: Option<&str>,
         deadline: Instant,
-    ) -> Result<(), AppError> {
+    ) -> Result<ValidatedGitHubPublishRepository, AppError> {
         if endpoint.kind != CodeHostKind::GitHub || endpoint.id != owner.endpoint_id {
             return Err(AppError::new(
                 "adapter_endpoint_mismatch",
@@ -293,22 +294,122 @@ impl GitHubAdapter {
         }
         validate_repository_segment(name)?;
         let repository_slug = format!("{}/{}", owner.login, name.trim());
+        let remote_url = format!("https://{}/{}.git", endpoint.git_host, repository_slug);
+        let created = expected_repository_id.is_none();
+        let response = if !created {
+            self.gh_api_until_with_identity(
+                endpoint,
+                &format!("repos/{repository_slug}"),
+                deadline,
+                Some(&owner.identity),
+            )?
+        } else {
+            let path = if owner.organization {
+                format!("orgs/{}/repos", owner.login)
+            } else {
+                "user/repos".to_owned()
+            };
+            self.gh_api_post_json_until_with_identity(
+                endpoint,
+                &path,
+                &GitHubCreateRepositoryRequest {
+                    name: name.trim(),
+                    private,
+                },
+                deadline,
+                Some(&owner.identity),
+            )?
+        };
+        let response: GitHubPublishRepositoryResponse = serde_json::from_str(&response)
+            .map_err(|_| {
+                AppError::new(
+                    "github_api_invalid_response",
+                    "无法解析 GitHub 发布仓库信息。",
+                )
+            })?;
+        if response.node_id.is_empty()
+            || expected_repository_id.is_some_and(|expected| expected != response.node_id)
+        {
+            return Err(AppError::new(
+                "github_publish_reconciliation_failed",
+                "待完成的 GitHub 发布与远端仓库身份不匹配。",
+            ));
+        }
+        Ok(ValidatedGitHubPublishRepository {
+            created,
+            repository_id: response.node_id,
+            repository_slug,
+            remote_url,
+        })
+    }
+
+    pub(crate) fn rollback_created_publish_repository(
+        &self,
+        endpoint: &CodeHostEndpoint,
+        owner: &ValidatedGitHubPublishOwner,
+        target: &ValidatedGitHubPublishRepository,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
         let mut command = Command::new("gh");
-        command
-            .arg("repo")
-            .arg("create")
-            .arg(repository_slug)
-            .arg("--hostname")
-            .arg(owner.identity.hostname.as_str())
-            .arg("--source")
-            .arg(repository)
-            .arg("--remote")
-            .arg("origin")
-            .arg("--push")
-            .arg(if private { "--private" } else { "--public" });
+        let repository_id = format!("repositoryId={}", target.repository_id);
+        command.args([
+            "api",
+            "graphql",
+            "--hostname",
+            owner.identity.hostname.as_str(),
+            "-f",
+            "query=mutation DeleteRepository($repositoryId: ID!) { deleteRepository(input: { repositoryId: $repositoryId }) { clientMutationId } }",
+            "-F",
+            repository_id.as_str(),
+        ]);
         apply_pinned_gh_identity(&mut command, endpoint, &owner.identity)?;
-        isolate_pinned_publish_git_environment(&mut command);
         let output = run_gh_with_timeout(command, None, deadline)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(AppError::new(
+                "github_publish_reconciliation_required",
+                "远端仓库已创建，但本地状态保存和自动回滚均失败。",
+            ))
+        }
+    }
+
+    /// Pushes a disposable clone whose local configuration was created while
+    /// the original repository configuration lock was held.
+    pub(crate) fn push_publish_repository(
+        &self,
+        endpoint: &CodeHostEndpoint,
+        repository: &Path,
+        owner: ValidatedGitHubPublishOwner,
+        target: &ValidatedGitHubPublishRepository,
+        branch: &str,
+        deadline: Instant,
+    ) -> Result<(), AppError> {
+        let response = self.gh_api_until_with_identity(
+            endpoint,
+            &format!("repos/{}", target.repository_slug),
+            deadline,
+            Some(&owner.identity),
+        )?;
+        let response: GitHubPublishRepositoryResponse = serde_json::from_str(&response)
+            .map_err(|_| AppError::new("github_api_invalid_response", "无法解析 GitHub 发布仓库信息。"))?;
+        if response.node_id != target.repository_id {
+            return Err(AppError::new(
+                "github_publish_reconciliation_failed",
+                "待完成的 GitHub 发布与远端仓库身份不匹配。",
+            ));
+        }
+        let mut push = Command::new("git");
+        push.arg("-C")
+            .arg(repository)
+            .arg("push")
+            .arg("--recurse-submodules=no")
+            .arg("--")
+            .arg(&target.remote_url)
+            .arg(format!("HEAD:refs/heads/{branch}"));
+        apply_pinned_gh_identity(&mut push, endpoint, &owner.identity)?;
+        isolate_pinned_publish_git_environment(&mut push);
+        let output = run_gh_with_timeout(push, None, deadline)?;
         if !output.status.success() {
             return Err(github_publish_command_error(&output.stderr));
         }
@@ -742,11 +843,11 @@ fn isolate_pinned_publish_git_environment(command: &mut Command) {
         .env("GIT_PROTOCOL_FROM_USER", "0")
         .env("GIT_ALLOW_PROTOCOL", "https")
         .env("GIT_TERMINAL_PROMPT", "0");
-    // `gh repo create --push` invokes Git through gh's AuthenticatedCommand,
-    // which adds a command-level empty helper followed by `gh auth
-    // git-credential`. The pinned GH_TOKEN is therefore the only credential
-    // source; do not add another environment-level helper here.
+    // The command-level empty helper discards repository/global helpers, then
+    // the fixed gh helper consumes only the pinned GH_TOKEN above.
     let configuration = [
+        ("credential.helper", ""),
+        ("credential.helper", "!gh auth git-credential"),
         ("http.extraheader", ""),
         ("http.proxy", ""),
         ("http.sslverify", "true"),

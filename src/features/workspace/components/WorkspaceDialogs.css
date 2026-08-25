@@ -90,6 +90,33 @@
   margin-top: 14px;
 }
 
+.repository-security-settings,
+.repository-security-block {
+  display: grid;
+  gap: 14px;
+}
+
+.repository-security-key-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.repository-security-key-list code,
+.repository-security-fingerprint code {
+  overflow-wrap: anywhere;
+  color: var(--app-text-strong);
+  font-family: var(--app-monospace-font-family);
+}
+
+.repository-security-fingerprint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--app-text-tertiary);
+}
+
 .settings-subsection-heading strong,
 .settings-section-heading strong,
 .settings-about-heading strong {

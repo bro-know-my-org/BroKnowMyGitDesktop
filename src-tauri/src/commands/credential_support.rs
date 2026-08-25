@@ -143,11 +143,11 @@ pub(super) fn resolve_clone_credential_target_from_store(
 
 pub(super) fn network_environment(
     state: &AppState,
+    git: &GitCore,
     repository: &Path,
     remote_name: &str,
     push: bool,
 ) -> Result<NetworkOperationTarget, AppError> {
-    let git = GitCore::new();
     let repository_record = git.repository_record(repository)?;
     let raw_remote_urls = git.remote_urls_for_operation(repository, remote_name, push)?;
     let raw_remote_url = raw_remote_urls
@@ -267,6 +267,31 @@ pub(super) fn network_environment(
         environment: credential_environment_for_resolution(&resolution, account)?,
         urls: raw_remote_urls,
     })
+}
+
+pub(super) fn git_for_network_operation(
+    state: &AppState,
+    repository: &Path,
+) -> Result<GitCore, AppError> {
+    let git = GitCore::new();
+    let repository_record = git.repository_record(repository)?;
+    git_for_network_operation_paths(state, git, &[repository_record.path])
+}
+
+pub(super) fn git_for_network_operation_paths(
+    state: &AppState,
+    mut git: GitCore,
+    repository_paths: &[String],
+) -> Result<GitCore, AppError> {
+    for repository_path in repository_paths {
+        if let Some(trust) = state.repository_network_trust(repository_path)? {
+            git = git.with_trusted_network_configuration(
+                Path::new(repository_path),
+                trust.fingerprint,
+            )?;
+        }
+    }
+    Ok(git)
 }
 
 pub(super) fn credential_environment_for_resolution(

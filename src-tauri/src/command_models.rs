@@ -45,6 +45,21 @@ pub struct NetworkOperationResult {
     pub summary: String,
 }
 
+/// Safe, display-ready repository network trust state. Dangerous values are
+/// deliberately omitted because they may contain credentials or commands.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryNetworkSecurityStatus {
+    pub repository_path: String,
+    pub unsafe_keys: Vec<String>,
+    pub current_fingerprint: Option<String>,
+    pub authorization_allowed: bool,
+    pub trusted: bool,
+    pub authorized_keys: Vec<String>,
+    pub authorized_fingerprint: Option<String>,
+    pub authorization_stale: bool,
+}
+
 /// A short-lived server-side confirmation for one exact set of untracked
 /// files. The token prevents a later broad clean from deleting files that did
 /// not appear in the preview the user reviewed.
