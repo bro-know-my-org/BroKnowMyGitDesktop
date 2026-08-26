@@ -43,7 +43,7 @@ export default defineComponent({
       unmerged: "U",
       unknown: "?",
     };
-    const historyFileRowHeight = computed(() => Math.ceil((29.7 * resolvedInterfaceFontSize.value / 14) + 10));
+    const historyFileRowHeight = computed(() => Math.ceil((25.3 * resolvedInterfaceFontSize.value / 14) + 3));
     const commitFileVirtualKeys = computed(() => workspace.commitChangedFiles.value.map(
       (file) => `${file.previousPath || ""}\u0000${file.path}`,
     ));

@@ -86,12 +86,12 @@
   min-height: 0;
   align-items: center;
   gap: 6px;
-  padding: 2px 5px;
+  padding: 0 5px;
   border: 1px solid transparent;
   border-radius: 0;
   cursor: pointer;
   content-visibility: auto;
-  contain-intrinsic-size: auto 38px;
+  contain-intrinsic-size: auto 29px;
   outline: none;
 }
 
@@ -127,7 +127,7 @@
   color: var(--app-text-body);
   font-size: calc(12px * var(--app-font-scale));
   font-weight: clamp(100, calc(620 + var(--app-font-weight-offset)), 900);
-  line-height: 1.35;
+  line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -136,7 +136,7 @@
   overflow: hidden;
   color: var(--app-text-tertiary);
   font-size: calc(10px * var(--app-font-scale));
-  line-height: 1.35;
+  line-height: 1.15;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

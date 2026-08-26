@@ -16,7 +16,7 @@ export default defineComponent({
     return {
       ...workspace,
       ...useRepositoryPanelSplit(),
-      changeFileRowHeight: computed(() => Math.ceil((29.7 * resolvedInterfaceFontSize.value / 14) + 8)),
+      changeFileRowHeight: computed(() => Math.ceil((25.3 * resolvedInterfaceFontSize.value / 14) + 3)),
       changeFileVirtualKeys: computed(() => workspace.snapshot.value?.status.entries.map((entry) => entry.path) || []),
       t,
     };
