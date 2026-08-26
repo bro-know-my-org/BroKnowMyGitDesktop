@@ -35,6 +35,7 @@ ignore = "0.4"
 zeroize = "1"
 fontdb = "0.23"
 sha2 = "0.10"
+tauri-plugin-dialog = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

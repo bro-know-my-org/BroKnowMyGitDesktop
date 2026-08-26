@@ -5,7 +5,8 @@ use crate::codehost::{
 };
 use crate::command_models::{
     CleanUntrackedPreview, CreateBranchResult, DiscardChangesPreview, GitOperationState,
-    NetworkOperationResult, RepositoryNetworkSecurityStatus, RepositorySnapshot,
+    NetworkOperationResult, RepositoryDiscoveryResult, RepositoryImportResult,
+    RepositoryNetworkSecurityStatus, RepositorySnapshot,
 };
 use crate::credential_broker::{
     default_pat_keychain_reference, delete_personal_access_token, gh_auth_status, glab_auth_status,
@@ -29,7 +30,7 @@ use crate::git_core::{
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{
-    AppState, PendingClone, PendingPublish, ProfileStore, RepositoryNetworkTrust,
+    AppState, PendingClone, PendingPublish, ProfileStore, RepositoryNetworkTrust, MAX_REPOSITORIES,
 };
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};

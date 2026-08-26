@@ -107,17 +107,125 @@ pub async fn list_repositories(
 pub async fn discover_repositories(
     root_path: String,
     state: State<'_, AppState>,
-) -> Result<Vec<RepositoryRecord>, AppError> {
+) -> Result<RepositoryDiscoveryResult, AppError> {
     let state = state.inner().clone();
     let root_path = root_path.trim().to_owned();
     tauri::async_runtime::spawn_blocking(move || {
         let repositories =
             GitCore::new().discover_repositories(Path::new(&root_path), DISCOVERY_MAX_DEPTH)?;
-        remember_repositories(&state, &repositories)?;
-        Ok(repositories)
+        let import_limit =
+            MAX_REPOSITORIES.saturating_sub(state.snapshot()?.recent_repositories.len());
+        Ok(RepositoryDiscoveryResult {
+            repositories,
+            import_limit,
+        })
     })
     .await
     .map_err(|_| AppError::new("repository_discovery_failed", "仓库发现任务未能完成。"))?
+}
+
+#[derive(Debug)]
+pub(super) struct RepositoryPathValidationResult {
+    pub repositories: Vec<RepositoryRecord>,
+    pub rejected_count: usize,
+}
+
+pub(super) fn repository_records_for_paths(
+    repository_paths: Vec<String>,
+) -> Result<RepositoryPathValidationResult, AppError> {
+    if repository_paths.len() > MAX_REPOSITORIES {
+        return Err(AppError::new(
+            "repository_import_limit_exceeded",
+            "一次添加的仓库数量过多，请分批重试。",
+        ));
+    }
+    let git = GitCore::new();
+    let mut seen_inputs = std::collections::HashSet::new();
+    let mut seen_paths = std::collections::HashSet::new();
+    let mut repositories = Vec::new();
+    let mut rejected_count = 0;
+    for repository_path in repository_paths {
+        let repository_path = repository_path.trim();
+        if !seen_inputs.insert(repository_path.to_owned()) {
+            rejected_count += 1;
+            continue;
+        }
+        let Ok(path) = required_path(repository_path, "仓库路径") else {
+            rejected_count += 1;
+            continue;
+        };
+        let repository = match git.repository_record(&path) {
+            Ok(repository) => repository,
+            Err(error) if error.code() == "not_a_git_repository" => {
+                rejected_count += 1;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if seen_paths.insert(repository.path.clone()) {
+            repositories.push(repository);
+        } else {
+            rejected_count += 1;
+        }
+    }
+    Ok(RepositoryPathValidationResult {
+        repositories,
+        rejected_count,
+    })
+}
+
+#[tauri::command]
+pub async fn add_discovered_repositories(
+    repository_paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<RepositoryImportResult, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        import_discovered_repositories(repository_paths, &state)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "添加仓库后台任务未能完成。"))?
+}
+
+pub(super) fn import_discovered_repositories(
+    repository_paths: Vec<String>,
+    state: &AppState,
+) -> Result<RepositoryImportResult, AppError> {
+    let initial_selection = repository_records_for_paths(repository_paths)?;
+    let selected_paths = initial_selection
+        .repositories
+        .iter()
+        .map(|repository| repository.path.clone())
+        .collect::<Vec<_>>();
+    let git = GitCore::new();
+    let mut lease_paths = Vec::new();
+    for repository in &initial_selection.repositories {
+        lease_paths.push(repository.path.clone());
+        lease_paths.extend(
+            git.worktrees(Path::new(&repository.path))?
+                .into_iter()
+                .map(|worktree| worktree.path),
+        );
+    }
+    let lease_path_refs = lease_paths.iter().map(String::as_str).collect::<Vec<_>>();
+    let _repository_operation_lease = if lease_path_refs.is_empty() {
+        None
+    } else {
+        Some(state.acquire_repository_operation_leases(&lease_path_refs)?)
+    };
+    let selection = repository_records_for_paths(selected_paths)?;
+    let selected_count = selection.repositories.len();
+    let (repositories, remaining_capacity, persistence_warning) =
+        remember_repositories(state, selection.repositories)?;
+    Ok(RepositoryImportResult {
+        rejected_count: initial_selection.rejected_count
+            + selection.rejected_count
+            + selected_count
+            - repositories.len(),
+        repositories,
+        remaining_capacity,
+        persistence_warning,
+    })
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 use super::account_support::account_profile_identity_matches;
 use super::codehost::pending_publish_checkout_changed_before_remote_added;
 use super::credential_support::resolve_clone_credential_target_from_store;
+use super::repositories::{import_discovered_repositories, repository_records_for_paths};
 use super::repository_support::{
     pending_publish_matches_requested_identity, reconcile_pending_publish,
 };
@@ -68,6 +69,92 @@ fn clone_destination_lease_key_normalizes_parent_aliases() {
             .code(),
         "invalid_clone_destination"
     );
+}
+
+#[test]
+fn repository_selection_is_revalidated_and_deduplicated_by_canonical_root() {
+    let root = std::env::temp_dir().join(format!("bkm-add-repositories-{}", Uuid::new_v4()));
+    let _cleanup = TestDirectoryCleanup(root.clone());
+    let repository = root.join("project");
+    let nested = repository.join("nested");
+    std::fs::create_dir_all(&nested).expect("repository directories are created");
+    let initialized = Command::new("git")
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .expect("git can initialize the test repository");
+    assert!(initialized.success());
+
+    let records = repository_records_for_paths(vec![
+        repository.to_string_lossy().into_owned(),
+        repository.to_string_lossy().into_owned(),
+        nested.to_string_lossy().into_owned(),
+    ])
+    .expect("selected paths are resolved again before persistence");
+
+    assert_eq!(records.repositories.len(), 1);
+    assert_eq!(records.rejected_count, 2);
+    assert_eq!(
+        records.repositories[0].path,
+        std::fs::canonicalize(repository).unwrap().to_string_lossy()
+    );
+}
+
+#[test]
+fn repository_selection_keeps_valid_repositories_when_another_path_is_stale() {
+    let root = std::env::temp_dir().join(format!("bkm-stale-repository-{}", Uuid::new_v4()));
+    let _cleanup = TestDirectoryCleanup(root.clone());
+    let repository = root.join("project");
+    std::fs::create_dir_all(&repository).expect("repository directory is created");
+    let initialized = Command::new("git")
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .expect("git can initialize the test repository");
+    assert!(initialized.success());
+
+    let records = repository_records_for_paths(vec![
+        root.join("missing").to_string_lossy().into_owned(),
+        repository.to_string_lossy().into_owned(),
+    ])
+    .expect("a stale candidate does not abort valid selections");
+
+    assert_eq!(records.repositories.len(), 1);
+    assert_eq!(records.rejected_count, 1);
+}
+
+#[test]
+fn repository_selection_rejects_more_paths_than_the_catalog_can_retain() {
+    let error = repository_records_for_paths(vec!["/work/project".into(); MAX_REPOSITORIES + 1])
+        .expect_err("oversized IPC selections must be rejected before Git validation");
+
+    assert_eq!(error.code(), "repository_import_limit_exceeded");
+}
+
+#[test]
+fn repository_import_respects_repository_operation_leases() {
+    let root = std::env::temp_dir().join(format!("bkm-import-lease-{}", Uuid::new_v4()));
+    let _cleanup = TestDirectoryCleanup(root.clone());
+    let repository = root.join("project");
+    let app_data = root.join("app-data");
+    std::fs::create_dir_all(&repository).expect("repository directory is created");
+    let initialized = Command::new("git")
+        .args(["-C", repository.to_str().unwrap(), "init", "-q"])
+        .status()
+        .expect("git can initialize the test repository");
+    assert!(initialized.success());
+    let canonical = std::fs::canonicalize(repository)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let state = AppState::load(&app_data).expect("profile store loads");
+    let _lease = state
+        .acquire_repository_operation_leases(&[canonical.as_str()])
+        .expect("another operation owns the repository path");
+
+    let error = import_discovered_repositories(vec![canonical], &state)
+        .expect_err("repository import must not race another Git operation");
+
+    assert_eq!(error.code(), "repository_operation_in_progress");
+    assert!(state.snapshot().unwrap().recent_repositories.is_empty());
 }
 
 #[test]

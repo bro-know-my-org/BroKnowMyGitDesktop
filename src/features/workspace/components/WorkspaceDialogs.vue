@@ -4,6 +4,7 @@ import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescri
 import packageMetadata from "../../../../package.json";
 import { api } from "../../../shared/api/tauri";
 import { diffLineWrapping, setDiffLineWrapping } from "../../../shared/diffPreferences";
+import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue";
 import {
   codeFont,
   codeFontSize,
@@ -14,6 +15,7 @@ import {
   interfaceFontWeight,
   loadSystemFonts,
   resetFonts,
+  resolvedInterfaceFontSize,
   setCodeFont,
   setCodeFontSize,
   setCodeFontWeight,
@@ -37,9 +39,15 @@ import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
+  components: { FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
+    const repositoryDiscoveryRowHeight = computed(() =>
+      Math.max(58, Math.ceil((46 * resolvedInterfaceFontSize.value / 14) + 18)));
+    const repositoryDiscoveryVirtualKeys = computed(() =>
+      workspace.discoveredRepositories.value.map((repository) => repository.path));
+    const repositoryDiscoveryListHeight = computed(() =>
+      `${Math.min(420, workspace.discoveredRepositories.value.length * repositoryDiscoveryRowHeight.value)}px`);
     const narrowSettingsViewport = typeof window === "undefined" || typeof window.matchMedia !== "function"
       ? null
       : window.matchMedia("(max-width: 600px)");
@@ -400,6 +408,9 @@ export default defineComponent({
       codeFontWeight,
       codeLigatures,
       diffLineWrapping,
+      repositoryDiscoveryRowHeight,
+      repositoryDiscoveryVirtualKeys,
+      repositoryDiscoveryListHeight,
       systemFontsLoading,
       interfaceFontOptions,
       codeFontOptions,
@@ -828,10 +839,87 @@ export default defineComponent({
     <template #action><n-space justify="end"><n-button @click="initModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="initRepository">{{ t('workspace.dialogs.createRepository') }}</n-button></n-space></template>
   </n-modal>
 
-  <n-modal v-model:show="discoverModalShown" preset="card" :title="t('workspace.dialogs.discoverLocalRepositories')" class="dialog-card" :mask-closable="!mutationBusy">
-    <n-form label-placement="top"><n-form-item :label="t('workspace.dialogs.scanRootFolder')"><n-input v-model:value="discoverForm.rootPath" :placeholder="t('workspace.dialogs.placeholderScanRoot')" /></n-form-item></n-form>
-    <n-text depth="3">{{ t('workspace.dialogs.onlyLocalDirectoriesAreReadGitcoreReturnsTheScanResults') }}</n-text>
-    <template #action><n-space justify="end"><n-button @click="discoverModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="discoverRepositories">{{ t('workspace.dialogs.startScan') }}</n-button></n-space></template>
+  <n-modal
+    :show="discoverModalShown"
+    preset="card"
+    :title="t('workspace.dialogs.discoveredRepositories')"
+    class="dialog-card repository-discovery-dialog"
+    :closable="!discoveryBusy"
+    :close-on-esc="!discoveryBusy"
+    :mask-closable="!discoveryBusy"
+    @update:show="updateRepositoryDiscoveryShown"
+  >
+    <n-spin :show="discoveryScanning">
+      <div class="repository-discovery-content">
+        <n-text depth="3" class="repository-discovery-root">{{ t('workspace.dialogs.scannedFolder') }} <code>{{ discoveryRootPath }}</code></n-text>
+        <template v-if="discoveredRepositories.length">
+          <div class="repository-discovery-toolbar">
+            <n-checkbox
+              :checked="allDiscoveredRepositoriesSelected"
+              :indeterminate="someDiscoveredRepositoriesSelected"
+              :disabled="discoveryBusy || repositoryImportLimit === 0 || selectableDiscoveredRepositoryCount === 0"
+              @update:checked="updateAllDiscoveredRepositorySelections"
+            >
+              {{ selectableDiscoveredRepositoryCount > repositoryImportLimit
+                ? t('workspace.dialogs.selectUpToRepositories', { limit: repositoryImportLimit })
+                : t('workspace.dialogs.selectAllRepositories') }}
+            </n-checkbox>
+            <n-text depth="3">{{ t('workspace.dialogs.selectedRepositoryCount', { count: selectedDiscoveredRepositoryCount }) }}</n-text>
+          </div>
+          <n-text v-if="selectableDiscoveredRepositoryCount > repositoryImportLimit" depth="3" class="repository-discovery-limit-hint">
+            {{ t('workspace.dialogs.repositorySelectionLimitHint', { limit: repositoryImportLimit }) }}
+          </n-text>
+          <FixedVirtualList
+            class="repository-discovery-list"
+            :style="{ height: repositoryDiscoveryListHeight }"
+            :item-count="discoveredRepositories.length"
+            :item-height="repositoryDiscoveryRowHeight"
+            :item-keys="repositoryDiscoveryVirtualKeys"
+            :reset-key="discoveryRootPath"
+          >
+            <template #default="{ index, tabIndex }">
+            <div
+              v-if="discoveredRepositories[index]"
+              class="repository-discovery-row"
+              data-virtual-list-focus
+              role="checkbox"
+              :tabindex="tabIndex"
+              :aria-label="`${discoveredRepositories[index].name}: ${discoveredRepositories[index].path}`"
+              :aria-checked="discoveredRepositorySelected(discoveredRepositories[index].path)"
+              :aria-disabled="discoveredRepositorySelectionDisabled(discoveredRepositories[index].path)"
+              @click="toggleDiscoveredRepositorySelection(discoveredRepositories[index].path)"
+              @keydown.enter.prevent="toggleDiscoveredRepositorySelection(discoveredRepositories[index].path)"
+              @keydown.space.prevent="toggleDiscoveredRepositorySelection(discoveredRepositories[index].path)"
+            >
+              <n-checkbox
+                :tabindex="-1"
+                aria-hidden="true"
+                :checked="discoveredRepositorySelected(discoveredRepositories[index].path)"
+                :disabled="discoveredRepositorySelectionDisabled(discoveredRepositories[index].path)"
+                @click.stop
+                @update:checked="(checked) => updateDiscoveredRepositorySelection(discoveredRepositories[index].path, checked)"
+              />
+              <div class="repository-discovery-details">
+                <strong>{{ discoveredRepositories[index].name }}</strong>
+                <code>{{ discoveredRepositories[index].path }}</code>
+              </div>
+              <n-text v-if="discoveredRepositoryAlreadyAdded(discoveredRepositories[index].path)" depth="3" class="repository-discovery-status">
+                {{ t('workspace.dialogs.repositoryAlreadyAdded') }}
+              </n-text>
+            </div>
+            </template>
+          </FixedVirtualList>
+        </template>
+      </div>
+    </n-spin>
+    <template #action>
+      <n-space justify="end">
+        <n-button :disabled="discoveryBusy" @click="closeRepositoryDiscovery">{{ t('workspace.dialogs.cancel') }}</n-button>
+        <n-button type="primary" :loading="discoveryAdding" :disabled="discoveryBusy || selectedDiscoveredRepositoryCount === 0" @click="addSelectedDiscoveredRepositories">
+          {{ t('workspace.dialogs.addSelectedRepositories', { count: selectedDiscoveredRepositoryCount }) }}
+        </n-button>
+      </n-space>
+    </template>
   </n-modal>
 
   <n-modal v-model:show="accountModalShown" preset="card" :title="t('workspace.dialogs.addAuthenticationAccount')" class="dialog-card" :mask-closable="!mutationBusy">

@@ -4,6 +4,22 @@ use crate::domain::{
 };
 use serde::Serialize;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryDiscoveryResult {
+    pub repositories: Vec<RepositoryRecord>,
+    pub import_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryImportResult {
+    pub repositories: Vec<RepositoryRecord>,
+    pub rejected_count: usize,
+    pub remaining_capacity: usize,
+    pub persistence_warning: bool,
+}
+
 /// One round-trip model used by the repository overview page.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

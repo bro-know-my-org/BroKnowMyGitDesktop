@@ -1,6 +1,8 @@
 import { localizedErrorMessage, t, type MessageKey } from "../i18n";
+import { repositoryCatalogCapacity } from "../repositoryCatalog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { builtinEndpoints } from "./builtinEndpoints";
-import { request } from "./tauriRuntime";
+import { isBrowserDemo, request } from "./tauriRuntime";
 import { boundedBrowserCommitFileDiff, parseGitDiffHeaderPaths } from "./browserDemoDiff";
 export { isAppError, isBrowserDemo, toggleDevtools } from "./tauriRuntime";
 import {
@@ -42,6 +44,8 @@ import type {
   RemoteUrlKind,
   RemoteBinding,
   RepositoryRecord,
+  RepositoryDiscoveryResult,
+  RepositoryImportResult,
   RepositoryNetworkSecurityStatus,
   RepositorySnapshot,
   SaveAccountProfileInput,
@@ -161,6 +165,46 @@ function emptyBrowserRepositoryNetworkSecurityStatus(
 }
 
 let browserSnapshot = rawCopy(mockSnapshot);
+let browserRepositoryCatalog = isEmptyBrowserDemo()
+  ? []
+  : [rawCopy(browserSnapshot.repository)];
+
+function resetBrowserRepositoryCatalog(repository: RepositoryRecord): void {
+  browserRepositoryCatalog = [rawCopy(repository)];
+}
+
+function upsertBrowserRepositoryCatalog(
+  repository: RepositoryRecord,
+  preserveExistingEntries: boolean,
+): boolean {
+  const existingIndex = browserRepositoryCatalog.findIndex((candidate) => candidate.path === repository.path);
+  if (existingIndex >= 0) {
+    const existing = browserRepositoryCatalog[existingIndex];
+    browserRepositoryCatalog[existingIndex] = rawCopy({
+      ...repository,
+      alias: existing.alias,
+      group: existing.group,
+      host: existing.host,
+      namespace: existing.namespace,
+      lastOpenedAt: existing.lastOpenedAt,
+    });
+    return true;
+  }
+  if (preserveExistingEntries && browserRepositoryCatalog.length >= repositoryCatalogCapacity) return false;
+  browserRepositoryCatalog = [rawCopy(repository), ...browserRepositoryCatalog]
+    .slice(0, repositoryCatalogCapacity);
+  return true;
+}
+
+function replaceBrowserRepositoryCatalogRecord(repository: RepositoryRecord): void {
+  const existingIndex = browserRepositoryCatalog.findIndex((candidate) => candidate.path === repository.path);
+  if (existingIndex >= 0) browserRepositoryCatalog[existingIndex] = rawCopy(repository);
+  else upsertBrowserRepositoryCatalog(repository, false);
+}
+
+function forgetBrowserRepositoryCatalogPath(repositoryPath: string): void {
+  browserRepositoryCatalog = browserRepositoryCatalog.filter((repository) => repository.path !== repositoryPath);
+}
 let browserCommits = rawCopy(initialBrowserCommits);
 let browserBranchTips = new Map<string, string | null>([
   ["main", browserCommits[0].sha],
@@ -453,7 +497,7 @@ function localizeBrowserStashes(stashes: StashEntry[]): StashEntry[] {
 }
 
 function isEmptyBrowserDemo(): boolean {
-  return import.meta.env.VITE_UI_EMPTY_STATE === "true";
+  return import.meta.env?.VITE_UI_EMPTY_STATE === "true";
 }
 
 function browserError(code: string): AppError {
@@ -601,6 +645,12 @@ function isValidBrowserGitHubRouteSegment(value: string): boolean {
 }
 
 export const api = {
+  async selectRepositoryDiscoveryDirectory(title: string): Promise<string | null> {
+    if (isBrowserDemo()) return "/demo/projects";
+    const selected = await openDialog({ title, directory: true, multiple: false });
+    return Array.isArray(selected) ? selected[0] ?? null : selected;
+  },
+
   async openExternalUrl(url: string): Promise<void> {
     await request("open_external_url", { url }, () => {
       const trimmedUrl = url.trim();
@@ -661,11 +711,35 @@ export const api = {
   },
 
   listRepositories(refreshOwners = false): Promise<RepositoryRecord[]> {
-    return request("list_repositories", { refreshOwners }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
+    return request("list_repositories", { refreshOwners }, () =>
+      browserRepositoryCatalog.map(localizeBrowserRepository));
   },
 
-  discoverRepositories(rootPath: string): Promise<RepositoryRecord[]> {
-    return request("discover_repositories", { rootPath }, () => (isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)]));
+  discoverRepositories(rootPath: string): Promise<RepositoryDiscoveryResult> {
+    return request("discover_repositories", { rootPath }, () => {
+      const repositories = isEmptyBrowserDemo() ? [] : [localizeBrowserRepository(browserSnapshot.repository)];
+      return {
+        repositories,
+        importLimit: Math.max(0, repositoryCatalogCapacity - browserRepositoryCatalog.length),
+      };
+    });
+  },
+
+  addDiscoveredRepositories(repositoryPaths: string[]): Promise<RepositoryImportResult> {
+    return request("add_discovered_repositories", { repositoryPaths }, () => {
+      if (repositoryPaths.length > repositoryCatalogCapacity) {
+        throw browserError("repository_import_limit_exceeded");
+      }
+      const repository = localizeBrowserRepository(browserSnapshot.repository);
+      const repositories = repositoryPaths.includes(repository.path)
+        && upsertBrowserRepositoryCatalog(repository, true) ? [repository] : [];
+      return {
+        repositories,
+        rejectedCount: repositoryPaths.length - repositories.length,
+        remainingCapacity: Math.max(0, repositoryCatalogCapacity - browserRepositoryCatalog.length),
+        persistenceWarning: false,
+      };
+    });
   },
 
   initRepository(input: InitRepositoryInput): Promise<RepositoryRecord> {
@@ -708,6 +782,7 @@ export const api = {
       browserPullRequestTitleKeys.clear();
       browserPullRequestUpdatedAtKeys.clear();
       browserStashMessageDescriptors.clear();
+      resetBrowserRepositoryCatalog(browserSnapshot.repository);
       return localizeBrowserRepository(browserSnapshot.repository);
     });
   },
@@ -753,6 +828,7 @@ export const api = {
       browserPullRequestTitleKeys.clear();
       browserPullRequestUpdatedAtKeys.clear();
       browserStashMessageDescriptors.clear();
+      resetBrowserRepositoryCatalog(browserSnapshot.repository);
       return localizeBrowserRepository(browserSnapshot.repository);
     });
   },
@@ -761,11 +837,14 @@ export const api = {
     return request("get_repository_snapshot", { repositoryPath }, () => {
       const worktree = browserWorktrees.find((entry) => entry.path === repositoryPath);
       if (worktree && browserSnapshot.repository.path !== repositoryPath) {
+        const catalogRepository = browserRepositoryCatalog.find(
+          (repository) => repository.path === worktree.path,
+        );
         browserSnapshot.repository = {
           path: worktree.path,
           name: worktree.path.split(/[\\/]/u).filter(Boolean).pop() || "worktree",
-          alias: null,
-          group: null,
+          alias: catalogRepository?.alias ?? null,
+          group: catalogRepository?.group ?? null,
           host: null,
           namespace: null,
           lastOpenedAt: null,
@@ -793,6 +872,7 @@ export const api = {
       browserSnapshot.repository.host = ownerRemote?.parsed.host ?? null;
       browserSnapshot.repository.namespace = ownerRemote?.parsed.namespace ?? null;
       browserSnapshot.repository.lastOpenedAt = Date.now();
+      replaceBrowserRepositoryCatalogRecord(browserSnapshot.repository);
       return localizeBrowserSnapshot(requireBrowserSnapshot(repositoryPath));
     });
   },
@@ -818,6 +898,7 @@ export const api = {
       }
       snapshot.repository.group = nextGroup;
       browserRepositoryGroupKey = null;
+      replaceBrowserRepositoryCatalogRecord(snapshot.repository);
       return localizeBrowserRepository(snapshot.repository);
     });
   },
@@ -831,6 +912,7 @@ export const api = {
       }
       snapshot.repository.alias = nextAlias;
       browserRepositoryAliasKey = null;
+      replaceBrowserRepositoryCatalogRecord(snapshot.repository);
       return localizeBrowserRepository(snapshot.repository);
     });
   },
@@ -1348,6 +1430,15 @@ export const api = {
           isPrunable: false,
         },
       ];
+      upsertBrowserRepositoryCatalog({
+        path: target,
+        name: target.split(/[\\/]/u).filter(Boolean).pop() || "worktree",
+        alias: null,
+        group: null,
+        host: browserSnapshot.repository.host,
+        namespace: browserSnapshot.repository.namespace,
+        lastOpenedAt: null,
+      }, false);
       return copy(browserWorktrees);
     });
   },
@@ -1362,6 +1453,7 @@ export const api = {
         throw browserError("cannot_remove_active_worktree");
       }
       browserWorktrees = browserWorktrees.filter((entry) => entry.path !== worktreePath);
+      forgetBrowserRepositoryCatalogPath(worktreePath);
       return copy(browserWorktrees);
     });
   },

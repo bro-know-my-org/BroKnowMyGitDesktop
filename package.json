@@ -9,10 +9,11 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm check:i18n && vue-tsc --noEmit && vite build",
-    "check": "pnpm lint:css && pnpm check:release && pnpm check:virtual-list && pnpm build",
+    "check": "pnpm lint:css && pnpm check:release && pnpm check:virtual-list && pnpm test:unit && pnpm build",
     "check:i18n": "node scripts/check-i18n.mjs",
     "check:release": "node --test scripts/release-version-utils.test.mjs",
     "check:virtual-list": "node --test scripts/virtual-list-window.test.mjs",
+    "test:unit": "node scripts/run-source-tests.mjs",
     "check:release-tag": "node scripts/check-release-tag.mjs",
     "check:release-version": "node scripts/check-release-version.mjs",
     "release:prepare": "node scripts/set-version.mjs",
@@ -22,16 +23,19 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
     "highlight.js": "^11.11.1",
     "naive-ui": "^2.44.1",
     "vue": "^3.5.13"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@types/node": "^22.20.1",
     "@vitejs/plugin-vue": "^5.2.1",
     "stylelint": "^17.14.1",
     "stylelint-config-recommended-vue": "^1.6.1",
     "stylelint-config-standard": "^40.0.0",
+    "tsx": "^4.23.12",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vue-tsc": "^2.1.10"

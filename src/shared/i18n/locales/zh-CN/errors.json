@@ -212,6 +212,7 @@
   "errors.repository_changed": "当前分支已变化，请重新执行拉取。",
   "errors.repository_discovery_failed": "仓库发现任务未能完成。",
   "errors.repository_discovery_limit_exceeded": "仓库发现范围过大，请选择更具体的文件夹后重试。",
+  "errors.repository_import_limit_exceeded": "一次最多添加 200 个仓库，请减少选择后重试。",
   "errors.repository_group_invalid": "仓库分组最多 80 个字符，且不能包含控制字符。",
   "errors.repository_identity_changed": "仓库身份已变化，请刷新后重试。",
   "errors.repository_invalid": "Git 元数据目录不存在或无法访问。",

@@ -608,6 +608,105 @@ mod tests {
     }
 
     #[test]
+    fn repository_batch_add_preserves_existing_entries_at_capacity() {
+        let existing = (0..MAX_REPOSITORIES)
+            .map(|index| repository(&format!("/work/existing-{index}"), &format!("existing-{index}")))
+            .collect::<Vec<_>>();
+        let original_paths = existing
+            .iter()
+            .map(|repository| repository.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut store = ProfileStore {
+            recent_repositories: existing,
+            ..ProfileStore::default()
+        };
+
+        let accepted = store.add_repositories(vec![
+            repository("/work/new", "new"),
+            repository("/work/existing-0", "refreshed"),
+        ]);
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].name, "refreshed");
+        assert_eq!(store.recent_repositories.len(), MAX_REPOSITORIES);
+        assert_eq!(
+            store
+                .recent_repositories
+                .iter()
+                .map(|repository| repository.path.clone())
+                .collect::<std::collections::HashSet<_>>(),
+            original_paths
+        );
+    }
+
+    #[test]
+    fn repository_batch_add_uses_only_remaining_capacity() {
+        let mut store = ProfileStore {
+            recent_repositories: (0..MAX_REPOSITORIES - 1)
+                .map(|index| repository(&format!("/work/existing-{index}"), &format!("existing-{index}")))
+                .collect(),
+            ..ProfileStore::default()
+        };
+
+        let accepted = store.add_repositories(vec![
+            repository("/work/first-new", "first-new"),
+            repository("/work/second-new", "second-new"),
+        ]);
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].path, "/work/first-new");
+        assert_eq!(store.recent_repositories.len(), MAX_REPOSITORIES);
+        assert!(store
+            .recent_repositories
+            .iter()
+            .all(|repository| repository.path != "/work/second-new"));
+    }
+
+    #[test]
+    fn repository_batch_add_returns_one_last_wins_record_per_path() {
+        let mut store = ProfileStore::default();
+
+        let accepted = store.add_repositories(vec![
+            repository("/work/project", "first"),
+            repository("/work/project", "second"),
+        ]);
+
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].name, "second");
+        assert_eq!(store.recent_repositories.len(), 1);
+        assert_eq!(store.recent_repositories[0].name, "second");
+    }
+
+    #[test]
+    fn repository_batch_add_repairs_duplicate_and_oversized_catalog_state() {
+        let mut recent_repositories = vec![
+            repository("/work/duplicate", "first"),
+            repository("/work/duplicate", "second"),
+        ];
+        recent_repositories.extend((0..MAX_REPOSITORIES + 10).map(|index| {
+            repository(&format!("/work/project-{index}"), &format!("project-{index}"))
+        }));
+        let mut store = ProfileStore {
+            recent_repositories,
+            ..ProfileStore::default()
+        };
+
+        let accepted = store.add_repositories(Vec::new());
+
+        assert!(accepted.is_empty());
+        assert_eq!(store.recent_repositories.len(), MAX_REPOSITORIES);
+        assert_eq!(store.recent_repositories[0].name, "first");
+        assert_eq!(
+            store
+                .recent_repositories
+                .iter()
+                .filter(|repository| repository.path == "/work/duplicate")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn touching_repository_updates_usage_without_losing_manual_group() {
         let mut store = ProfileStore::default();
         let mut record = repository("/work/project", "project");

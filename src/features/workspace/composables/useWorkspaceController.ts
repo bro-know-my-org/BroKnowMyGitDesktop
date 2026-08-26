@@ -16,6 +16,7 @@ import {
 } from "../../../shared/types/domain";
 import { createRepositoryPresentation } from "../../repository/utils/presentation";
 import { useRepositoryCatalog } from "./useRepositoryCatalog";
+import { useRepositoryDiscovery } from "./useRepositoryDiscovery";
 import { useWorkspaceAccounts } from "./useWorkspaceAccounts";
 import { useRepositoryPlatform } from "./useRepositoryPlatform";
 import { useRepositoryAuxiliary } from "./useRepositoryAuxiliary";
@@ -130,6 +131,58 @@ const {
   showSuccess: (content) => message.success(content),
 });
 const {
+  discoverModalShown,
+  discoveryRootPath,
+  repositoryImportLimit,
+  discoveredRepositories,
+  selectedDiscoveredRepositoryPaths,
+  discoveryScanning,
+  discoveryAdding,
+  discoveryBusy,
+  selectableDiscoveredRepositoryCount,
+  selectedDiscoveredRepositoryCount,
+  allDiscoveredRepositoriesSelected,
+  someDiscoveredRepositoriesSelected,
+  openRepositoryDiscovery,
+  closeRepositoryDiscovery,
+  disposeRepositoryDiscovery,
+  updateRepositoryDiscoveryShown,
+  discoveredRepositoryAlreadyAdded,
+  discoveredRepositorySelected,
+  discoveredRepositorySelectionDisabled,
+  toggleDiscoveredRepositorySelection,
+  updateDiscoveredRepositorySelection,
+  updateAllDiscoveredRepositorySelections,
+  addSelectedDiscoveredRepositories,
+} = useRepositoryDiscovery({
+  repositories,
+  replaceRepositoryRecord,
+  loadRepositories: () => loadRepositories(repositoryGrouping.value === "owner", false, false),
+  operations: {
+    selectDirectory: () => api.selectRepositoryDiscoveryDirectory(t("workspace.dialogs.selectFolderToScan")),
+    discoverRepositories: (rootPath) => api.discoverRepositories(rootPath),
+    addRepositories: (repositoryPaths) => api.addDiscoveredRepositories(repositoryPaths),
+  },
+  messages: {
+    pickerFailed: () => t("workspace.controller.couldNotSelectFolder"),
+    scanFailed: () => t("workspace.controller.couldNotScanRepositories"),
+    addFailed: () => t("workspace.controller.couldNotAddRepositories"),
+    noRepositoriesFound: () => t("workspace.controller.noGitRepositoriesFound"),
+    addedRepositories: (count) => t("workspace.controller.addedCountRepositories", { count }),
+    partiallyAddedRepositories: (added, selected) =>
+      t("workspace.controller.addedCountOfSelectedRepositories", { added, selected }),
+    importPersistenceWarning: (added, selected) =>
+      t("workspace.controller.repositoryImportPersistenceWarning", { added, selected }),
+    importCommittedRefreshFailed: (added, selected) =>
+      t("workspace.controller.repositoryImportCommittedRefreshFailed", { added, selected }),
+    selectionLimitReached: (limit) =>
+      t("workspace.controller.repositorySelectionLimitReached", { limit }),
+  },
+  reportError,
+  showSuccess: (content) => message.success(content),
+  showWarning: (content) => message.warning(content),
+});
+const {
   accounts,
   endpoints,
   accountsLoading,
@@ -197,7 +250,9 @@ const {
   getSelectionGeneration: () => repositorySelectionGeneration,
   repositorySelectionIsCurrent,
   applySnapshot,
-  loadRepositories,
+  loadRepositories: async () => {
+    await loadRepositories();
+  },
   refreshSnapshot,
   reportError,
   message,
@@ -249,7 +304,6 @@ const {
 
 const cloneModalShown = ref(false);
 const initModalShown = ref(false);
-const discoverModalShown = ref(false);
 const remoteModalShown = ref(false);
 const bindingDrawerShown = ref(false);
 const bindingRemote = ref<RemoteProfile | null>(null);
@@ -257,7 +311,6 @@ const settingsModalShown = ref(false);
 
 const cloneForm = reactive({ url: "", destinationPath: "", endpointId: "", accountId: "none" });
 const initForm = reactive({ destinationPath: "", initialBranch: "main" });
-const discoverForm = reactive({ rootPath: "" });
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
 const remoteEditorRepositoryPath = ref<string | null>(null);
@@ -891,7 +944,7 @@ async function refreshBrowserDemoLocalizedData(): Promise<void> {
 }
 
 function openRepositoryAction(value: string | number): void {
-  if (value === "discover") discoverModalShown.value = true;
+  if (value === "discover") void openRepositoryDiscovery();
   else if (value === "init") initModalShown.value = true;
   else if (value === "clone") cloneModalShown.value = true;
 }
@@ -1392,26 +1445,6 @@ async function reconcileSnapshotAfterMutationError(repositoryPath: string): Prom
   }
 }
 
-async function discoverRepositories(): Promise<void> {
-  if (!discoverForm.rootPath.trim()) {
-    message.warning(t("workspace.controller.enterTheFolderPathToScan"));
-    return;
-  }
-  mutationBusy.value = true;
-  try {
-    const found = await api.discoverRepositories(discoverForm.rootPath.trim());
-    const paths = new Set(repositories.value.map((repository) => repository.path));
-    repositories.value = [...repositories.value, ...found.filter((repository) => !paths.has(repository.path))];
-    discoverModalShown.value = false;
-    discoverForm.rootPath = "";
-    message.success(found.length ? t("workspace.controller.foundCountRepositories", { count: found.length }) : t("workspace.controller.noGitRepositoriesFound"));
-  } catch (error) {
-    reportError(error, t("workspace.controller.couldNotScanRepositories"));
-  } finally {
-    mutationBusy.value = false;
-  }
-}
-
 async function cloneRepository(): Promise<void> {
   if (!cloneForm.url.trim() || !cloneForm.destinationPath.trim()) {
     message.warning(t("workspace.controller.enterARemoteUrlAndDestinationFolder"));
@@ -1437,7 +1470,13 @@ async function cloneRepository(): Promise<void> {
       ...(usesPinnedCloneAccount || usesAutomaticCloneAccount ? { endpointId: cloneForm.endpointId } : {}),
       ...(usesPinnedCloneAccount ? { accountProfileId: cloneForm.accountId } : {}),
     });
-    if (!repositories.value.some((item) => item.path === repository.path)) repositories.value = [...repositories.value, repository];
+    const catalogRefreshed = await loadRepositories(repositoryGrouping.value === "owner", false, false);
+    if (!catalogRefreshed || !repositories.value.some((item) => item.path === repository.path)) {
+      replaceRepositoryRecord(repository);
+    }
+    if (!catalogRefreshed) {
+      message.warning(t("workspace.controller.repositoryClonedCatalogRefreshFailed"));
+    }
     cloneModalShown.value = false;
     cloneForm.url = "";
     cloneForm.destinationPath = "";
@@ -1463,7 +1502,13 @@ async function initRepository(): Promise<void> {
       destinationPath: initForm.destinationPath.trim(),
       initialBranch: initForm.initialBranch.trim() || undefined,
     });
-    if (!repositories.value.some((item) => item.path === repository.path)) repositories.value = [...repositories.value, repository];
+    const catalogRefreshed = await loadRepositories(repositoryGrouping.value === "owner", false, false);
+    if (!catalogRefreshed || !repositories.value.some((item) => item.path === repository.path)) {
+      replaceRepositoryRecord(repository);
+    }
+    if (!catalogRefreshed) {
+      message.warning(t("workspace.controller.repositoryInitializedCatalogRefreshFailed"));
+    }
     initModalShown.value = false;
     initForm.destinationPath = "";
     initForm.initialBranch = "main";
@@ -2038,6 +2083,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   controllerMounted = false;
+  disposeRepositoryDiscovery();
   networkOperationGeneration += 1;
   clearActiveErrorNotification();
   repositoryTabLoadGeneration += 1;
@@ -2131,6 +2177,17 @@ onBeforeUnmount(() => {
     cloneModalShown,
     initModalShown,
     discoverModalShown,
+    discoveryRootPath,
+    repositoryImportLimit,
+    discoveredRepositories,
+    selectedDiscoveredRepositoryPaths,
+    discoveryScanning,
+    discoveryAdding,
+    discoveryBusy,
+    selectableDiscoveredRepositoryCount,
+    selectedDiscoveredRepositoryCount,
+    allDiscoveredRepositoriesSelected,
+    someDiscoveredRepositoriesSelected,
     accountModalShown,
     customEndpointModalShown,
     branchModalShown,
@@ -2158,7 +2215,6 @@ onBeforeUnmount(() => {
     repositoryAliasTarget,
     cloneForm,
     initForm,
-    discoverForm,
     accountForm,
     endpointForm,
     branchForm,
@@ -2264,6 +2320,15 @@ onBeforeUnmount(() => {
     updateThemeColor,
     resetThemeColor,
     openRepositoryAction,
+    openRepositoryDiscovery,
+    closeRepositoryDiscovery,
+    updateRepositoryDiscoveryShown,
+    discoveredRepositoryAlreadyAdded,
+    discoveredRepositorySelected,
+    discoveredRepositorySelectionDisabled,
+    toggleDiscoveredRepositorySelection,
+    updateDiscoveredRepositorySelection,
+    updateAllDiscoveredRepositorySelections,
     handleDevtoolsShortcut,
     applySnapshot,
     clearDiffSelection,
@@ -2283,7 +2348,7 @@ onBeforeUnmount(() => {
     loadEndpoints,
     selectRepository,
     refreshSnapshot,
-    discoverRepositories,
+    addSelectedDiscoveredRepositories,
     cloneRepository,
     initRepository,
     loadDiff,

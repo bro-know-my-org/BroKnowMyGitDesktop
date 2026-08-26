@@ -2,6 +2,95 @@
   width: min(600px, calc(100vw - 44px));
 }
 
+.repository-discovery-dialog {
+  width: min(720px, calc(100vw - 44px));
+}
+
+.repository-discovery-content {
+  min-height: 180px;
+}
+
+.repository-discovery-root {
+  display: block;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+
+.repository-discovery-root code,
+.repository-discovery-details code {
+  font-family: var(--app-monospace-font-family);
+}
+
+.repository-discovery-toolbar,
+.repository-discovery-row {
+  display: flex;
+  align-items: center;
+}
+
+.repository-discovery-toolbar {
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--app-divider);
+  background: var(--app-surface);
+}
+
+.repository-discovery-toolbar > :last-child {
+  margin-left: auto;
+}
+
+.repository-discovery-list {
+  max-height: clamp(120px, calc(100vh - 340px), 420px);
+  overflow-y: auto;
+  border: 1px solid var(--app-divider);
+  border-top: 0;
+}
+
+.repository-discovery-limit-hint {
+  display: block;
+  padding: 8px 12px;
+  border-right: 1px solid var(--app-divider);
+  border-left: 1px solid var(--app-divider);
+}
+
+.repository-discovery-row {
+  box-sizing: border-box;
+  gap: 12px;
+  height: 100%;
+  min-height: 58px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--app-divider);
+}
+
+.repository-discovery-row:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: -2px;
+}
+
+.repository-discovery-details {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.repository-discovery-details strong,
+.repository-discovery-details code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-discovery-details code {
+  color: var(--app-text-tertiary);
+  font-size: calc(12px * var(--app-font-scale));
+}
+
+.repository-discovery-status {
+  flex: none;
+}
+
 .n-modal.fade-in-scale-up-transition-enter-active,
 .n-modal.fade-in-scale-up-transition-leave-active,
 .n-modal-mask.fade-in-transition-enter-active,

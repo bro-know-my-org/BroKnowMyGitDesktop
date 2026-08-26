@@ -398,6 +398,17 @@ impl AppState {
         &self,
         operation: impl FnOnce(&mut ProfileStore) -> Result<T, AppError>,
     ) -> Result<T, MutationFailure> {
+        match self.mutate_with_commit_warning(operation) {
+            Ok((value, None)) => Ok(value),
+            Ok((_value, Some(error))) => Err(MutationFailure::AfterReplace(error)),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn mutate_with_commit_warning<T>(
+        &self,
+        operation: impl FnOnce(&mut ProfileStore) -> Result<T, AppError>,
+    ) -> Result<(T, Option<AppError>), MutationFailure> {
         let mut store = self.profiles.lock().map_err(|_| {
             MutationFailure::Operation(AppError::new(
                 "state_poisoned",
@@ -408,12 +419,12 @@ impl AppState {
         let result = operation(store.data_mut());
         match result {
             Ok(value) => match store.save() {
-                Ok(()) => Ok(value),
+                Ok(()) => Ok((value, None)),
                 Err(SaveError::BeforeReplace(error)) => {
                     *store.data_mut() = before;
                     Err(MutationFailure::BeforeReplace(error))
                 }
-                Err(SaveError::AfterReplace(error)) => Err(MutationFailure::AfterReplace(error)),
+                Err(SaveError::AfterReplace(error)) => Ok((value, Some(error))),
             },
             Err(error) => {
                 *store.data_mut() = before;

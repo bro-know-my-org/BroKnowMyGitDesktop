@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const STORE_FILE_NAME: &str = "profiles.json";
-const MAX_REPOSITORIES: usize = 200;
+pub(crate) const MAX_REPOSITORIES: usize = 200;
 const CLEAN_UNTRACKED_CONFIRMATION_TTL: Duration = Duration::from_secs(60);
 const MAX_CLEAN_UNTRACKED_CONFIRMATIONS: usize = 256;
 const DISCARD_CHANGES_CONFIRMATION_TTL: Duration = Duration::from_secs(60);

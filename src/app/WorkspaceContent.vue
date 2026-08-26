@@ -33,7 +33,7 @@ export default defineComponent({
             <n-empty :description="t('workspace.content.selectOrAddALocalGitRepository')" :show-icon="false">
               <template #extra>
                 <n-space justify="center">
-                  <n-button @click="discoverModalShown = true">{{ t('workspace.content.scanFolder') }}</n-button>
+                  <n-button @click="openRepositoryDiscovery">{{ t('workspace.content.scanFolder') }}</n-button>
                   <n-button @click="initModalShown = true">{{ t('workspace.content.newLocalRepository') }}</n-button>
                   <n-button type="primary" @click="cloneModalShown = true">{{ t('workspace.content.cloneRepository') }}</n-button>
                 </n-space>

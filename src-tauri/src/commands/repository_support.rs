@@ -648,15 +648,18 @@ pub(super) fn repository_owner_from_remotes(
 
 pub(super) fn remember_repositories(
     state: &AppState,
-    repositories: &[RepositoryRecord],
-) -> Result<(), AppError> {
-    let repositories = repositories.to_vec();
-    state.mutate(|store| {
-        for repository in repositories {
-            store.upsert_repository(repository);
+    repositories: Vec<RepositoryRecord>,
+) -> Result<(Vec<RepositoryRecord>, usize, bool), AppError> {
+    match state.mutate_with_commit_warning(|store| {
+        let repositories = store.add_repositories(repositories);
+        let remaining_capacity = MAX_REPOSITORIES.saturating_sub(store.recent_repositories.len());
+        Ok((repositories, remaining_capacity))
+    }) {
+        Ok(((repositories, remaining_capacity), warning)) => {
+            Ok((repositories, remaining_capacity, warning.is_some()))
         }
-        Ok(())
-    })
+        Err(failure) => Err(failure.into_error()),
+    }
 }
 
 pub(super) fn remember_repository(

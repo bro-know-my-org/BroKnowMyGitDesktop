@@ -248,6 +248,18 @@ export interface RepositoryRecord {
   lastOpenedAt: number | null;
 }
 
+export interface RepositoryDiscoveryResult {
+  repositories: RepositoryRecord[];
+  importLimit: number;
+}
+
+export interface RepositoryImportResult {
+  repositories: RepositoryRecord[];
+  rejectedCount: number;
+  remainingCapacity: number;
+  persistenceWarning?: boolean;
+}
+
 export interface RepositorySnapshot {
   repository: RepositoryRecord;
   hasHead: boolean;

@@ -58,7 +58,7 @@ export const performanceProfilingEnabled =
   && typeof performance.getEntriesByName === "function"
   && typeof performance.clearMarks === "function"
   && typeof performance.clearMeasures === "function"
-  && (import.meta.env.DEV || import.meta.env.VITE_BKM_PERF === "true" || localPerformanceEnabled());
+  && (import.meta.env?.DEV || import.meta.env?.VITE_BKM_PERF === "true" || localPerformanceEnabled());
 
 if (performanceProfilingEnabled && performance.getEntriesByName(`${markPrefix}bootstrap`, "mark").length === 0) {
   try {

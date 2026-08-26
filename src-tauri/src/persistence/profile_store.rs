@@ -160,6 +160,43 @@ impl ProfileStore {
         repository
     }
 
+    /// Add a reviewed repository batch without evicting catalog entries that
+    /// were already present. Existing records may still be refreshed, while
+    /// new records are accepted only up to the remaining durable capacity.
+    pub fn add_repositories(&mut self, repositories: Vec<RepositoryRecord>) -> Vec<RepositoryRecord> {
+        let mut normalized_paths = std::collections::HashSet::new();
+        self.recent_repositories
+            .retain(|repository| normalized_paths.insert(repository.path.clone()));
+        self.recent_repositories.truncate(MAX_REPOSITORIES);
+        let mut existing_paths = self
+            .recent_repositories
+            .iter()
+            .map(|repository| repository.path.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let remaining_capacity = MAX_REPOSITORIES.saturating_sub(self.recent_repositories.len());
+        let mut new_repository_count = 0;
+        let mut accepted = Vec::new();
+        let mut accepted_positions = std::collections::HashMap::new();
+        for repository in repositories {
+            if let Some(index) = accepted_positions.get(&repository.path).copied() {
+                accepted[index] = self.upsert_repository(repository);
+                continue;
+            }
+            let already_present = existing_paths.contains(&repository.path);
+            if !already_present && new_repository_count >= remaining_capacity {
+                continue;
+            }
+            let updated = self.upsert_repository(repository);
+            if !already_present {
+                existing_paths.insert(updated.path.clone());
+                new_repository_count += 1;
+            }
+            accepted_positions.insert(updated.path.clone(), accepted.len());
+            accepted.push(updated);
+        }
+        accepted
+    }
+
     /// Merge the persisted local-only fields into a freshly read Git record.
     pub fn repository_with_metadata(&self, mut repository: RepositoryRecord) -> RepositoryRecord {
         if let Some(existing) = self

@@ -16,6 +16,7 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let result = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
@@ -36,6 +37,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_repositories,
             commands::discover_repositories,
+            commands::add_discovered_repositories,
             commands::init_repository,
             commands::clone_repository,
             commands::get_repository_snapshot,

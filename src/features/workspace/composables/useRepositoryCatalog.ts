@@ -11,6 +11,7 @@ import {
 interface RepositoryCatalogDependencies {
   snapshot: Ref<RepositorySnapshot | null>;
   mutationBusy: Ref<boolean>;
+  listRepositories?: (refreshOwners: boolean) => Promise<RepositoryRecord[]>;
   reportError: (error: unknown, action: string) => void;
   showSuccess: (content: string) => void;
 }
@@ -18,6 +19,7 @@ interface RepositoryCatalogDependencies {
 export function useRepositoryCatalog({
   snapshot,
   mutationBusy,
+  listRepositories = (refreshOwners) => api.listRepositories(refreshOwners),
   reportError,
   showSuccess,
 }: RepositoryCatalogDependencies) {
@@ -30,7 +32,11 @@ export function useRepositoryCatalog({
   const repositoryAliasTarget = ref<RepositoryRecord | null>(null);
   const repositoryGroupForm = reactive({ name: "" });
   const repositoryAliasForm = reactive({ name: "" });
-  let repositoriesLoadPromise: Promise<void> | null = null;
+  let repositoriesLoadBatch: {
+    promise: Promise<boolean>;
+    error: unknown;
+    errorReported: boolean;
+  } | null = null;
   let repositoriesReloadPending = false;
   let repositoriesRefreshOwnersPending = false;
   let repositoryRecordsGeneration = 0;
@@ -177,40 +183,61 @@ export function useRepositoryCatalog({
     }
   }
 
-  async function loadRepositories(refreshOwners = repositoryGrouping.value === "owner"): Promise<void> {
-    if (repositoriesLoadPromise) {
+  async function loadRepositories(
+    refreshOwners = repositoryGrouping.value === "owner",
+    reportErrors = true,
+    coalesce = true,
+  ): Promise<boolean> {
+    let batch = repositoriesLoadBatch;
+    if (!coalesce && batch) {
+      await batch.promise;
+      return loadRepositories(refreshOwners, reportErrors, false);
+    }
+    if (batch) {
       repositoriesReloadPending = true;
       repositoriesRefreshOwnersPending ||= refreshOwners;
-      return repositoriesLoadPromise;
-    }
-    repositoriesLoadPromise = (async () => {
-      repositoriesLoading.value = true;
-      let shouldRefreshOwners = refreshOwners;
-      try {
-        do {
-          repositoriesReloadPending = false;
-          repositoriesRefreshOwnersPending = false;
-          try {
-            const requestGeneration = repositoryRecordsGeneration;
-            const nextRepositories = await api.listRepositories(shouldRefreshOwners);
-            if (requestGeneration === repositoryRecordsGeneration) {
-              repositories.value = nextRepositories;
-            } else {
-              repositoriesReloadPending = true;
-              repositoriesRefreshOwnersPending ||= shouldRefreshOwners;
+    } else {
+      batch = { promise: Promise.resolve(false), error: null, errorReported: false };
+      repositoriesLoadBatch = batch;
+      batch.promise = (async () => {
+        repositoriesLoading.value = true;
+        let shouldRefreshOwners = refreshOwners;
+        let loadedSuccessfully = false;
+        try {
+          do {
+            repositoriesReloadPending = false;
+            repositoriesRefreshOwnersPending = false;
+            try {
+              const requestGeneration = repositoryRecordsGeneration;
+              const nextRepositories = await listRepositories(shouldRefreshOwners);
+              if (requestGeneration === repositoryRecordsGeneration) {
+                repositories.value = nextRepositories;
+                loadedSuccessfully = true;
+              } else {
+                loadedSuccessfully = false;
+                repositoriesReloadPending = true;
+                repositoriesRefreshOwnersPending ||= shouldRefreshOwners;
+              }
+            } catch (error) {
+              batch.error = error;
+              loadedSuccessfully = false;
+              if (!repositoriesReloadPending) break;
             }
-          } catch (error) {
-            reportError(error, t("workspace.controller.couldNotLoadRepositories"));
-            if (!repositoriesReloadPending) break;
-          }
-          shouldRefreshOwners = repositoriesRefreshOwnersPending;
-        } while (repositoriesReloadPending);
-      } finally {
-        repositoriesLoading.value = false;
-        repositoriesLoadPromise = null;
-      }
-    })();
-    return repositoriesLoadPromise;
+            shouldRefreshOwners = repositoriesRefreshOwnersPending;
+          } while (repositoriesReloadPending);
+        } finally {
+          repositoriesLoading.value = false;
+          if (repositoriesLoadBatch === batch) repositoriesLoadBatch = null;
+        }
+        return loadedSuccessfully;
+      })();
+    }
+    const loadedSuccessfully = await batch.promise;
+    if (!loadedSuccessfully && reportErrors && !batch.errorReported) {
+      batch.errorReported = true;
+      reportError(batch.error, t("workspace.controller.couldNotLoadRepositories"));
+    }
+    return loadedSuccessfully;
   }
 
   return {

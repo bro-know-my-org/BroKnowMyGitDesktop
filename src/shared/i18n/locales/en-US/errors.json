@@ -212,6 +212,7 @@
   "errors.repository_changed": "The repository changed during the operation. Refresh it and try again.",
   "errors.repository_discovery_failed": "Repository discovery could not be completed.",
   "errors.repository_discovery_limit_exceeded": "The discovery scope is too large. Choose a more specific folder.",
+  "errors.repository_import_limit_exceeded": "Add at most 200 repositories at a time. Reduce the selection and try again.",
   "errors.repository_group_invalid": "A repository group must be at most 80 characters and cannot contain control characters.",
   "errors.repository_identity_changed": "The repository identity changed. Refresh and try again.",
   "errors.repository_invalid": "The repository metadata is missing or unavailable.",
