@@ -1,8 +1,8 @@
 .repository-split-layout {
   display: grid;
   grid-template-columns:
-    minmax(240px, min(var(--repository-list-pane-width, 27.2%), calc(100% - 492px)))
-    12px
+    minmax(240px, min(var(--repository-list-pane-width, 27.2%), calc(100% - 480px)))
+    0
     minmax(480px, 1fr);
 }
 
@@ -13,7 +13,9 @@
 .repository-column-resizer {
   position: relative;
   z-index: 1;
+  width: 12px;
   min-width: 0;
+  justify-self: start;
   cursor: col-resize;
   touch-action: none;
   outline: none;
@@ -23,7 +25,7 @@
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 50%;
+  left: 0;
   width: 1px;
   background: var(--app-divider);
   content: "";

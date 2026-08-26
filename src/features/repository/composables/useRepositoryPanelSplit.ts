@@ -3,7 +3,6 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 const repositoryPanelWidthStorageKey = "broknowmygitdesktop.repository-panel-width";
 const minimumListPaneWidth = 240;
 const minimumDetailPaneWidth = 480;
-const resizerWidth = 12;
 
 function initialRepositoryPanelWidth(): number | null {
   if (typeof window === "undefined") return null;
@@ -18,7 +17,7 @@ function initialRepositoryPanelWidth(): number | null {
 const repositoryPanelWidth = ref<number | null>(initialRepositoryPanelWidth());
 
 function maximumListPaneWidth(containerWidth: number): number {
-  return Math.max(minimumListPaneWidth, containerWidth - minimumDetailPaneWidth - resizerWidth);
+  return Math.max(minimumListPaneWidth, containerWidth - minimumDetailPaneWidth);
 }
 
 function clampListPaneWidth(width: number, containerWidth: number): number {
