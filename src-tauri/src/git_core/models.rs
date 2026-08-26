@@ -75,6 +75,36 @@ pub struct RepositorySnapshot {
     pub tags: Vec<TagInfo>,
 }
 
+/// A recognized standard `.lock` file currently present inside this
+/// worktree's Git metadata. `id` includes a filesystem identity fingerprint and is deliberately opaque:
+/// directory-opening commands must resolve it against a fresh inventory
+/// instead of accepting an arbitrary filesystem path from IPC.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryLockInfo {
+    pub id: String,
+    pub path: String,
+    pub kind: RepositoryLockKind,
+    pub modified_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryLocksResult {
+    pub locks: Vec<RepositoryLockInfo>,
+    pub incomplete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RepositoryLockKind {
+    Configuration,
+    Index,
+    Reference,
+    Shallow,
+    Other,
+}
+
 pub(super) fn command_arguments(
     repository: Option<&Path>,
     arguments: &[OsString],

@@ -26,7 +26,7 @@ use crate::domain::{
 use crate::git_core::{
     normalize_external_editor_config, validate_git_remote_url, validate_ref_name, CloneOptions,
     DiffOptions, FetchOptions, GitCore, GitEnvironment, NetworkConfigurationAssessment,
-    PublishedRemoteState, PullOptions, PushOptions, RemoteUrlKind,
+    PublishedRemoteState, PullOptions, PushOptions, RemoteUrlKind, RepositoryLocksResult,
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{
@@ -51,6 +51,7 @@ mod commits;
 mod credential_support;
 mod endpoint_support;
 mod endpoints;
+mod locks;
 mod network;
 mod remotes;
 mod repositories;
@@ -70,6 +71,7 @@ pub use changes::*;
 pub use codehost::*;
 pub use commits::*;
 pub use endpoints::*;
+pub use locks::*;
 pub use network::*;
 pub use remotes::*;
 pub use repositories::*;

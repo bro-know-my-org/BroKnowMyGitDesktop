@@ -246,5 +246,7 @@
   "errors.unsupported_repository_path_encoding": "仓库路径包含当前界面不支持的字符编码。",
   "errors.untracked_diff_unavailable": "无法安全读取未跟踪文件的改动内容。",
   "errors.working_tree_not_clean": "压缩提交前请先提交、暂存或丢弃当前改动",
-  "errors.worktree_not_found": "找不到要移除的工作树"
+  "errors.worktree_not_found": "找不到要移除的工作树",
+  "errors.git_lock_changed": "Git 锁文件已经变化，请重新检查。",
+  "errors.git_lock_detected": "其他 Git 操作留下了锁文件，请检查后重试。"
 }

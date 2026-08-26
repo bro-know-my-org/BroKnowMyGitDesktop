@@ -665,5 +665,21 @@
   "workspace.tables.trackingLocally": "本地已跟踪",
   "workspace.tables.updated": "更新",
   "workspace.tables.upstream": "跟踪分支",
-  "workspace.tables.worktreePath": "工作树路径"
+  "workspace.tables.worktreePath": "工作树路径",
+  "workspace.controller.closeOtherGitClientsBeforeCleaningLocks": "应用无法确认这些锁是否仍由外部进程持有，因此不会自动删除。请先关闭其他 Git 客户端、IDE 和终端操作；只有在确认锁为崩溃遗留后，才在文件管理器中手动处理。",
+  "workspace.controller.couldNotInspectGitLocks": "检查 Git 锁文件失败",
+  "workspace.controller.couldNotOpenGitMetadataDirectory": "打开 Git 元数据目录失败",
+  "workspace.controller.gitConfigurationLock": "配置锁",
+  "workspace.controller.gitIndexLock": "暂存区锁",
+  "workspace.controller.gitLockRecovery": "检查 Git 锁文件",
+  "workspace.controller.gitReferenceLock": "引用锁",
+  "workspace.controller.gitShallowLock": "浅克隆锁",
+  "workspace.controller.inspectGitLocks": "检查锁文件",
+  "workspace.controller.noGitLocksFoundRetryTheOperation": "当前未发现可安全识别的标准 Git 锁文件。它可能已被其他应用清理；若错误仍存在，请打开 Git 元数据目录检查引用锁后重试。",
+  "workspace.controller.openGitMetadataDirectory": "打开 .git 目录",
+  "workspace.controller.someGitMetadataDirectoriesCouldNotBeOpened": "已打开 {opened} 个 Git 元数据目录，但有 {failed} 个无法打开。",
+  "workspace.controller.someGitLockPathsCouldNotBeInspected": "部分标准 Git 锁路径无法检查，当前列表可能不完整。",
+  "workspace.controller.otherGitLock": "其他 Git 锁",
+  "workspace.controller.unknownModificationTime": "修改时间未知",
+  "workspace.controller.close": "关闭"
 }

@@ -3,7 +3,7 @@ import { NButton, NSpace, useDialog, useMessage, useNotification, type Notificat
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
-import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, localizedErrorDetails, localizedErrorMessage, setAppLocale, t } from "../../../shared/i18n";
+import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, formatDate, localizedErrorDetails, localizedErrorMessage, setAppLocale, t } from "../../../shared/i18n";
 import { completeStartupPerformance, markPerformance, measurePerformance } from "../../../shared/performance";
 import { colorMode, resetThemeColor, setColorMode, themeColor } from "../../../shared/theme";
 import { settingsSection } from "../../../shared/settingsNavigation";
@@ -12,6 +12,7 @@ import {
   type CodeHostCapabilities,
   type RemoteBinding,
   type RemoteProfile,
+  type RepositoryLockInfo,
   type RepositorySnapshot,
 } from "../../../shared/types/domain";
 import { createRepositoryPresentation } from "../../repository/utils/presentation";
@@ -26,6 +27,12 @@ import { useRepositoryChanges } from "./useRepositoryChanges";
 import { acquireRepositoryOperation, repositoryOperationsBusy } from "./repositoryOperationLock";
 import { handleDevtoolsShortcut, localeOptions, updateAppLocale, updateColorMode, updateThemeColor, useWorkspaceUiOptions } from "./workspaceUiActions";
 import { useWorkspaceTables } from "./useWorkspaceTables";
+import {
+  gitLockInventoryDisposition,
+  gitLockInspectionIsCurrent,
+  replaceGitLockRecoveryDialog,
+  runOwnedGitLockInspection,
+} from "./gitLockRecoveryState";
 import {
   bindingsAreEqual,
   branchesAreEqual,
@@ -92,12 +99,16 @@ const selectedRemoteName = ref("");
 const activeCapabilities = ref<CodeHostCapabilities>(emptyCapabilities);
 let activeErrorNotification: NotificationReactive | null = null;
 let activeErrorNotificationOwner: symbol | null = null;
+let activeGitLockRecoveryDialog: ReturnType<typeof dialog.warning> | null = null;
+let activeGitLockRecoveryDialogOwner: symbol | null = null;
+let activeGitLockRecoveryDialogTarget: RepositoryErrorTarget | null = null;
 
 const workspaceInitializing = ref(true);
 const snapshotLoading = ref(false);
 let repositoryTabLoadGeneration = 0;
 const networkBusy = ref<NetworkAction | null>(null);
 const networkTrustActionBusyOwners = reactive(new Set<symbol>());
+const gitLockRecoveryBusyOwners = reactive(new Set<symbol>());
 let networkOperationGeneration = 0;
 const nonRepositoryMutationBusy = ref(false);
 const mutationBusy = computed({
@@ -254,7 +265,7 @@ const {
     await loadRepositories();
   },
   refreshSnapshot,
-  reportError,
+  reportError: reportCapturedRepositoryError,
   message,
   dialog,
 });
@@ -290,6 +301,7 @@ const {
   loadHistoryWithOptions,
   loadCommitHistoryWithOptions,
   loadStashesWithOptions,
+  loadReflog,
   openReflog,
   loadCommitFiles,
   loadCommitFileDiff,
@@ -299,7 +311,7 @@ const {
   getSelectionGeneration: () => repositorySelectionGeneration,
   repositorySelectionIsCurrent,
   isControllerMounted: () => controllerMounted,
-  reportError,
+  reportError: reportCapturedRepositoryError,
 });
 
 const cloneModalShown = ref(false);
@@ -414,7 +426,7 @@ const {
   applySnapshot,
   loadCapabilities,
   refreshSnapshot,
-  reportError,
+  reportError: reportCapturedRepositoryError,
   message,
 });
 const currentBranch = computed(() => snapshot.value?.status.branch ?? "—");
@@ -448,6 +460,7 @@ const {
   getDiffRequestGeneration,
   syncSelectedDiff,
   loadDiff,
+  loadFileBlame,
   openFileBlame,
   applyDiffHunk,
   diffHunkAtLine,
@@ -475,7 +488,7 @@ const {
   isConflictedEntry,
   splitDiffHunks,
   splitDiffLines,
-  reportError,
+  reportError: reportCapturedRepositoryError,
   message,
   dialog,
 });
@@ -537,7 +550,7 @@ const {
   refreshAfterGitConflict,
   reconcileSnapshotAfterMutationError,
   gitOperationLabel,
-  reportError,
+  reportError: reportCapturedRepositoryError,
   message,
   dialog,
 });
@@ -680,8 +693,299 @@ function normalizedAppError(error: unknown): AppError {
   };
 }
 
-function reportError(error: unknown, action: string): void {
+const recoverableGitLockCodes = new Set([
+  "git_config_locked",
+  "git_index_locked",
+  "git_reference_locked",
+  "git_lock_detected",
+  "git_lock_changed",
+]);
+
+interface RepositoryErrorTarget {
+  repositoryPath: string;
+  selectionGeneration: number;
+}
+
+function repositoryLockKindLabel(lock: RepositoryLockInfo): string {
+  if (lock.kind === "configuration") return t("workspace.controller.gitConfigurationLock");
+  if (lock.kind === "index") return t("workspace.controller.gitIndexLock");
+  if (lock.kind === "reference") return t("workspace.controller.gitReferenceLock");
+  if (lock.kind === "shallow") return t("workspace.controller.gitShallowLock");
+  return t("workspace.controller.otherGitLock");
+}
+
+function repositoryLockDescription(lock: RepositoryLockInfo): string {
+  const modifiedDate = lock.modifiedAtMs === null ? null : new Date(lock.modifiedAtMs);
+  const modified = modifiedDate === null || Number.isNaN(modifiedDate.getTime())
+    ? t("workspace.controller.unknownModificationTime")
+    : formatDate(modifiedDate);
+  return `${repositoryLockKindLabel(lock)} · ${modified}\n${lock.path}`;
+}
+
+function lockRecoveryIsCurrent(repositoryPath: string, selectionGeneration: number): boolean {
+  return repositorySelectionIsCurrent(repositoryPath, selectionGeneration);
+}
+
+function clearActiveGitLockRecoveryDialog(): void {
+  activeGitLockRecoveryDialog = replaceGitLockRecoveryDialog(
+    activeGitLockRecoveryDialog,
+    null,
+  );
+  activeGitLockRecoveryDialogOwner = null;
+  activeGitLockRecoveryDialogTarget = null;
+}
+
+function clearStaleGitLockRecoveryDialog(): void {
+  const target = activeGitLockRecoveryDialogTarget;
+  if (
+    target
+    && !repositorySelectionIsCurrent(target.repositoryPath, target.selectionGeneration)
+  ) {
+    clearActiveGitLockRecoveryDialog();
+  }
+}
+
+function releaseOwnedGitLockRecoveryDialog(dialogOwner: symbol): void {
+  if (activeGitLockRecoveryDialogOwner !== dialogOwner) return;
+  activeGitLockRecoveryDialog = null;
+  activeGitLockRecoveryDialogOwner = null;
+  activeGitLockRecoveryDialogTarget = null;
+}
+
+async function openLockDirectoryForRecovery(
+  repositoryPath: string,
+  selectionGeneration: number,
+  lock: RepositoryLockInfo,
+  dialogOwner: symbol,
+): Promise<void> {
+  if (
+    !lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+    || activeGitLockRecoveryDialogOwner !== dialogOwner
+  ) {
+    message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+    return;
+  }
+  try {
+    await api.openRepositoryLockDirectory(repositoryPath, lock.id);
+  } catch (error) {
+    if (
+      lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+      && activeGitLockRecoveryDialogOwner === dialogOwner
+    ) {
+      const appError = normalizedAppError(error);
+      if (appError.code === "git_lock_changed") {
+        reportError(error, t("workspace.controller.couldNotOpenGitMetadataDirectory"), {
+          repositoryPath,
+          selectionGeneration,
+        });
+      } else {
+        message.error(`${t("workspace.controller.couldNotOpenGitMetadataDirectory")}: ${appError.message}`);
+      }
+    }
+  }
+}
+
+async function openGitDirectoriesForLockRecovery(
+  repositoryPath: string,
+  selectionGeneration: number,
+  notificationOwner: symbol,
+): Promise<void> {
+  if (
+    !lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+    || activeErrorNotificationOwner !== notificationOwner
+  ) {
+    message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+    return;
+  }
+  try {
+    const result = await api.openRepositoryGitDirectories(repositoryPath);
+    if (
+      result.failedCount > 0
+      && lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+      && activeErrorNotificationOwner === notificationOwner
+    ) {
+      message.warning(t("workspace.controller.someGitMetadataDirectoriesCouldNotBeOpened", {
+        opened: result.openedCount,
+        failed: result.failedCount,
+      }));
+    }
+  } catch (error) {
+    if (
+      lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+      && activeErrorNotificationOwner === notificationOwner
+    ) {
+      const appError = normalizedAppError(error);
+      message.error(`${t("workspace.controller.couldNotOpenGitMetadataDirectory")}: ${appError.message}`);
+    }
+  }
+}
+
+async function inspectRepositoryLocks(
+  repositoryPath: string,
+  selectionGeneration: number,
+  notificationOwner: symbol,
+  lockErrorCode: string,
+): Promise<void> {
+  if (!gitLockInspectionIsCurrent(
+    lockRecoveryIsCurrent(repositoryPath, selectionGeneration),
+    activeErrorNotificationOwner,
+    notificationOwner,
+  )) {
+    message.warning(t("workspace.controller.theActiveRepositoryChangedPleaseTryAgain"));
+    return;
+  }
+  try {
+    const lockResult = await runOwnedGitLockInspection(
+      gitLockRecoveryBusyOwners,
+      notificationOwner,
+      () => gitLockInspectionIsCurrent(
+        lockRecoveryIsCurrent(repositoryPath, selectionGeneration),
+        activeErrorNotificationOwner,
+        notificationOwner,
+      ),
+      () => api.listRepositoryLocks(repositoryPath),
+    );
+    if (!lockResult) return;
+    const { locks } = lockResult;
+    const disposition = gitLockInventoryDisposition(
+      locks.length,
+      lockResult.incomplete,
+      lockErrorCode === "git_reference_locked",
+    );
+    if (lockResult.incomplete) {
+      message.warning(t("workspace.controller.someGitLockPathsCouldNotBeInspected"));
+      if (disposition === "inconclusive") return;
+    }
+    if (disposition === "empty" || disposition === "emptyReference") {
+      if (disposition === "empty") {
+        destroyOwnedErrorNotification(notificationOwner);
+      }
+      message.info(t("workspace.controller.noGitLocksFoundRetryTheOperation"));
+      return;
+    }
+    destroyOwnedErrorNotification(notificationOwner);
+    const dialogOwner = Symbol("git-lock-recovery-dialog");
+    activeGitLockRecoveryDialogOwner = dialogOwner;
+    activeGitLockRecoveryDialogTarget = { repositoryPath, selectionGeneration };
+    activeGitLockRecoveryDialog = replaceGitLockRecoveryDialog(
+      activeGitLockRecoveryDialog,
+      dialog.warning({
+      title: t("workspace.controller.gitLockRecovery"),
+      content: () => h("div", { class: "git-lock-recovery" }, [
+        h("div", t("workspace.controller.closeOtherGitClientsBeforeCleaningLocks")),
+        h("div", { class: "git-lock-recovery-list" },
+          locks.map((lock) => h("div", {
+            key: lock.id,
+            class: "git-lock-recovery-item",
+          }, [
+            h("pre", {
+              class: "git-lock-recovery-path",
+            }, repositoryLockDescription(lock)),
+            h(NButton, {
+              size: "tiny",
+              tertiary: true,
+              onClick: () => void openLockDirectoryForRecovery(
+                repositoryPath,
+                selectionGeneration,
+                lock,
+                dialogOwner,
+              ),
+            }, { default: () => t("workspace.controller.openGitMetadataDirectory") }),
+          ])),
+        ),
+      ]),
+      negativeText: t("workspace.controller.close"),
+      onNegativeClick: () => releaseOwnedGitLockRecoveryDialog(dialogOwner),
+      onClose: () => releaseOwnedGitLockRecoveryDialog(dialogOwner),
+      }),
+    );
+  } catch (error) {
+    if (
+      lockRecoveryIsCurrent(repositoryPath, selectionGeneration)
+      && activeErrorNotificationOwner === notificationOwner
+    ) {
+      reportError(error, t("workspace.controller.couldNotInspectGitLocks"), {
+        repositoryPath,
+        selectionGeneration,
+      });
+    }
+  }
+}
+
+function reportRepositoryLockError(
+  appError: AppError,
+  action: string,
+  repositoryPath: string,
+  selectionGeneration: number,
+): void {
+  clearActiveGitLockRecoveryDialog();
+  const notificationOwner = Symbol("git-lock-recovery");
+  activeErrorNotification?.destroy();
+  activeErrorNotificationOwner = notificationOwner;
+  activeErrorNotification = notification.error({
+    title: action,
+    content: appError.message,
+    meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
+    description: appError.details || undefined,
+    action: () => h(NSpace, { size: 8 }, {
+      default: () => [
+        h(NButton, {
+          size: "small",
+          tertiary: true,
+          onClick: () => void openGitDirectoriesForLockRecovery(
+            repositoryPath,
+            selectionGeneration,
+            notificationOwner,
+          ),
+        }, { default: () => t("workspace.controller.openGitMetadataDirectory") }),
+        h(NButton, {
+          size: "small",
+          type: "primary",
+          loading: gitLockRecoveryBusyOwners.has(notificationOwner),
+          disabled: gitLockRecoveryBusyOwners.has(notificationOwner),
+          onClick: () => void inspectRepositoryLocks(
+            repositoryPath,
+            selectionGeneration,
+            notificationOwner,
+            appError.code,
+          ),
+        }, { default: () => t("workspace.controller.inspectGitLocks") }),
+      ],
+    }),
+    duration: 0,
+    closable: true,
+    onClose: () => {
+      if (activeErrorNotificationOwner === notificationOwner) {
+        activeErrorNotification = null;
+        activeErrorNotificationOwner = null;
+      }
+    },
+  });
+}
+
+function reportError(
+  error: unknown,
+  action: string,
+  repositoryTarget?: RepositoryErrorTarget,
+): void {
   const appError = normalizedAppError(error);
+  if (
+    repositoryTarget
+    && recoverableGitLockCodes.has(appError.code)
+    && repositorySelectionIsCurrent(
+      repositoryTarget.repositoryPath,
+      repositoryTarget.selectionGeneration,
+    )
+  ) {
+    reportRepositoryLockError(
+      appError,
+      action,
+      repositoryTarget.repositoryPath,
+      repositoryTarget.selectionGeneration,
+    );
+    return;
+  }
+  clearStaleGitLockRecoveryDialog();
   activeErrorNotification?.destroy();
   activeErrorNotificationOwner = null;
   activeErrorNotification = notification.error({
@@ -696,6 +1000,22 @@ function reportError(error: unknown, action: string): void {
     message.warning(t("workspace.controller.thisRemoteHasMultipleOrNoUsableAccountsSelectOneExplicitlyAndRetry"));
     openBindingDrawer(activeRemote.value);
   }
+}
+
+function reportCapturedRepositoryError(
+  error: unknown,
+  action: string,
+  repositoryPath?: string,
+  selectionGeneration?: number,
+): void {
+  if (!repositoryPath || selectionGeneration === undefined) {
+    reportError(error, action);
+    return;
+  }
+  reportError(error, action, {
+    repositoryPath,
+    selectionGeneration,
+  });
 }
 
 function networkActionTargetIsCurrent(target: NetworkActionTarget): boolean {
@@ -791,7 +1111,10 @@ async function approveNetworkConfigurationAndRetry(
       destroyOwnedErrorNotification(notificationOwner);
       message.warning(t("workspace.controller.theRepositoryOrRemoteChangedStartTheOperationAgain"));
     } else if (activeErrorNotificationOwner === notificationOwner) {
-      reportError(error, t("workspace.controller.couldNotAuthorizeRepositoryGitConfiguration"));
+      reportError(error, t("workspace.controller.couldNotAuthorizeRepositoryGitConfiguration"), {
+        repositoryPath: target.repositoryPath,
+        selectionGeneration: target.selectionGeneration,
+      });
     } else {
       message.error(t("workspace.controller.couldNotAuthorizeRepositoryGitConfiguration"));
     }
@@ -858,6 +1181,7 @@ async function refreshBrowserDemoLocalizedData(): Promise<void> {
   if (!browserDemo || !controllerMounted) return;
   const refreshGeneration = ++browserDemoLocaleRefreshGeneration;
   const repositoryPath = activeRepositoryPath.value;
+  const selectionGeneration = repositorySelectionGeneration;
   const selectedPath = selectedChange.value?.path;
   const selectedCommitSha = selectedCommit.value?.sha;
   const selectedCommitFilePath = selectedCommitFile.value?.path;
@@ -868,7 +1192,8 @@ async function refreshBrowserDemoLocalizedData(): Promise<void> {
   const refreshReflog = reflogModalShown.value;
   const refreshIsCurrent = () => refreshGeneration === browserDemoLocaleRefreshGeneration
     && controllerMounted
-    && activeRepositoryPath.value === repositoryPath;
+    && activeRepositoryPath.value === repositoryPath
+    && (!repositoryPath || repositorySelectionIsCurrent(repositoryPath, selectionGeneration));
   try {
     const [localizedRepositories, localizedAccounts] = await Promise.all([
       api.listRepositories(false),
@@ -925,15 +1250,24 @@ async function refreshBrowserDemoLocalizedData(): Promise<void> {
       if (!refreshIsCurrent() || activeRemote.value?.name !== remoteName) return;
       pullRequests.value = localizedPullRequests;
     }
-    if (refreshBlame && selectedPath) {
-      const localizedBlame = await api.getFileBlame(repositoryPath, selectedPath);
-      if (!refreshIsCurrent() || !blameModalShown.value || selectedChange.value?.path !== selectedPath) return;
-      blameText.value = localizedBlame;
+    if (
+      refreshBlame
+      && selectedPath
+      && blameModalShown.value
+      && selectedChange.value?.path === selectedPath
+    ) {
+      await loadFileBlame(
+        repositoryPath,
+        selectedPath,
+        selectionGeneration,
+        false,
+        refreshIsCurrent,
+      );
+      if (!refreshIsCurrent()) return;
     }
-    if (refreshReflog) {
-      const localizedReflog = await api.listReflog(repositoryPath);
-      if (!refreshIsCurrent() || !reflogModalShown.value) return;
-      reflogText.value = localizedReflog;
+    if (refreshReflog && reflogModalShown.value) {
+      await loadReflog(repositoryPath, selectionGeneration, false, refreshIsCurrent);
+      if (!refreshIsCurrent()) return;
     }
     if (publishModalShown.value && refreshIsCurrent()) await loadPublishOwners();
   } catch (error) {
@@ -1100,6 +1434,7 @@ async function selectRepository(
   reportOpenError = true,
   deferWatcherUntilInteractive = false,
 ): Promise<void> {
+  clearActiveGitLockRecoveryDialog();
   invalidatePlatformRequests();
   remoteModalShown.value = false;
   bindingDrawerShown.value = false;
@@ -1169,7 +1504,10 @@ async function selectRepository(
     }
   } catch (error) {
     if (reportOpenError && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      reportError(error, t("workspace.controller.couldNotOpenRepository"));
+      reportError(error, t("workspace.controller.couldNotOpenRepository"), {
+        repositoryPath,
+        selectionGeneration,
+      });
     }
   } finally {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
@@ -1242,7 +1580,10 @@ async function refreshSnapshotWithOptions(options: RefreshSnapshotOptions = {}):
       applicationGeneration === snapshotApplicationGeneration &&
       refreshGeneration === snapshotRefreshRequestGeneration
     ) {
-      reportError(error, t("workspace.controller.couldNotRefreshRepository"));
+      reportError(error, t("workspace.controller.couldNotRefreshRepository"), {
+        repositoryPath,
+        selectionGeneration,
+      });
     }
   } finally {
     if (
@@ -1582,7 +1923,10 @@ async function saveRemote(): Promise<void> {
     message.success(t("workspace.controller.remoteSaved"));
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      reportError(error, t("workspace.controller.couldNotSaveRemote"));
+      reportError(error, t("workspace.controller.couldNotSaveRemote"), {
+        repositoryPath,
+        selectionGeneration,
+      });
     }
   } finally {
     releaseOperation();
@@ -1620,7 +1964,10 @@ function confirmRemoveRemote(): void {
         message.success(t("workspace.controller.remoteRemoved"));
       } catch (error) {
         if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-          reportError(error, t("workspace.controller.couldNotRemoveRemote"));
+          reportError(error, t("workspace.controller.couldNotRemoveRemote"), {
+            repositoryPath,
+            selectionGeneration,
+          });
         }
       } finally {
         releaseOperation();
@@ -1715,7 +2062,7 @@ async function runNetworkAction(
           operationGeneration,
         );
       } else if (!canOfferFork) {
-        reportError(error, failureAction);
+        reportError(error, failureAction, { repositoryPath, selectionGeneration });
       } else {
         const deniedBranch = snapshot.value?.status.branch;
         let originalPushErrorReported = false;
@@ -1726,7 +2073,7 @@ async function runNetworkAction(
             || !activeRemoteMatchesTarget()
           ) return;
           originalPushErrorReported = true;
-          reportError(error, failureAction);
+          reportError(error, failureAction, { repositoryPath, selectionGeneration });
         };
         dialog.warning({
           title: t("workspace.controller.pushPermissionDenied"),
@@ -1841,7 +2188,10 @@ async function saveBinding(): Promise<void> {
     message.success(t("workspace.controller.remoteAccountBindingSavedFutureNetworkOperationsWillPreferIt"));
   } catch (error) {
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-      reportError(error, t("workspace.controller.couldNotSaveBinding"));
+      reportError(error, t("workspace.controller.couldNotSaveBinding"), {
+        repositoryPath,
+        selectionGeneration,
+      });
     }
   } finally {
     releaseOperation();
@@ -2086,6 +2436,7 @@ onBeforeUnmount(() => {
   disposeRepositoryDiscovery();
   networkOperationGeneration += 1;
   clearActiveErrorNotification();
+  clearActiveGitLockRecoveryDialog();
   repositoryTabLoadGeneration += 1;
   disposeRepositoryHistory();
   const stopWatcherGeneration = ++repositoryWatchRequestGeneration;

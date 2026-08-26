@@ -122,6 +122,35 @@
   min-height: inherit;
 }
 
+.git-lock-recovery,
+.git-lock-recovery-list,
+.git-lock-recovery-item {
+  display: grid;
+}
+
+.git-lock-recovery {
+  gap: 10px;
+}
+
+.git-lock-recovery-list {
+  max-height: 300px;
+  gap: 8px;
+  overflow: auto;
+}
+
+.git-lock-recovery-item {
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--app-divider);
+  border-radius: 6px;
+}
+
+.git-lock-recovery-path {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .settings-dialog-card {
   width: min(720px, calc(100vw - 44px));
 }

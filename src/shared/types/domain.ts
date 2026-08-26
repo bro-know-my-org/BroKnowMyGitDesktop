@@ -34,6 +34,26 @@ export interface AppError {
   details?: string | null;
 }
 
+export type RepositoryLockKind = "configuration" | "index" | "reference" | "shallow" | "other";
+
+export interface RepositoryLockInfo {
+  /** Opaque locator resolved against a fresh inventory before opening its metadata directory. */
+  id: string;
+  path: string;
+  kind: RepositoryLockKind;
+  modifiedAtMs: number | null;
+}
+
+export interface RepositoryLocksResult {
+  locks: RepositoryLockInfo[];
+  incomplete: boolean;
+}
+
+export interface OpenRepositoryGitDirectoriesResult {
+  openedCount: number;
+  failedCount: number;
+}
+
 export interface RepositoryNetworkSecurityStatus {
   repositoryPath: string;
   unsafeKeys: string[];

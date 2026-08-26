@@ -345,8 +345,58 @@ impl GitCore {
         if output.status.success() {
             Ok(output)
         } else {
-            Err(git_command_error(operation, &output))
+            Err(self.git_command_error_for_repository(repository, operation, &output))
         }
+    }
+
+    fn git_command_error_for_repository(
+        &self,
+        repository: Option<&Path>,
+        operation: &'static str,
+        output: &Output,
+    ) -> AppError {
+        if git_output_may_report_lock_contention(output) {
+            if let Some(repository) = repository {
+                let metadata_directories =
+                    self.metadata_directories_for_error_classification(repository);
+                return git_command_error_with_metadata_directories(
+                    operation,
+                    output,
+                    &metadata_directories,
+                );
+            }
+        }
+        git_command_error(operation, output)
+    }
+
+    fn metadata_directories_for_error_classification(&self, repository: &Path) -> Vec<PathBuf> {
+        let mut directories = Vec::new();
+        for argument in ["--git-dir", "--git-common-dir"] {
+            let Ok(output) = self.execute(
+                Some(repository),
+                &os_arguments(&["rev-parse", argument]),
+                &GitEnvironment::default(),
+            ) else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let Ok(path) = git_path_from_output(&output.stdout, "无法读取 Git 元数据目录")
+            else {
+                continue;
+            };
+            let path = if path.is_absolute() {
+                path
+            } else {
+                repository.join(path)
+            };
+            let path = normalize_path(&path);
+            if !directories.contains(&path) {
+                directories.push(path);
+            }
+        }
+        directories
     }
 
     /// Execute a transport-capable Git command with a finite deadline. Git
@@ -374,7 +424,7 @@ impl GitCore {
         if output.status.success() {
             Ok(output)
         } else {
-            Err(git_command_error(operation, &output))
+            Err(self.git_command_error_for_repository(repository, operation, &output))
         }
     }
 
@@ -464,7 +514,7 @@ impl GitCore {
         if output.status.success() {
             Ok(output)
         } else {
-            Err(git_command_error(operation, &output))
+            Err(self.git_command_error_for_repository(repository, operation, &output))
         }
     }
 
@@ -686,7 +736,7 @@ impl GitCore {
         if output.status.success() {
             Ok(output)
         } else {
-            Err(git_command_error(operation, &output))
+            Err(self.git_command_error_for_repository(repository, operation, &output))
         }
     }
 

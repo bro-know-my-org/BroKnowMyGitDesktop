@@ -32,7 +32,12 @@ interface RepositoryPlatformDependencies {
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
   loadCapabilities: (repositoryPath?: string, selectionGeneration?: number) => Promise<void>;
   refreshSnapshot: () => Promise<void>;
-  reportError: (error: unknown, action: string) => void;
+  reportError: (
+    error: unknown,
+    action: string,
+    repositoryPath?: string,
+    selectionGeneration?: number,
+  ) => void;
   message: MessageApi;
 }
 
@@ -248,7 +253,12 @@ export function useRepositoryPlatform({
         requestGeneration === repositoryInfoRequestGeneration
         && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && getRemoteIdentity(activeRemote.value) === remoteIdentity
-      ) reportError(error, t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"));
+      ) reportError(
+        error,
+        t("workspace.controller.couldNotLoadGitServiceRepositoryInformation"),
+        repositoryPath,
+        selectionGeneration,
+      );
     } finally {
       if (requestGeneration === repositoryInfoRequestGeneration) platformLoading.value = false;
     }
@@ -276,7 +286,7 @@ export function useRepositoryPlatform({
         requestGeneration === pullRequestsRequestGeneration
         && repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && getRemoteIdentity(activeRemote.value) === remoteIdentity
-      ) reportError(error, t("workspace.controller.couldNotLoadPullRequests"));
+      ) reportError(error, t("workspace.controller.couldNotLoadPullRequests"), repositoryPath, selectionGeneration);
     } finally {
       if (requestGeneration === pullRequestsRequestGeneration) pullRequestsLoading.value = false;
     }
@@ -427,7 +437,12 @@ export function useRepositoryPlatform({
           contributionBranch = nextSnapshot.status.branch || branchName;
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotCreateContributionBranch"));
+            reportError(
+              error,
+              t("workspace.controller.couldNotCreateContributionBranch"),
+              repositoryPath,
+              selectionGeneration,
+            );
           }
           return;
         }
@@ -476,7 +491,12 @@ export function useRepositoryPlatform({
           repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
           && activeRemote.value?.name === fork.remoteName
         ) {
-          reportError(error, t("workspace.controller.forkCreatedButCurrentBranchCouldNotBePushed"));
+          reportError(
+            error,
+            t("workspace.controller.forkCreatedButCurrentBranchCouldNotBePushed"),
+            repositoryPath,
+            selectionGeneration,
+          );
         }
         return;
       }
@@ -510,7 +530,12 @@ export function useRepositoryPlatform({
       );
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotForkGithubRepository"));
+        reportError(
+          error,
+          t("workspace.controller.couldNotForkGithubRepository"),
+          repositoryPath,
+          selectionGeneration,
+        );
       }
     } finally {
       finishMutation();
@@ -593,7 +618,12 @@ export function useRepositoryPlatform({
       if (
         repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && getRemoteIdentity(activeRemote.value) === remoteIdentity
-      ) reportError(error, t("workspace.controller.couldNotCreatePullRequest"));
+      ) reportError(
+        error,
+        t("workspace.controller.couldNotCreatePullRequest"),
+        repositoryPath,
+        selectionGeneration,
+      );
     } finally {
       finishMutation();
     }
@@ -722,7 +752,12 @@ export function useRepositoryPlatform({
       await loadCapabilities(repositoryPath, selectionGeneration).catch(() => undefined);
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotPublishGithubRepository"));
+        reportError(
+          error,
+          t("workspace.controller.couldNotPublishGithubRepository"),
+          repositoryPath,
+          selectionGeneration,
+        );
       }
     } finally {
       finishMutation();

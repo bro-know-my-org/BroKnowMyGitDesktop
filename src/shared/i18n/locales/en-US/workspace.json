@@ -665,5 +665,21 @@
   "workspace.tables.trackingLocally": "Tracking locally",
   "workspace.tables.updated": "Updated",
   "workspace.tables.upstream": "Upstream",
-  "workspace.tables.worktreePath": "Worktree path"
+  "workspace.tables.worktreePath": "Worktree path",
+  "workspace.controller.closeOtherGitClientsBeforeCleaningLocks": "The app cannot prove whether an external process still owns these locks, so it will not delete them automatically. Close other Git clients, IDEs, and terminal operations first; handle a file manually only after confirming it was left by a crashed operation.",
+  "workspace.controller.couldNotInspectGitLocks": "Could not inspect Git lock files",
+  "workspace.controller.couldNotOpenGitMetadataDirectory": "Could not open the Git metadata directory",
+  "workspace.controller.gitConfigurationLock": "Configuration lock",
+  "workspace.controller.gitIndexLock": "Index lock",
+  "workspace.controller.gitLockRecovery": "Inspect Git lock files",
+  "workspace.controller.gitReferenceLock": "Reference lock",
+  "workspace.controller.gitShallowLock": "Shallow-repository lock",
+  "workspace.controller.inspectGitLocks": "Inspect lock files",
+  "workspace.controller.noGitLocksFoundRetryTheOperation": "No safely recognizable standard Git lock files are present. Another application may have cleaned them; if the error persists, open the Git metadata directories and inspect reference locks before retrying.",
+  "workspace.controller.openGitMetadataDirectory": "Open .git directory",
+  "workspace.controller.someGitMetadataDirectoriesCouldNotBeOpened": "Opened {opened} Git metadata directory/directories, but {failed} could not be opened.",
+  "workspace.controller.someGitLockPathsCouldNotBeInspected": "Some standard Git lock paths could not be inspected. The list may be incomplete.",
+  "workspace.controller.otherGitLock": "Other Git lock",
+  "workspace.controller.unknownModificationTime": "Unknown modification time",
+  "workspace.controller.close": "Close"
 }

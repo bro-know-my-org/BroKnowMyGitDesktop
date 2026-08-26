@@ -60,6 +60,7 @@ mod editor;
 mod environment;
 mod error;
 mod history;
+mod locks;
 mod models;
 mod network;
 mod parser;
@@ -78,7 +79,7 @@ pub use editor::normalize_external_editor_config;
 pub use environment::GitEnvironment;
 pub use models::{
     CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions, RemoteUrlKind,
-    RepositorySnapshot,
+    RepositoryLockInfo, RepositoryLockKind, RepositoryLocksResult, RepositorySnapshot,
 };
 pub(crate) use network::PublishedRemoteState;
 pub(crate) use remotes::NetworkConfigurationAssessment;

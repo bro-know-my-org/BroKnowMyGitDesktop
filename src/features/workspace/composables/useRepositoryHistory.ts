@@ -1,4 +1,4 @@
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, watch, type Ref } from "vue";
 import { api } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
 import type {
@@ -48,7 +48,12 @@ interface RepositoryHistoryDependencies {
   getSelectionGeneration: () => number;
   repositorySelectionIsCurrent: (repositoryPath: string, generation: number) => boolean;
   isControllerMounted: () => boolean;
-  reportError: (error: unknown, action: string) => void;
+  reportError: (
+    error: unknown,
+    action: string,
+    repositoryPath: string,
+    selectionGeneration: number,
+  ) => void;
 }
 
 export function useRepositoryHistory({
@@ -78,6 +83,13 @@ export function useRepositoryHistory({
   let historyLoadedRepositoryPath: string | null = null;
   let historyLoadedSignature: string | null = null;
   let stashesRequestGeneration = 0;
+  let reflogRequestGeneration = 0;
+
+  watch(reflogModalShown, (shown) => {
+    if (shown) return;
+    reflogRequestGeneration += 1;
+    reflogLoading.value = false;
+  }, { flush: "sync" });
   let stashesLoadedRepositoryPath: string | null = null;
   let commitFilesRequestGeneration = 0;
   let commitDiffRequestGeneration = 0;
@@ -232,6 +244,10 @@ export function useRepositoryHistory({
   function resetRepositoryHistory(): void {
     invalidateCommitHistoryCache();
     invalidateStashesCache();
+    reflogRequestGeneration += 1;
+    reflogModalShown.value = false;
+    reflogLoading.value = false;
+    reflogText.value = "";
     clearCommitSelection();
     commits.value = [];
     stashes.value = [];
@@ -243,6 +259,7 @@ export function useRepositoryHistory({
     commitFilesDebounceTimer = null;
     commitDiffDebounceTimer = null;
     pendingCommitDiffRequest = null;
+    reflogRequestGeneration += 1;
     commitFilesRequestGeneration += 1;
     commitDiffRequestGeneration += 1;
   }
@@ -258,6 +275,7 @@ export function useRepositoryHistory({
   async function loadCommitHistoryWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
     const repositoryPath = activeRepositoryPath.value;
     if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
     const { force = false, reportErrors = true, silent = false } = options;
     const requestHistorySignature = historySnapshotSignature(snapshot.value);
     if (!force && historyLoadedRepositoryPath === repositoryPath && historyLoadedSignature === requestHistorySignature) return;
@@ -271,7 +289,7 @@ export function useRepositoryHistory({
     try {
       const nextCommits = await api.listCommits(repositoryPath);
       if (
-        activeRepositoryPath.value !== repositoryPath
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         || requestGeneration !== historyRequestGeneration
         || historySnapshotSignature(snapshot.value) !== requestHistorySignature
       ) return;
@@ -282,11 +300,11 @@ export function useRepositoryHistory({
         clearCommitSelection();
       }
     } catch (error) {
-      if (activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration && reportErrors) {
-        reportError(error, t("workspace.controller.couldNotLoadCommitHistory"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === historyRequestGeneration && reportErrors) {
+        reportError(error, t("workspace.controller.couldNotLoadCommitHistory"), repositoryPath, selectionGeneration);
       }
     } finally {
-      if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === historyRequestGeneration) {
+      if (!silent && repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === historyRequestGeneration) {
         historyLoading.value = false;
       }
     }
@@ -295,6 +313,7 @@ export function useRepositoryHistory({
   async function loadStashesWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
     const repositoryPath = activeRepositoryPath.value;
     if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
     const { force = false, reportErrors = true, silent = false } = options;
     if (!force && stashesLoadedRepositoryPath === repositoryPath) return;
     if (force) stashesLoadedRepositoryPath = null;
@@ -303,33 +322,70 @@ export function useRepositoryHistory({
     if (!silent) stashesLoading.value = true;
     try {
       const nextStashes = await api.listStashes(repositoryPath);
-      if (activeRepositoryPath.value !== repositoryPath || requestGeneration !== stashesRequestGeneration) return;
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration) || requestGeneration !== stashesRequestGeneration) return;
       stashes.value = nextStashes;
       stashesLoadedRepositoryPath = repositoryPath;
     } catch (error) {
-      if (activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration && reportErrors) {
-        reportError(error, t("workspace.controller.couldNotLoadStashes"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === stashesRequestGeneration && reportErrors) {
+        reportError(error, t("workspace.controller.couldNotLoadStashes"), repositoryPath, selectionGeneration);
       }
     } finally {
-      if (!silent && activeRepositoryPath.value === repositoryPath && requestGeneration === stashesRequestGeneration) {
+      if (!silent && repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === stashesRequestGeneration) {
         stashesLoading.value = false;
       }
     }
   }
 
-  async function openReflog(): Promise<void> {
-    if (!activeRepositoryPath.value) return;
-    reflogModalShown.value = true;
-    reflogText.value = "";
+  async function loadReflog(
+    repositoryPath: string,
+    selectionGeneration: number,
+    reportErrors = true,
+    isRequestCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    if (!reflogModalShown.value || !isRequestCurrent()) return;
+    const requestGeneration = ++reflogRequestGeneration;
+    const previousReflogText = reflogText.value;
+    if (reportErrors) reflogText.value = "";
     reflogLoading.value = true;
     try {
-      reflogText.value = await api.listReflog(activeRepositoryPath.value);
+      const nextReflogText = await api.listReflog(repositoryPath);
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || requestGeneration !== reflogRequestGeneration
+        || !isRequestCurrent()
+        || !reflogModalShown.value
+      ) return;
+      reflogText.value = nextReflogText;
     } catch (error) {
-      reflogModalShown.value = false;
-      reportError(error, t("workspace.controller.couldNotLoadReflog"));
+      if (
+        repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && requestGeneration === reflogRequestGeneration
+        && isRequestCurrent()
+        && reflogModalShown.value
+      ) {
+        if (reportErrors) {
+          reflogModalShown.value = false;
+          reportError(error, t("workspace.controller.couldNotLoadReflog"), repositoryPath, selectionGeneration);
+        } else {
+          reflogText.value = previousReflogText;
+        }
+      }
     } finally {
-      reflogLoading.value = false;
+      if (
+        repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && requestGeneration === reflogRequestGeneration
+        && isRequestCurrent()
+        && reflogModalShown.value
+      ) reflogLoading.value = false;
     }
+  }
+
+  async function openReflog(): Promise<void> {
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
+    reflogModalShown.value = true;
+    await loadReflog(repositoryPath, selectionGeneration);
   }
 
   function loadCommitFiles(commit: CommitSummary): void {
@@ -385,7 +441,7 @@ export function useRepositoryHistory({
       }
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
-        reportError(error, t("workspace.controller.couldNotLoadChangedFiles"));
+        reportError(error, t("workspace.controller.couldNotLoadChangedFiles"), repositoryPath, selectionGeneration);
       }
     } finally {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitFilesRequestGeneration) {
@@ -510,7 +566,7 @@ export function useRepositoryHistory({
       }
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
-        reportError(error, t("workspace.controller.couldNotLoadTheFileDiff"));
+        reportError(error, t("workspace.controller.couldNotLoadTheFileDiff"), repositoryPath, selectionGeneration);
       }
     } finally {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === commitDiffRequestGeneration) {
@@ -554,6 +610,7 @@ export function useRepositoryHistory({
     loadHistoryWithOptions,
     loadCommitHistoryWithOptions,
     loadStashesWithOptions,
+    loadReflog,
     openReflog,
     loadCommitFiles,
     loadCommitFileDiff,

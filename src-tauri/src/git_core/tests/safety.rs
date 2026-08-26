@@ -652,6 +652,314 @@ fn generic_access_denied_is_not_misclassified_as_an_askpass_failure() {
 }
 
 #[test]
+fn classifies_common_git_lock_failures_without_forwarding_the_path() {
+    let config = git_error_from_diagnostic(
+        "更新 remote",
+        "error: could not lock config file /private/project/.git/config: File exists",
+    );
+    assert_eq!(config.code(), "git_config_locked");
+    let config_returned = format!(
+        "{} {}",
+        config.message(),
+        config.details().unwrap_or_default()
+    );
+    assert!(!config_returned.contains("/private/project"));
+
+    let index = git_error_from_diagnostic(
+        "暂存文件",
+        "fatal: Unable to create '/private/project/.git/index.lock': File exists.",
+    );
+    assert_eq!(index.code(), "git_index_locked");
+    let index_returned = format!(
+        "{} {}",
+        index.message(),
+        index.details().unwrap_or_default()
+    );
+    assert!(!index_returned.contains("/private/project"));
+
+    let reference = git_error_from_diagnostic(
+        "更新分支",
+        r"fatal: Unable to create 'C:\private\project\.git\refs\heads\main.lock': File exists.",
+    );
+    assert_eq!(reference.code(), "git_reference_locked");
+    let reference_returned = format!(
+        "{} {}",
+        reference.message(),
+        reference.details().unwrap_or_default()
+    );
+    assert!(!reference_returned.contains(r"C:\private\project"));
+
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/main': unable to create refs/heads/main.lock: File exists"
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/config': unable to create refs/heads/config.lock: File exists"
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/main': is at deadbeef but expected cafebabe"
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "合并分支",
+            "fatal: Unable to create '/private/project/.git/AUTO_MERGE.lock': File exists."
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新 remote",
+            "warning: backup already exists\nerror: unable to create /private/project/.git/config.lock: Permission denied"
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "暂存文件",
+            "warning: auxiliary.lock already exists\nfatal: Unable to create '/private/project/.git/index.lock': File exists."
+        )
+        .code(),
+        "git_index_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "获取远程更新",
+            "warning: myconfig.lock already exists\nfatal: authentication failed"
+        )
+        .code(),
+        "git_authentication_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "获取远程更新",
+            "error: ahead.lock already exists\nfatal: authentication failed"
+        )
+        .code(),
+        "git_authentication_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新 remote",
+            "error: could not lock config file /home/user/.gitconfig: File exists"
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot update ref refs/heads/main because /tmp/cache.lock already exists"
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "暂存文件",
+            "fatal: Unable to create '/tmp/index.lock': File exists."
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/release,1': unable to create refs/heads/release,1.lock: File exists"
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/release)1': unable to create refs/heads/release)1.lock: File exists"
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "暂存文件",
+            "fatal: Unable to create '/srv/meta/project.git/index.lock': File exists."
+        )
+        .code(),
+        "git_index_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "暂存文件",
+            "fatal: Unable to create '/srv/metadata/index.lock': File exists.",
+            &[PathBuf::from("/srv/metadata")],
+        )
+        .code(),
+        "git_index_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "更新 remote",
+            "error: could not lock config file /srv/Git Metadata/config: File exists",
+            &[PathBuf::from("/srv/Git Metadata")],
+        )
+        .code(),
+        "git_config_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "暂存文件",
+            "fatal: Unable to create '/tmp/other.git/index.lock': File exists.",
+            &[PathBuf::from("/repo/.git")],
+        )
+        .code(),
+        "git_command_failed"
+    );
+    for diagnostic in [
+        "error: could not lock config file /repo/.git/config/backup: File exists",
+        "error: could not lock config file /repo/.git/config,backup: File exists",
+    ] {
+        assert_eq!(
+            git_error_from_diagnostic_with_metadata_directories(
+                "更新 remote",
+                diagnostic,
+                &[PathBuf::from("/repo/.git")],
+            )
+            .code(),
+            "git_command_failed"
+        );
+    }
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "暂存文件",
+            "fatal: Unable to create '/tmp/other.git/index.lock': File exists.",
+            &[],
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "更新分支",
+            "fatal: cannot lock ref 'refs/heads/main': unable to create refs/heads/main.lock: File exists",
+            &[],
+        )
+        .code(),
+        "git_reference_locked"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "暂存文件",
+            "fatal: Unable to create /tmp/Other Repo/.git/index.lock: File exists.",
+            &[PathBuf::from("/repo/.git")],
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "更新 remote",
+            "error: could not lock config file /tmp/repo/.git/config: File exists",
+            &[PathBuf::from("/repo/.git")],
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic_with_metadata_directories(
+            "暂存文件",
+            "fatal: Unable to create '/srv/Git Metadata/index.lock': File exists.",
+            &[PathBuf::from("/srv/Git Metadata")],
+        )
+        .code(),
+        "git_index_locked"
+    );
+    #[cfg(not(windows))]
+    for diagnostic in [
+        "fatal: Unable to create '/repo/metadata/index.lock': File exists.",
+        "fatal: Unable to create '/repo/.git/INDEX.LOCK': File exists.",
+        "fatal: Unable to create '/repo/.GIT/index.lock': File exists.",
+    ] {
+        assert_eq!(
+            git_error_from_diagnostic_with_metadata_directories(
+                "暂存文件",
+                diagnostic,
+                &[PathBuf::from("/Repo/metadata")],
+            )
+            .code(),
+            "git_command_failed"
+        );
+    }
+    for diagnostic in [
+        "fatal: Unable to create '/repo/.git/modules/sub/index.lock': File exists.",
+        "fatal: Unable to create '/repo/.git/cache/config.lock': File exists.",
+        "fatal: Unable to create '/tmp/refs/heads/main.lock': File exists.",
+        "error: could not lock config file /repo/.git/config/backup: File exists",
+        "error: could not lock config file /repo/.git/config,backup: File exists",
+    ] {
+        assert_eq!(
+            git_error_from_diagnostic("Git 操作", diagnostic).code(),
+            "git_command_failed"
+        );
+    }
+    for diagnostic in [
+        "fatal: unable to create '/repo/.git/logs/HEAD.lock': File exists",
+        r"fatal: unable to create 'C:\repo\.git\logs\refs\heads\main.lock': File exists",
+    ] {
+        assert_eq!(
+            git_error_from_diagnostic("写入 reflog", diagnostic).code(),
+            "git_reference_locked"
+        );
+    }
+    assert_eq!(
+        git_error_from_diagnostic(
+            "写入 reflog",
+            "fatal: unable to append to '/repo/.git/logs/HEAD': File exists",
+        )
+        .code(),
+        "git_command_failed"
+    );
+}
+
+#[test]
+fn config_permission_failures_are_not_misclassified_as_stale_locks() {
+    let error = git_error_from_diagnostic(
+        "更新 remote",
+        "error: could not lock config file /private/project/.git/config: Permission denied",
+    );
+    assert_eq!(error.code(), "git_command_failed");
+    assert_eq!(
+        git_error_from_diagnostic(
+            "更新 remote",
+            "error: unable to create /private/project/.git/config.lock: Permission denied",
+        )
+        .code(),
+        "git_command_failed"
+    );
+    assert_eq!(
+        git_error_from_diagnostic(
+            "暂存文件",
+            "fatal: Unable to create '/private/project/.git/index.lock': Read-only file system",
+        )
+        .code(),
+        "git_command_failed"
+    );
+}
+
+#[test]
 fn classifies_github_write_permission_denial() {
     let error = git_error_from_diagnostic(
         "推送改动",

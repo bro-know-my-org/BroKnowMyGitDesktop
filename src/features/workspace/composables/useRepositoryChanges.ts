@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue";
+import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
 import type { DialogApi, MessageApi } from "naive-ui";
 import { api } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
@@ -19,7 +19,12 @@ interface RepositoryChangesDependencies {
   isConflictedEntry: (entry: GitStatusEntry) => boolean;
   splitDiffHunks: (diff: string) => DiffHunk[];
   splitDiffLines: (diff: string) => string[];
-  reportError: (error: unknown, action: string) => void;
+  reportError: (
+    error: unknown,
+    action: string,
+    repositoryPath: string,
+    selectionGeneration: number,
+  ) => void;
   message: MessageApi;
   dialog: DialogApi;
 }
@@ -51,6 +56,13 @@ export function useRepositoryChanges({
   const commitMessage = ref("");
   const amendLastCommit = ref(false);
   let diffRequestGeneration = 0;
+  let blameRequestGeneration = 0;
+
+  watch(blameModalShown, (shown) => {
+    if (shown) return;
+    blameRequestGeneration += 1;
+    blameLoading.value = false;
+  }, { flush: "sync" });
 
   function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
     const releaseOperation = acquireRepositoryOperation(repositoryPath);
@@ -118,10 +130,14 @@ export function useRepositoryChanges({
 
   function clearDiffSelection(): void {
     diffRequestGeneration += 1;
+    blameRequestGeneration += 1;
     selectedChange.value = null;
     diffText.value = "";
     selectedDiffStaged.value = false;
     diffLoading.value = false;
+    blameText.value = "";
+    blameLoading.value = false;
+    blameModalShown.value = false;
   }
 
   function getDiffRequestGeneration(): number {
@@ -134,7 +150,14 @@ export function useRepositoryChanges({
     reportErrors = true,
   ): Promise<void> {
     if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
     const requestGeneration = ++diffRequestGeneration;
+    if (selectedChange.value?.path !== entry.path) {
+      blameRequestGeneration += 1;
+      blameText.value = "";
+      blameLoading.value = false;
+      blameModalShown.value = false;
+    }
     selectedChange.value = entry;
     selectedDiffStaged.value = Boolean(entry.indexStatus) && !entry.worktreeStatus;
     diffLoading.value = true;
@@ -152,7 +175,7 @@ export function useRepositoryChanges({
       diffText.value = diff;
     } catch (error) {
       if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration && reportErrors) {
-        reportError(error, t("workspace.controller.couldNotLoadDiff"));
+        reportError(error, t("workspace.controller.couldNotLoadDiff"), repositoryPath, selectionGeneration);
       }
     } finally {
       if (activeRepositoryPath.value === repositoryPath && requestGeneration === diffRequestGeneration) {
@@ -184,19 +207,66 @@ export function useRepositoryChanges({
     if (currentSelectedPath) await syncSelectedDiff(nextSnapshot, currentSelectedPath, false, repositoryPath);
   }
 
-  async function openFileBlame(): Promise<void> {
-    if (!activeRepositoryPath.value || !selectedChange.value) return;
-    blameModalShown.value = true;
-    blameText.value = "";
+  async function loadFileBlame(
+    repositoryPath: string,
+    selectedPath: string,
+    selectionGeneration: number,
+    reportErrors = true,
+    isRequestCurrent: () => boolean = () => true,
+  ): Promise<void> {
+    if (!blameModalShown.value || !isRequestCurrent()) return;
+    const requestGeneration = ++blameRequestGeneration;
+    const previousBlameText = blameText.value;
+    if (reportErrors) blameText.value = "";
     blameLoading.value = true;
     try {
-      blameText.value = await api.getFileBlame(activeRepositoryPath.value, selectedChange.value.path);
+      const nextBlameText = await api.getFileBlame(repositoryPath, selectedPath);
+      if (
+        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || requestGeneration !== blameRequestGeneration
+        || !isRequestCurrent()
+        || !blameModalShown.value
+        || selectedChange.value?.path !== selectedPath
+      ) return;
+      blameText.value = nextBlameText;
     } catch (error) {
-      blameModalShown.value = false;
-      reportError(error, t("workspace.controller.couldNotLoadFileBlame"));
+      if (
+        repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && requestGeneration === blameRequestGeneration
+        && isRequestCurrent()
+        && blameModalShown.value
+        && selectedChange.value?.path === selectedPath
+      ) {
+        if (reportErrors) {
+          blameModalShown.value = false;
+          reportError(
+            error,
+            t("workspace.controller.couldNotLoadFileBlame"),
+            repositoryPath,
+            selectionGeneration,
+          );
+        } else {
+          blameText.value = previousBlameText;
+        }
+      }
     } finally {
-      blameLoading.value = false;
+      if (
+        repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        && requestGeneration === blameRequestGeneration
+        && isRequestCurrent()
+        && blameModalShown.value
+        && selectedChange.value?.path === selectedPath
+      ) blameLoading.value = false;
     }
+  }
+
+  async function openFileBlame(): Promise<void> {
+    const repositoryPath = activeRepositoryPath.value;
+    const selectedPath = selectedChange.value?.path;
+    if (!repositoryPath || !selectedPath) return;
+    const selectionGeneration = getSelectionGeneration();
+    blameModalShown.value = true;
+    await loadFileBlame(repositoryPath, selectedPath, selectionGeneration);
   }
 
   async function applyDiffHunk(hunk: DiffHunk): Promise<void> {
@@ -217,7 +287,7 @@ export function useRepositoryChanges({
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
         reportError(error, reverse
           ? t("workspace.controller.couldNotUnstageHunk")
-          : t("workspace.controller.couldNotStageHunk"));
+          : t("workspace.controller.couldNotStageHunk"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -257,7 +327,7 @@ export function useRepositoryChanges({
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
         reportError(error, included
           ? t("workspace.controller.couldNotStageChanges")
-          : t("workspace.controller.couldNotUnstageChanges"));
+          : t("workspace.controller.couldNotUnstageChanges"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -281,7 +351,7 @@ export function useRepositoryChanges({
       message.success(t("workspace.controller.allWorkingTreeChangesAreStaged"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotStageChanges"));
+        reportError(error, t("workspace.controller.couldNotStageChanges"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -305,7 +375,7 @@ export function useRepositoryChanges({
       message.success(t("workspace.controller.allFilesAreRemovedFromTheStagingArea"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotUnstageChanges"));
+        reportError(error, t("workspace.controller.couldNotUnstageChanges"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -324,7 +394,7 @@ export function useRepositoryChanges({
       discardPreview = await api.previewDiscardChanges(repositoryPath, uniquePaths);
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotPrepareToDiscardChanges"));
+        reportError(error, t("workspace.controller.couldNotPrepareToDiscardChanges"), repositoryPath, selectionGeneration);
       }
       return;
     } finally {
@@ -358,7 +428,7 @@ export function useRepositoryChanges({
           message.success(t("workspace.controller.changesDiscarded"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotDiscardChanges"));
+            reportError(error, t("workspace.controller.couldNotDiscardChanges"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -382,7 +452,7 @@ export function useRepositoryChanges({
       cleanPreview = await api.previewCleanUntracked(repositoryPath);
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotPreviewUntrackedFileCleanup"));
+        reportError(error, t("workspace.controller.couldNotPreviewUntrackedFileCleanup"), repositoryPath, selectionGeneration);
       }
       return;
     } finally {
@@ -419,7 +489,7 @@ export function useRepositoryChanges({
           message.success(t("workspace.controller.untrackedFilesCleaned"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotCleanUntrackedFiles"));
+            reportError(error, t("workspace.controller.couldNotCleanUntrackedFiles"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -472,7 +542,7 @@ export function useRepositoryChanges({
         : t("workspace.controller.commitCreated"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.commitFailed"));
+        reportError(error, t("workspace.controller.commitFailed"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -509,6 +579,7 @@ export function useRepositoryChanges({
     getDiffRequestGeneration,
     syncSelectedDiff,
     loadDiff,
+    loadFileBlame,
     openFileBlame,
     applyDiffHunk,
     diffHunkAtLine,

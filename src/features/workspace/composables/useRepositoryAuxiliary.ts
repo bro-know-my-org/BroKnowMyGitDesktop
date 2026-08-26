@@ -26,7 +26,12 @@ interface RepositoryAuxiliaryDependencies {
   applySnapshot: (snapshot: RepositorySnapshot) => boolean;
   loadRepositories: () => Promise<void>;
   refreshSnapshot: () => Promise<void>;
-  reportError: (error: unknown, action: string) => void;
+  reportError: (
+    error: unknown,
+    action: string,
+    repositoryPath?: string,
+    selectionGeneration?: number,
+  ) => void;
   message: MessageApi;
   dialog: DialogApi;
 }
@@ -93,7 +98,7 @@ export function useRepositoryAuxiliary({
         repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && requestGeneration === worktreesRequestGeneration
         && reportErrors
-      ) reportError(error, t("workspace.controller.couldNotLoadWorktrees"));
+      ) reportError(error, t("workspace.controller.couldNotLoadWorktrees"), repositoryPath, selectionGeneration);
     } finally {
       if (
         shouldClearLoading
@@ -124,7 +129,7 @@ export function useRepositoryAuxiliary({
         repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && requestGeneration === submodulesRequestGeneration
         && reportErrors
-      ) reportError(error, t("workspace.controller.couldNotLoadSubmodules"));
+      ) reportError(error, t("workspace.controller.couldNotLoadSubmodules"), repositoryPath, selectionGeneration);
     } finally {
       if (
         shouldClearLoading
@@ -159,7 +164,7 @@ export function useRepositoryAuxiliary({
         repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         && requestGeneration === lfsRequestGeneration
         && reportErrors
-      ) reportError(error, t("workspace.controller.couldNotLoadGitLfsStatus"));
+      ) reportError(error, t("workspace.controller.couldNotLoadGitLfsStatus"), repositoryPath, selectionGeneration);
     } finally {
       if (
         shouldClearLoading
@@ -227,20 +232,30 @@ export function useRepositoryAuxiliary({
   }
 
   async function openConflictedFilesInExternalEditor(): Promise<void> {
-    if (!activeRepositoryPath.value) return;
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath) return;
+    const selectionGeneration = getSelectionGeneration();
     if (!externalEditor.value) {
       openExternalEditorModal();
       return;
     }
     mutationBusy.value = true;
     try {
-      const paths = await api.openConflictedFilesInExternalEditor(activeRepositoryPath.value);
+      const paths = await api.openConflictedFilesInExternalEditor(repositoryPath);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
       message.info(t(
         "workspace.controller.openedCountConflictedFileSInTheExternalEditorWhenFinishedReturnHereToRefreshStageAndContinue",
         { count: paths.length },
       ));
     } catch (error) {
-      reportError(error, t("workspace.controller.couldNotOpenExternalEditor"));
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
+        reportError(
+          error,
+          t("workspace.controller.couldNotOpenExternalEditor"),
+          repositoryPath,
+          selectionGeneration,
+        );
+      }
     } finally {
       mutationBusy.value = false;
     }
@@ -285,7 +300,7 @@ export function useRepositoryAuxiliary({
       message.success(t("workspace.controller.worktreeCreatedYouCanOpenItFromTheList"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotCreateWorktree"));
+        reportError(error, t("workspace.controller.couldNotCreateWorktree"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -323,7 +338,7 @@ export function useRepositoryAuxiliary({
           message.success(t("workspace.controller.worktreeRemoved"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotRemoveWorktree"));
+            reportError(error, t("workspace.controller.couldNotRemoveWorktree"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -359,7 +374,7 @@ export function useRepositoryAuxiliary({
           message.success(t("workspace.controller.submodulesInitializedOrUpdated"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotUpdateSubmodules"));
+            reportError(error, t("workspace.controller.couldNotUpdateSubmodules"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -383,7 +398,7 @@ export function useRepositoryAuxiliary({
       message.success(t("workspace.controller.gitLfsInitializedForThisRepository"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotInitializeGitLfs"));
+        reportError(error, t("workspace.controller.couldNotInitializeGitLfs"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -415,7 +430,7 @@ export function useRepositoryAuxiliary({
       message.success(t("workspace.controller.theGitLfsRuleWasWrittenToGitattributesReviewAndCommitThatChange"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotAddGitLfsRule"));
+        reportError(error, t("workspace.controller.couldNotAddGitLfsRule"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();

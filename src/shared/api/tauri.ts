@@ -39,6 +39,7 @@ import type {
   InitRepositoryInput,
   LfsStatus,
   NetworkOperationResult,
+  OpenRepositoryGitDirectoriesResult,
   PullRequestSummary,
   RemoteProfile,
   RemoteUrlKind,
@@ -46,6 +47,7 @@ import type {
   RepositoryRecord,
   RepositoryDiscoveryResult,
   RepositoryImportResult,
+  RepositoryLocksResult,
   RepositoryNetworkSecurityStatus,
   RepositorySnapshot,
   SaveAccountProfileInput,
@@ -672,6 +674,24 @@ export const api = {
 
   async openRepositoryInFileManager(repositoryPath: string): Promise<void> {
     await request("open_repository_in_file_manager", { repositoryPath }, () => undefined);
+  },
+
+  listRepositoryLocks(repositoryPath: string): Promise<RepositoryLocksResult> {
+    return request("list_repository_locks", { repositoryPath }, () => {
+      throw browserError("browser_demo_unsupported");
+    });
+  },
+
+  async openRepositoryLockDirectory(repositoryPath: string, lockId: string): Promise<void> {
+    await request("open_repository_lock_directory", { repositoryPath, lockId }, () => {
+      throw browserError("browser_demo_unsupported");
+    });
+  },
+
+  async openRepositoryGitDirectories(repositoryPath: string): Promise<OpenRepositoryGitDirectoriesResult> {
+    return request("open_repository_git_directories", { repositoryPath }, () => {
+      throw browserError("browser_demo_unsupported");
+    });
   },
 
   async openRepositoryInTerminal(repositoryPath: string): Promise<void> {

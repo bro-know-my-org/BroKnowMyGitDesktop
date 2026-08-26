@@ -30,7 +30,12 @@ interface RepositoryOperationsDependencies {
   refreshAfterGitConflict: (error: unknown) => Promise<void>;
   reconcileSnapshotAfterMutationError: (repositoryPath: string) => Promise<void>;
   gitOperationLabel: (kind: GitOperationKind) => string;
-  reportError: (error: unknown, action: string) => void;
+  reportError: (
+    error: unknown,
+    action: string,
+    repositoryPath: string,
+    selectionGeneration: number,
+  ) => void;
   message: MessageApi;
   dialog: DialogApi;
 }
@@ -190,7 +195,7 @@ export function useRepositoryOperations({
         await loadHistory().catch(() => undefined);
       }
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotSwitchBranch"));
+      reportError(error, t("workspace.controller.couldNotSwitchBranch"), repositoryPath, selectionGeneration);
     } finally {
       finishMutation();
     }
@@ -247,7 +252,7 @@ export function useRepositoryOperations({
         await loadHistory().catch(() => undefined);
       }
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotSwitchRemoteBranch"));
+      reportError(error, t("workspace.controller.couldNotSwitchRemoteBranch"), repositoryPath, selectionGeneration);
     } finally {
       finishMutation();
     }
@@ -308,7 +313,7 @@ export function useRepositoryOperations({
         await loadHistory().catch(() => undefined);
       }
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotCreateBranch"));
+      reportError(error, t("workspace.controller.couldNotCreateBranch"), repositoryPath, selectionGeneration);
     } finally {
       finishMutation();
     }
@@ -341,7 +346,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.branchRenamed"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotRenameBranch"));
+        reportError(error, t("workspace.controller.couldNotRenameBranch"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -373,7 +378,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.branchDeleted"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotDeleteBranch"));
+            reportError(error, t("workspace.controller.couldNotDeleteBranch"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -409,7 +414,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.mergedBranch", { branch: branch.name }));
         } catch (error) {
           if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-          reportError(error, t("workspace.controller.couldNotMergeBranch"));
+          reportError(error, t("workspace.controller.couldNotMergeBranch"), repositoryPath, selectionGeneration);
           await refreshAfterGitConflict(error);
         } finally {
           finishMutation();
@@ -444,7 +449,7 @@ export function useRepositoryOperations({
         : t("workspace.controller.rebaseCompleted"));
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotRebaseBranch"));
+      reportError(error, t("workspace.controller.couldNotRebaseBranch"), repositoryPath, selectionGeneration);
       await refreshAfterGitConflict(error);
     } finally {
       finishMutation();
@@ -475,7 +480,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.commitCherryPicked"));
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotCherryPickCommit"));
+      reportError(error, t("workspace.controller.couldNotCherryPickCommit"), repositoryPath, selectionGeneration);
       await refreshAfterGitConflict(error);
     } finally {
       finishMutation();
@@ -502,7 +507,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.gitOperationContinued"));
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotContinueGitOperation"));
+      reportError(error, t("workspace.controller.couldNotContinueGitOperation"), repositoryPath, selectionGeneration);
       await refreshAfterGitConflict(error);
     } finally {
       finishMutation();
@@ -537,7 +542,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.gitOperationAborted"));
         } catch (error) {
           if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-          reportError(error, t("workspace.controller.couldNotAbortGitOperation"));
+          reportError(error, t("workspace.controller.couldNotAbortGitOperation"), repositoryPath, selectionGeneration);
           await refreshAfterGitConflict(error);
         } finally {
           finishMutation();
@@ -571,7 +576,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.changesSavedToStash"));
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotStashChanges"));
+      reportError(error, t("workspace.controller.couldNotStashChanges"), repositoryPath, selectionGeneration);
     } finally {
       finishMutation();
     }
@@ -604,7 +609,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.stashRestored"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotPopStash"));
+            reportError(error, t("workspace.controller.couldNotPopStash"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -637,7 +642,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.stashDropped"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotDropStash"));
+            reportError(error, t("workspace.controller.couldNotDropStash"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -678,7 +683,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.branchReset"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotResetBranch"));
+            reportError(error, t("workspace.controller.couldNotResetBranch"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -718,7 +723,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.recentCommitsSquashed"));
     } catch (error) {
       if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) return;
-      reportError(error, t("workspace.controller.couldNotSquashCommits"));
+      reportError(error, t("workspace.controller.couldNotSquashCommits"), repositoryPath, selectionGeneration);
     } finally {
       finishMutation();
     }
@@ -751,7 +756,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.revertCommitCreated"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotRevertCommit"));
+            reportError(error, t("workspace.controller.couldNotRevertCommit"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
@@ -806,7 +811,7 @@ export function useRepositoryOperations({
       message.success(t("workspace.controller.tagCreated"));
     } catch (error) {
       if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-        reportError(error, t("workspace.controller.couldNotCreateTag"));
+        reportError(error, t("workspace.controller.couldNotCreateTag"), repositoryPath, selectionGeneration);
       }
     } finally {
       finishMutation();
@@ -837,7 +842,7 @@ export function useRepositoryOperations({
           message.success(t("workspace.controller.tagDeleted"));
         } catch (error) {
           if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration)) {
-            reportError(error, t("workspace.controller.couldNotDeleteTag"));
+            reportError(error, t("workspace.controller.couldNotDeleteTag"), repositoryPath, selectionGeneration);
           }
         } finally {
           finishMutation();
