@@ -68,23 +68,71 @@
   flex-direction: column;
 }
 
+.repository-picker-searchable {
+  width: 390px;
+}
+
 .repository-picker-popover {
   overflow: hidden;
   padding: 0 !important;
 }
 
-.repository-picker-header {
-  display: grid;
-  gap: 7px;
-  padding: 10px 8px 8px;
+.repository-picker-command-header {
+  padding: 9px;
   border-bottom: 1px solid var(--app-divider);
 }
 
-.repository-picker-title-row {
+.repository-picker-command-row {
+  display: flex;
+  height: 38px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--app-divider);
+  background: var(--app-surface);
+}
+
+.repository-picker-command-row > svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  stroke: var(--app-text-muted);
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.repository-picker-command-row:focus-within {
+  outline: 2px solid var(--app-focus);
+  outline-offset: -2px;
+}
+
+.repository-picker-search {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--app-text-heading);
+  font: inherit;
+}
+
+.repository-picker-search::placeholder {
+  color: var(--app-text-muted);
+}
+
+.repository-picker-command-tools {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 8px 2px 0;
+  color: var(--app-text-muted);
+  font-size: calc(11px * var(--app-font-scale));
+}
+
+.repository-picker-footer {
+  padding: 8px;
+  border-top: 1px solid var(--app-divider);
 }
 
 .repository-picker-repositories {
@@ -114,6 +162,15 @@
   justify-content: flex-start;
   gap: 5px;
   font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
+}
+
+.repository-add-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
 }
 
 .sidebar-repository-list {
@@ -392,35 +449,6 @@
   white-space: nowrap;
 }
 
-.repository-switcher {
-  display: inline-flex;
-  height: 100%;
-  min-width: 0;
-  max-width: min(360px, 42vw);
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.repository-switcher .topbar-title {
-  flex: 0 1 auto;
-}
-
-.repository-switcher:hover {
-  background: var(--app-row-hover);
-}
-
-.repository-switcher:focus-visible {
-  outline: 2px solid var(--app-focus);
-  outline-offset: -2px;
-}
-
 .repository-switcher-caret {
   flex: 0 0 auto;
   color: var(--app-text-muted);
@@ -428,7 +456,73 @@
   line-height: 1;
 }
 
-.repository-switcher[aria-expanded="true"] .repository-switcher-caret {
+.repository-switcher-primary,
+.repository-switcher-secondary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repository-switcher-primary {
+  min-width: 0;
+  color: var(--app-text-heading);
+  font-size: calc(14px * var(--app-font-scale));
+  font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
+}
+
+.repository-switcher-secondary {
+  max-width: 130px;
+  color: var(--app-text-muted);
+  font-size: calc(11px * var(--app-code-font-scale));
+}
+
+.repository-switcher-split {
+  display: inline-flex;
+  height: 32px;
+  min-width: 0;
+  max-width: min(400px, 46vw);
+  align-items: stretch;
+  border: 1px solid var(--app-divider);
+  background: var(--app-surface);
+}
+
+.repository-switcher-current,
+.repository-switcher-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.repository-switcher-current {
+  gap: 7px;
+  padding: 0 9px;
+}
+
+.repository-switcher-toggle {
+  width: 30px;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 0;
+  border-left: 1px solid var(--app-divider);
+}
+
+.repository-switcher-current:hover,
+.repository-switcher-toggle:hover,
+.repository-switcher-split:has(.repository-switcher-toggle[aria-expanded="true"]) {
+  background: var(--app-row-hover);
+}
+
+.repository-switcher-current:focus-visible,
+.repository-switcher-toggle:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: -2px;
+}
+
+.repository-switcher-toggle[aria-expanded="true"] .repository-switcher-caret {
   transform: rotate(180deg);
 }
 

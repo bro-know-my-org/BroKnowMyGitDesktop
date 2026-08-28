@@ -5,6 +5,7 @@ import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
 import { settingsSection } from "../../../shared/settingsNavigation";
+import { filterRepositoryGroups } from "../composables/workspaceControllerSupport";
 
 function splitReferenceLabel(label: string): { prefix: string; tail: string } {
   const separatorIndex = label.lastIndexOf("/");
@@ -29,6 +30,10 @@ export default defineComponent({
   components: { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpace, NSpin, NTag, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
+    const repositoryFilter = ref("");
+    const repositoryPickerElement = ref<HTMLElement | null>(null);
+    const repositoryPickerTrigger = ref<HTMLElement | null>(null);
+    const repositorySearchInput = ref<HTMLInputElement | null>(null);
     const repositoryPickerOpen = ref(false);
     const repositoryContextMenuOpen = ref(false);
     const repositoryContextMenuX = ref(0);
@@ -72,6 +77,8 @@ export default defineComponent({
         : repository?.name || workspace.t("workspace.header.repository");
       return `${workspace.t("workspace.header.switchRepository")}: ${label}`;
     });
+    const displayedRepositoryGroups = computed(() =>
+      filterRepositoryGroups(workspace.repositoryGroups.value, repositoryFilter.value));
     const currentBranchLabelParts = computed(() => splitReferenceLabel(workspace.currentBranch.value));
     const upstreamLabelParts = computed(() => splitReferenceLabel(workspace.snapshot.value?.status.upstream ?? ""));
     const branchTracksActiveRemote = computed(() => {
@@ -156,6 +163,13 @@ export default defineComponent({
       } else if (value === "settings") {
         workspace.settingsModalShown.value = true;
       }
+    }
+
+    function toggleRepositoryPicker(event: MouseEvent): void {
+      if (!repositoryPickerOpen.value && event.currentTarget instanceof HTMLElement) {
+        repositoryPickerTrigger.value = event.currentTarget;
+      }
+      repositoryPickerOpen.value = !repositoryPickerOpen.value;
     }
 
     function selectContributionAction(value: string | number): void {
@@ -280,10 +294,23 @@ export default defineComponent({
       }
     });
     watch(repositoryPickerOpen, (open) => {
-      if (!open) repositoryContextMenuOpen.value = false;
+      if (open) {
+        void nextTick(() => repositorySearchInput.value?.focus());
+      } else {
+        const shouldRestoreFocus = repositoryPickerElement.value?.contains(document.activeElement) ?? false;
+        repositoryContextMenuOpen.value = false;
+        repositoryFilter.value = "";
+        if (shouldRestoreFocus) {
+          void nextTick(() => repositoryPickerTrigger.value?.focus());
+        }
+      }
     });
     return {
       ...workspace,
+      repositoryFilter,
+      repositoryPickerElement,
+      repositorySearchInput,
+      displayedRepositoryGroups,
       repositoryPickerOpen,
       repositoryContextMenuOpen,
       repositoryContextMenuX,
@@ -305,6 +332,7 @@ export default defineComponent({
       openRepositoryContextMenu,
       openRepositoryContextMenuFromKeyboard,
       selectApplicationMenuItem,
+      toggleRepositoryPicker,
       selectContributionAction,
       selectBranch,
       selectRepositoryContextMenuAction,
@@ -335,49 +363,68 @@ export default defineComponent({
                 class="repository-picker-popover"
               >
                 <template #trigger>
-                  <button
-                    class="repository-switcher"
-                    type="button"
-                    :aria-label="repositorySwitcherAriaLabel"
-                    :aria-expanded="repositoryPickerOpen"
-                    aria-keyshortcuts="Shift+F10"
-                    :aria-description="t('workspace.header.rightClickForRepositoryActions')"
-                    :title="`${repositorySwitcherAriaLabel} · ${t('workspace.header.rightClickForRepositoryActions')}`"
-                    @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
-                    @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
-                  >
-                    <template v-if="snapshot?.repository.alias">
-                      <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
-                      <span class="repository-alias-indicator" aria-hidden="true" />
-                      <span class="topbar-title repository-alias-name">{{ snapshot.repository.alias }}</span>
-                      <span class="topbar-repository-canonical-name">{{ snapshot.repository.name }}</span>
-                    </template>
-                    <span v-else class="topbar-title">{{ snapshot?.repository.name || t('workspace.header.repository') }}</span>
-                    <span class="repository-switcher-caret" aria-hidden="true">▾</span>
-                  </button>
+                  <div class="repository-switcher-split">
+                    <button
+                      class="repository-switcher-current"
+                      type="button"
+                      :aria-label="repositorySwitcherAriaLabel"
+                      :aria-expanded="repositoryPickerOpen"
+                      aria-haspopup="dialog"
+                      aria-keyshortcuts="Shift+F10"
+                      :aria-description="t('workspace.header.rightClickForRepositoryActions')"
+                      :title="snapshot?.repository.path"
+                      @click.stop="toggleRepositoryPicker($event)"
+                      @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
+                      @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
+                    >
+                      <span class="repository-switcher-primary">{{ snapshot?.repository.alias || snapshot?.repository.name || t('workspace.header.repository') }}</span>
+                      <span v-if="snapshot?.repository.alias" class="repository-switcher-secondary">{{ snapshot.repository.name }}</span>
+                    </button>
+                    <button
+                      class="repository-switcher-toggle"
+                      type="button"
+                      :aria-label="t('workspace.header.openRepositoryList')"
+                      :aria-expanded="repositoryPickerOpen"
+                      aria-haspopup="dialog"
+                      @click.stop="toggleRepositoryPicker($event)"
+                    >
+                      <span class="repository-switcher-caret" aria-hidden="true">▾</span>
+                    </button>
+                  </div>
                 </template>
 
-                <aside class="repository-picker" :aria-label="t('workspace.header.localRepositories')">
-                  <div class="repository-picker-header">
-                    <div class="repository-picker-title-row">
-                      <div class="sidebar-heading">{{ t('workspace.header.localRepositories') }}</div>
+                <aside
+                  ref="repositoryPickerElement"
+                  class="repository-picker repository-picker-searchable"
+                  :aria-label="t('workspace.header.localRepositories')"
+                  role="dialog"
+                >
+                  <div class="repository-picker-command-header">
+                    <div class="repository-picker-command-row">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 4 4" /></svg>
+                      <input
+                        ref="repositorySearchInput"
+                        v-model="repositoryFilter"
+                        class="repository-picker-search"
+                        type="search"
+                        :aria-label="t('workspace.header.localRepositories')"
+                        :placeholder="`${t('workspace.header.localRepositories')}…`"
+                      >
+                    </div>
+                    <div class="repository-picker-command-tools">
+                      <span>{{ t('workspace.header.switchRepository') }}</span>
                       <n-select v-model:value="repositoryGrouping" size="tiny" :options="repositoryGroupingOptions" class="repository-grouping-select" />
                     </div>
-                    <n-dropdown :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
-                      <n-button size="small" secondary block class="repository-add-button">
-                        <span aria-hidden="true">＋</span>{{ t('workspace.header.addRepository') }}
-                      </n-button>
-                    </n-dropdown>
                   </div>
 
                   <div class="repository-picker-repositories">
                     <n-spin :show="repositoriesLoading" size="small">
                       <n-scrollbar
-                        v-if="repositories.length"
+                        v-if="displayedRepositoryGroups.length"
                         class="sidebar-repository-list"
                         content-class="sidebar-repository-list-content"
                       >
-                        <div v-for="group in repositoryGroups" :key="group.key" class="sidebar-repository-group">
+                        <div v-for="group in displayedRepositoryGroups" :key="group.key" class="sidebar-repository-group">
                           <div class="sidebar-group-heading">
                             <span>{{ group.label }}</span>
                             <span>{{ group.repositories.length }}</span>
@@ -388,6 +435,7 @@ export default defineComponent({
                                 class="sidebar-repository"
                                 :class="{ active: repository.path === activeRepositoryPath }"
                                 type="button"
+                                :aria-current="repository.path === activeRepositoryPath ? 'true' : undefined"
                                 aria-keyshortcuts="Shift+F10"
                                 :aria-description="t('workspace.header.rightClickForRepositoryActions')"
                                 :title="`${repository.path} · ${t('workspace.header.rightClickForRepositoryActions')}`"
@@ -409,8 +457,19 @@ export default defineComponent({
                           </div>
                         </div>
                       </n-scrollbar>
-                      <n-text v-else depth="3" class="sidebar-empty">{{ t('workspace.header.noRepositoriesAdded') }}</n-text>
+                      <n-text v-else depth="3" class="sidebar-empty">
+                        {{ repositoryFilter.trim() ? t('workspace.header.noRepositoriesMatchSearch') : t('workspace.header.noRepositoriesAdded') }}
+                      </n-text>
                     </n-spin>
+                  </div>
+
+                  <div class="repository-picker-footer">
+                    <n-dropdown :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
+                      <n-button size="small" block class="repository-add-button">
+                        <svg class="repository-add-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                        {{ t('workspace.header.addRepository') }}
+                      </n-button>
+                    </n-dropdown>
                   </div>
                 </aside>
               </n-popover>

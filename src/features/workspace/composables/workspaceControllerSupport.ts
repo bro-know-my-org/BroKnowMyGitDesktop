@@ -30,6 +30,22 @@ export interface RepositorySidebarGroup {
   repositories: RepositoryRecord[];
 }
 
+export function filterRepositoryGroups(
+  groups: RepositorySidebarGroup[],
+  rawQuery: string,
+): RepositorySidebarGroup[] {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return groups;
+  return groups
+    .map((group) => ({
+      ...group,
+      repositories: group.repositories.filter((repository) =>
+        [repository.alias, repository.name, repository.path]
+          .some((value) => value?.toLowerCase().includes(query))),
+    }))
+    .filter((group) => group.repositories.length);
+}
+
 export interface RepositoryChangedPayload {
   repositoryPath: string;
   requestGeneration: number;
