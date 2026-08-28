@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, h, nextTick, ref, watch } from "vue";
-import { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText, type SelectRenderLabel } from "naive-ui";
+import { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpace, NSpin, NTag, NText, type SelectRenderLabel } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
@@ -26,7 +26,7 @@ function renderMiddleEllipsisLabel(label: string) {
 
 export default defineComponent({
   name: "WorkspaceHeader",
-  components: { NButton, NDropdown, NLayoutHeader, NPopover, NSelect, NSpace, NSpin, NTag, NText },
+  components: { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpace, NSpin, NTag, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const repositoryPickerOpen = ref(false);
@@ -372,7 +372,11 @@ export default defineComponent({
 
                   <div class="repository-picker-repositories">
                     <n-spin :show="repositoriesLoading" size="small">
-                      <div v-if="repositories.length" class="sidebar-repository-list">
+                      <n-scrollbar
+                        v-if="repositories.length"
+                        class="sidebar-repository-list"
+                        content-class="sidebar-repository-list-content"
+                      >
                         <div v-for="group in repositoryGroups" :key="group.key" class="sidebar-repository-group">
                           <div class="sidebar-group-heading">
                             <span>{{ group.label }}</span>
@@ -404,7 +408,7 @@ export default defineComponent({
                             </div>
                           </div>
                         </div>
-                      </div>
+                      </n-scrollbar>
                       <n-text v-else depth="3" class="sidebar-empty">{{ t('workspace.header.noRepositoriesAdded') }}</n-text>
                     </n-spin>
                   </div>

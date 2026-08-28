@@ -117,11 +117,16 @@
 }
 
 .sidebar-repository-list {
-  display: grid;
   max-height: min(460px, calc(100vh - 228px));
-  gap: 8px;
-  overflow-y: auto;
+}
+
+.sidebar-repository-list > .n-scrollbar-container {
   overscroll-behavior: contain;
+}
+
+.sidebar-repository-list-content {
+  display: grid;
+  gap: 8px;
   padding: 0;
 }
 
