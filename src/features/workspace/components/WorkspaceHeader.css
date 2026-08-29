@@ -66,6 +66,8 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
+  background: var(--app-surface);
+  color: var(--app-text-body);
 }
 
 .repository-picker-searchable {
@@ -75,11 +77,14 @@
 .repository-picker-popover {
   overflow: hidden;
   padding: 0 !important;
+  border: 1px solid var(--app-divider);
+  background: var(--app-surface) !important;
 }
 
 .repository-picker-command-header {
   padding: 9px;
   border-bottom: 1px solid var(--app-divider);
+  background: var(--app-surface);
 }
 
 .repository-picker-command-row {
@@ -89,7 +94,7 @@
   gap: 8px;
   padding: 0 10px;
   border: 1px solid var(--app-divider);
-  background: var(--app-surface);
+  background: var(--app-bg);
 }
 
 .repository-picker-command-row > svg {
@@ -102,8 +107,10 @@
 }
 
 .repository-picker-command-row:focus-within {
-  outline: 2px solid var(--app-focus);
-  outline-offset: -2px;
+  border-color: var(--app-focus);
+  box-shadow: 0 0 0 2px var(--app-focus-ring);
+  outline: 2px solid transparent;
+  outline-offset: 2px;
 }
 
 .repository-picker-search {
@@ -126,19 +133,21 @@
   justify-content: space-between;
   gap: 8px;
   padding: 8px 2px 0;
-  color: var(--app-text-muted);
+  color: var(--app-text-control);
   font-size: calc(11px * var(--app-font-scale));
 }
 
 .repository-picker-footer {
   padding: 8px;
   border-top: 1px solid var(--app-divider);
+  background: var(--app-bg);
 }
 
 .repository-picker-repositories {
   min-height: 0;
   padding: 6px;
   overflow: hidden;
+  background: var(--app-surface);
 }
 
 .repository-picker-repositories .n-spin-content {
@@ -158,7 +167,33 @@
   flex: 0 0 auto;
 }
 
+.repository-grouping-select .n-base-selection {
+  --n-color: var(--app-bg) !important;
+  --n-color-active: var(--app-surface) !important;
+  --n-border: 1px solid var(--app-divider) !important;
+  --n-border-hover: 1px solid var(--app-selected-border) !important;
+  --n-border-focus: 1px solid var(--app-focus) !important;
+  --n-border-active: 1px solid var(--app-focus) !important;
+  --n-box-shadow-focus: 0 0 0 2px var(--app-focus-ring) !important;
+  --n-box-shadow-active: 0 0 0 2px var(--app-focus-ring) !important;
+  --n-text-color: var(--app-text-control) !important;
+  --n-arrow-color: var(--app-text-control) !important;
+}
+
 .repository-add-button {
+  --n-color: var(--app-surface) !important;
+  --n-color-hover: var(--app-row-hover) !important;
+  --n-color-pressed: var(--app-row-selected) !important;
+  --n-color-focus: var(--app-row-hover) !important;
+  --n-text-color: var(--app-text-control) !important;
+  --n-text-color-hover: var(--app-text-heading) !important;
+  --n-text-color-pressed: var(--app-text-heading) !important;
+  --n-text-color-focus: var(--app-text-heading) !important;
+  --n-border: 1px solid var(--app-divider) !important;
+  --n-border-hover: 1px solid var(--app-selected-border) !important;
+  --n-border-pressed: 1px solid var(--app-selected-border) !important;
+  --n-border-focus: 1px solid var(--app-focus) !important;
+
   justify-content: flex-start;
   gap: 5px;
   font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
@@ -198,7 +233,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 0 5px;
-  color: var(--app-text-muted);
+  color: var(--app-text-control);
   font-size: calc(10px * var(--app-font-scale));
   font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
   letter-spacing: 0.045em;
@@ -241,7 +276,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: var(--app-text-control);
+  color: var(--app-text-heading);
   cursor: pointer;
   text-align: left;
 }
@@ -253,8 +288,27 @@
 
 .sidebar-repository.active {
   background: var(--app-row-selected);
-  color: var(--app-accent-strong);
+  box-shadow: inset 2px 0 0 var(--app-accent-bright);
+  color: var(--app-text-heading);
   font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
+}
+
+@media (forced-colors: active) {
+  .repository-grouping-select:focus-within .n-base-selection,
+  .repository-add-button:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  .sidebar-repository.active {
+    padding-inline-start: 5px;
+    border-inline-start: 2px solid Highlight;
+  }
+
+  .sidebar-repository:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 
 .repository-name {
@@ -281,7 +335,7 @@
 }
 
 .repository-alias-name {
-  color: var(--app-accent-strong);
+  color: inherit;
   font-style: normal;
   font-weight: clamp(100, calc(720 + var(--app-font-weight-offset)), 900);
 }
@@ -298,6 +352,11 @@
   font-variant-ligatures: var(--app-code-font-variant-ligatures);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.repository-picker .repository-canonical-name,
+.repository-picker .sidebar-group-heading span:last-child {
+  color: var(--app-text-control);
 }
 
 .repository-canonical-name::before,
@@ -317,6 +376,7 @@
 .sidebar-empty {
   display: block;
   padding: 8px;
+  color: var(--app-text-control) !important;
   font-size: calc(13px * var(--app-font-scale));
 }
 
