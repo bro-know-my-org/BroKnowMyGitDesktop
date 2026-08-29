@@ -20,6 +20,21 @@ struct PushUpstream {
     preserve_existing_upstream: bool,
 }
 
+struct PushTrackingUpdate {
+    local_branch: String,
+    remote_reference: String,
+    tracking_reference: String,
+    pushed_commit: String,
+    previous_tracking_commit: Option<String>,
+    remote_lease_commit: Option<String>,
+}
+
+struct PushTrackingPlan {
+    updates: Vec<PushTrackingUpdate>,
+    fetch_urls: Vec<String>,
+    push_urls: Vec<String>,
+}
+
 pub(crate) struct PublishedRemoteState {
     pub verified_fetch_url: String,
     pub fetch_urls: Vec<String>,
@@ -35,6 +50,8 @@ struct BranchUpstream {
 
 #[cfg(unix)]
 struct BranchReferenceLock {
+    root_parent: fs::File,
+    root_name: std::ffi::CString,
     directories: Vec<fs::File>,
     directory_names: Vec<std::ffi::CString>,
     file: Option<fs::File>,
@@ -58,11 +75,33 @@ impl BranchReferenceLock {
         validate_ref_name(reference, "本地分支引用")?;
         let common_directory = fs::canonicalize(git.git_common_directory(repository)?)
             .map_err(|error| AppError::io("验证 Git 引用目录", error))?;
-        let common_directory = std::ffi::CString::new(common_directory.as_os_str().as_bytes())
+        let root_parent = common_directory
+            .parent()
+            .ok_or_else(push_tracking_setup_incomplete_error)?;
+        let root_name = common_directory
+            .file_name()
+            .ok_or_else(push_tracking_setup_incomplete_error)?;
+        let root_parent = std::ffi::CString::new(root_parent.as_os_str().as_bytes())
             .map_err(|_| push_tracking_setup_incomplete_error())?;
-        let descriptor = unsafe {
+        let root_name = std::ffi::CString::new(root_name.as_bytes())
+            .map_err(|_| push_tracking_setup_incomplete_error())?;
+        let root_parent_descriptor = unsafe {
             libc::open(
-                common_directory.as_ptr(),
+                root_parent.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if root_parent_descriptor < 0 {
+            return Err(AppError::io(
+                "锁定发布分支",
+                std::io::Error::last_os_error(),
+            ));
+        }
+        let root_parent = unsafe { fs::File::from_raw_fd(root_parent_descriptor) };
+        let descriptor = unsafe {
+            libc::openat(
+                std::os::unix::io::AsRawFd::as_raw_fd(&root_parent),
+                root_name.as_ptr(),
                 libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
             )
         };
@@ -97,6 +136,7 @@ impl BranchReferenceLock {
                     libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
                 )
             };
+            let mut created_directory = false;
             if descriptor < 0 {
                 let error = std::io::Error::last_os_error();
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -114,6 +154,8 @@ impl BranchReferenceLock {
                     if error.kind() != std::io::ErrorKind::AlreadyExists {
                         return Err(AppError::io("锁定发布分支", error));
                     }
+                } else {
+                    created_directory = true;
                 }
                 descriptor = unsafe {
                     libc::openat(
@@ -127,6 +169,26 @@ impl BranchReferenceLock {
                         "锁定发布分支",
                         std::io::Error::last_os_error(),
                     ));
+                }
+            }
+            if created_directory {
+                let mut parent_stat: libc::stat = unsafe { std::mem::zeroed() };
+                let parent_descriptor = std::os::unix::io::AsRawFd::as_raw_fd(parent);
+                let inherited_mode =
+                    if unsafe { libc::fstat(parent_descriptor, &mut parent_stat) } < 0 {
+                        None
+                    } else {
+                        Some(parent_stat.st_mode & 0o7777)
+                    };
+                if inherited_mode.is_none()
+                    || unsafe { libc::fchmod(descriptor, inherited_mode.unwrap_or(0)) } < 0
+                {
+                    let error = std::io::Error::last_os_error();
+                    unsafe {
+                        libc::close(descriptor);
+                        libc::unlinkat(parent_descriptor, component.as_ptr(), libc::AT_REMOVEDIR);
+                    }
+                    return Err(AppError::io("设置 Git 引用目录权限", error));
                 }
             }
             directory_names.push(component);
@@ -156,6 +218,8 @@ impl BranchReferenceLock {
             });
         }
         Ok(Self {
+            root_parent,
+            root_name,
             directories,
             directory_names,
             file: Some(unsafe { fs::File::from_raw_fd(descriptor) }),
@@ -167,6 +231,26 @@ impl BranchReferenceLock {
     fn ensure_attached(&self) -> Result<(), AppError> {
         use std::os::unix::io::AsRawFd;
 
+        let root = self
+            .directories
+            .first()
+            .ok_or_else(push_tracking_setup_incomplete_error)?;
+        let mut owned_root: libc::stat = unsafe { std::mem::zeroed() };
+        let mut current_root: libc::stat = unsafe { std::mem::zeroed() };
+        if unsafe { libc::fstat(root.as_raw_fd(), &mut owned_root) } < 0
+            || unsafe {
+                libc::fstatat(
+                    self.root_parent.as_raw_fd(),
+                    self.root_name.as_ptr(),
+                    &mut current_root,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            } < 0
+            || owned_root.st_dev != current_root.st_dev
+            || owned_root.st_ino != current_root.st_ino
+        {
+            return Err(push_tracking_setup_incomplete_error());
+        }
         if self.directories.len() != self.directory_names.len() + 1 {
             return Err(push_tracking_setup_incomplete_error());
         }
@@ -1858,10 +1942,66 @@ impl GitCore {
         if remote_urls.is_empty() {
             return Err(AppError::new("remote_not_found", "找不到该 remote。"));
         }
+        for remote_url in remote_urls {
+            validate_git_remote_url(remote_url)?;
+        }
         for refspec in &options.refspecs {
             validate_refspec(refspec)?;
         }
-        let (refspecs, upstream) = self.push_refspecs_for_url(repository, options)?;
+        let (mut refspecs, upstream) = self.push_refspecs_for_url(repository, options)?;
+        let tracking_updates = if upstream.is_none()
+            && !push_may_update_multiple_refs(&refspecs, options.follow_tags)
+        {
+            self.prepare_existing_push_tracking_update(repository, &options.remote, &mut refspecs)?
+        } else {
+            Vec::new()
+        };
+        let mut force_with_leases = tracking_updates
+            .iter()
+            .map(|update| {
+                format!(
+                    "--force-with-lease={}:{}",
+                    update.remote_reference,
+                    update.remote_lease_commit.as_deref().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>();
+        if options.force_with_lease
+            && !push_may_update_multiple_refs(&refspecs, options.follow_tags)
+        {
+            if let Some(upstream) = upstream.as_ref() {
+                let expected = match upstream.previous_tracking_commit.as_deref() {
+                    Some(previous) => self
+                        .reference_commit(repository, previous)?
+                        .ok_or_else(push_tracking_preflight_error)?,
+                    None => String::new(),
+                };
+                force_with_leases.push(format!(
+                    "--force-with-lease=refs/heads/{}:{expected}",
+                    upstream.remote_branch
+                ));
+            }
+        }
+        let tracking_plan = if tracking_updates.is_empty() {
+            None
+        } else {
+            self.ensure_files_reference_storage(repository)
+                .map_err(|_| push_tracking_preflight_error())?;
+            let fetch_urls = self.remote_urls_for_operation(repository, &options.remote, false)?;
+            let push_urls = self.remote_urls_for_operation(repository, &options.remote, true)?;
+            if push_urls != remote_urls {
+                return Err(AppError::new(
+                    "repository_changed",
+                    "远程仓库配置已变化，请重新执行推送。",
+                ));
+            }
+            Some(PushTrackingPlan {
+                updates: tracking_updates,
+                fetch_urls,
+                push_urls,
+            })
+        };
+        let mut completed_push_urls = 0usize;
         for remote_url in remote_urls {
             let remote_url = validate_git_remote_url(remote_url)?;
             let mut arguments = vec![
@@ -1870,17 +2010,28 @@ impl GitCore {
             ];
             if options.force_with_lease {
                 arguments.push(OsString::from("--force-with-lease"));
+                arguments.extend(force_with_leases.iter().map(OsString::from));
             }
             if options.follow_tags {
                 arguments.push(OsString::from("--follow-tags"));
+            } else {
+                arguments.push(OsString::from("--no-follow-tags"));
             }
             arguments.push(OsString::from(remote_url.as_str()));
             arguments.extend(refspecs.iter().map(OsString::from));
             let arguments = network_execution_arguments(arguments);
-            self.run_network(Some(repository), &arguments, environment, "推送改动")?;
+            match self.run_network(Some(repository), &arguments, environment, "推送改动") {
+                Ok(_) => completed_push_urls += 1,
+                Err(_) if completed_push_urls > 0 => {
+                    return Err(push_partial_remote_success_error())
+                }
+                Err(error) => return Err(error),
+            }
         }
         if let Some(upstream) = upstream {
             self.configure_push_upstream(repository, &options.remote, &upstream, None)?;
+        } else if let Some(plan) = tracking_plan {
+            self.finalize_existing_push_tracking_updates(repository, &options.remote, &plan)?;
         }
         Ok(())
     }
@@ -1905,10 +2056,12 @@ impl GitCore {
                 &options.remote,
                 &upstream.remote_branch,
             )? {
+                validate_push_tracking_reference(&tracking_reference)
+                    .map_err(|_| push_tracking_preflight_error())?;
                 validate_ref_name(&tracking_reference, "远程跟踪引用")
                     .map_err(|_| push_upstream_fetch_mapping_unavailable_error())?;
                 upstream.previous_tracking_commit =
-                    self.reference_commit(repository, &tracking_reference)?;
+                    self.reference_object_id(repository, &tracking_reference)?;
                 upstream.tracking_reference = Some(tracking_reference);
             }
             let refspec = format!(
@@ -1918,8 +2071,11 @@ impl GitCore {
             validate_refspec(&refspec)?;
             return Ok((vec![refspec], Some(upstream)));
         }
-        if !options.refspecs.is_empty() || !self.push_default_is_upstream(repository)? {
+        if !options.refspecs.is_empty() {
             return Ok((options.refspecs.clone(), None));
+        }
+        if !self.push_default_is_upstream(repository)? {
+            return Err(push_explicit_refspec_required_error());
         }
         let local_branch = self.current_branch_name(repository)?;
         let upstream_branch = self
@@ -1928,6 +2084,456 @@ impl GitCore {
         let refspec = format!("refs/heads/{local_branch}:{upstream_branch}");
         validate_refspec(&refspec)?;
         Ok((vec![refspec], None))
+    }
+
+    fn prepare_existing_push_tracking_update(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        refspecs: &mut [String],
+    ) -> Result<Vec<PushTrackingUpdate>, AppError> {
+        let mut updates = Vec::new();
+        let mut rewrites = Vec::new();
+        for index in 0..refspecs.len() {
+            let refspec = refspecs[index].clone();
+            let Some((local_branch, remote_branch)) =
+                self.push_tracking_branches_for_refspec(repository, &refspec)?
+            else {
+                continue;
+            };
+            let Some(upstream) = self.branch_upstream(repository, &local_branch)? else {
+                continue;
+            };
+            let remote_reference = format!("refs/heads/{remote_branch}");
+            let Some(tracking_reference) = upstream.tracking_reference else {
+                continue;
+            };
+            if upstream.remote != remote_name
+                || upstream.remote_reference != remote_reference
+                || !tracking_reference.starts_with("refs/remotes/")
+            {
+                continue;
+            }
+            if validate_push_tracking_reference(&tracking_reference).is_err() {
+                continue;
+            }
+            if self.tracking_reference_is_symbolic(repository, &tracking_reference)? {
+                continue;
+            }
+            let pushed_commit = self.commit_for_local_branch(repository, &local_branch)?;
+            let force_prefix = refspec.starts_with('+').then_some("+").unwrap_or("");
+            let immutable_refspec = format!("{force_prefix}{pushed_commit}:{remote_reference}");
+            validate_refspec(&immutable_refspec)?;
+            let previous_tracking_commit =
+                self.reference_object_id(repository, &tracking_reference)?;
+            let remote_lease_commit =
+                if let Some(previous_tracking_commit) = previous_tracking_commit.as_deref() {
+                    let Some(remote_lease_commit) =
+                        self.reference_commit(repository, previous_tracking_commit)?
+                    else {
+                        continue;
+                    };
+                    Some(remote_lease_commit)
+                } else {
+                    None
+                };
+            if let Some(existing) = updates.iter().find(|update: &&PushTrackingUpdate| {
+                update.tracking_reference == tracking_reference
+            }) {
+                if existing.local_branch != local_branch
+                    || existing.remote_reference != remote_reference
+                    || existing.pushed_commit != pushed_commit
+                    || existing.previous_tracking_commit != previous_tracking_commit
+                    || existing.remote_lease_commit != remote_lease_commit
+                {
+                    return Err(push_tracking_preflight_error());
+                }
+                rewrites.push((index, immutable_refspec));
+                continue;
+            }
+            rewrites.push((index, immutable_refspec));
+            updates.push(PushTrackingUpdate {
+                local_branch,
+                remote_reference,
+                tracking_reference,
+                pushed_commit,
+                previous_tracking_commit,
+                remote_lease_commit,
+            });
+        }
+        for (index, refspec) in rewrites {
+            refspecs[index] = refspec;
+        }
+        Ok(updates)
+    }
+
+    fn push_tracking_branches_for_refspec(
+        &self,
+        repository: &Path,
+        refspec: &str,
+    ) -> Result<Option<(String, String)>, AppError> {
+        let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
+        let (source, destination) = refspec
+            .split_once(':')
+            .map_or((refspec, None), |(source, destination)| {
+                (source, Some(destination))
+            });
+        if source.is_empty() || source.contains('*') {
+            return Ok(None);
+        }
+        let local_branch = if source == "HEAD" {
+            match self.current_branch_name(repository) {
+                Ok(branch) => branch,
+                Err(error) if error.code() == "detached_head" => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        } else if let Some(branch) = source.strip_prefix("refs/heads/") {
+            branch.to_owned()
+        } else {
+            let output = self.execute(
+                Some(repository),
+                &os_arguments(&[
+                    "rev-parse",
+                    "--symbolic-full-name",
+                    "--verify",
+                    "--end-of-options",
+                    source,
+                ]),
+                &GitEnvironment::default(),
+            )?;
+            if output.status.code() == Some(1) {
+                return Ok(None);
+            }
+            if !output.status.success() {
+                return Err(git_command_error("解析推送引用", &output));
+            }
+            let resolved_output = output_text(&output.stdout);
+            let resolved = resolved_output.trim();
+            let Some(branch) = resolved.strip_prefix("refs/heads/") else {
+                return Ok(None);
+            };
+            branch.to_owned()
+        };
+        if validate_ref_name(&local_branch, "本地分支名").is_err() {
+            return Ok(None);
+        }
+        let remote_branch = match destination {
+            Some(destination) => {
+                let Some(destination) = destination.strip_prefix("refs/heads/") else {
+                    // A short destination can resolve to an existing remote
+                    // tag, so it cannot safely be treated as a branch here.
+                    return Ok(None);
+                };
+                destination.to_owned()
+            }
+            None => local_branch.clone(),
+        };
+        if validate_ref_name(&remote_branch, "远程分支名").is_err() {
+            return Ok(None);
+        }
+        Ok(Some((local_branch, remote_branch)))
+    }
+
+    fn finalize_existing_push_tracking_updates(
+        &self,
+        repository: &Path,
+        remote_name: &str,
+        plan: &PushTrackingPlan,
+    ) -> Result<(), AppError> {
+        let configuration_lock = self
+            .lock_network_configuration(repository)
+            .map_err(push_existing_tracking_lock_error)?;
+        let finalization = (|| {
+            self.ensure_network_configuration_is_safe(repository)?;
+            self.ensure_files_reference_storage(repository)?;
+            if self.remote_urls_for_operation(repository, remote_name, false)? != plan.fetch_urls
+                || self.remote_urls_for_operation(repository, remote_name, true)? != plan.push_urls
+            {
+                return Err(push_tracking_setup_incomplete_error());
+            }
+            for update in &plan.updates {
+                let upstream = self
+                    .branch_upstream(repository, &update.local_branch)?
+                    .ok_or_else(push_tracking_setup_incomplete_error)?;
+                if upstream.remote != remote_name
+                    || upstream.remote_reference != update.remote_reference
+                    || upstream.tracking_reference.as_deref()
+                        != Some(update.tracking_reference.as_str())
+                {
+                    return Err(push_tracking_setup_incomplete_error());
+                }
+            }
+            self.update_tracking_references_after_push(repository, &plan.updates)
+        })();
+        let cleanup = configuration_lock.release();
+        match (finalization, cleanup) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(_)) => Err(push_existing_tracking_cleanup_failed_error()),
+            (Err(error), Ok(()))
+                if matches!(
+                    error.code(),
+                    "push_tracking_guard_cleanup_failed" | "push_tracking_guard_cleanup_blocked"
+                ) =>
+            {
+                Err(error)
+            }
+            (Err(_), Ok(())) => Err(push_existing_tracking_sync_incomplete_error()),
+            (Err(error), Err(_)) if is_tracking_guard_cleanup_error(&error) => {
+                Err(push_tracking_and_configuration_cleanup_blocked_error())
+            }
+            (Err(_), Err(_)) => Err(push_existing_tracking_cleanup_blocked_error()),
+        }
+    }
+
+    fn update_tracking_references_after_push(
+        &self,
+        repository: &Path,
+        updates: &[PushTrackingUpdate],
+    ) -> Result<(), AppError> {
+        self.update_tracking_references_after_push_with_policy(repository, updates, false)
+    }
+
+    fn update_tracking_references_after_push_with_policy(
+        &self,
+        repository: &Path,
+        updates: &[PushTrackingUpdate],
+        allow_symbolic: bool,
+    ) -> Result<(), AppError> {
+        let mut commands = Vec::with_capacity(updates.len());
+        let mut changed = false;
+        for update in updates {
+            validate_push_tracking_reference(&update.tracking_reference)?;
+            if !allow_symbolic {
+                self.ensure_tracking_reference_is_not_symbolic(
+                    repository,
+                    &update.tracking_reference,
+                )?;
+            }
+            parse_commit_id(
+                update.pushed_commit.as_bytes(),
+                "无法读取推送的本地提交标识。",
+            )?;
+            let expected = update
+                .previous_tracking_commit
+                .clone()
+                .unwrap_or_else(|| "0".repeat(update.pushed_commit.len()));
+            commands.push(format!(
+                "update {} {} {expected}",
+                update.tracking_reference, update.pushed_commit
+            ));
+            changed |=
+                update.previous_tracking_commit.as_deref() != Some(update.pushed_commit.as_str());
+        }
+        let guards = self.tracking_reference_directory_guards(repository, updates)?;
+        let update_result = (|| {
+            let prepared = match PreparedTrackingReferenceUpdate::prepare_commands(
+                self, repository, &commands, changed,
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    return match self.verify_tracking_references_after_push(
+                        repository,
+                        updates,
+                        allow_symbolic,
+                    ) {
+                        Ok(()) => Ok(()),
+                        Err(verification_error)
+                            if is_tracking_guard_cleanup_error(&verification_error) =>
+                        {
+                            Err(verification_error)
+                        }
+                        Err(_) => Err(error),
+                    }
+                }
+            };
+            if !allow_symbolic {
+                if let Err(error) = updates.iter().try_for_each(|update| {
+                    self.ensure_tracking_reference_is_not_symbolic(
+                        repository,
+                        &update.tracking_reference,
+                    )
+                }) {
+                    let abort_error = prepared.abort().err();
+                    return Err(abort_error.unwrap_or(error));
+                }
+            }
+            if let Err(error) = guards
+                .iter()
+                .try_for_each(BranchReferenceLock::ensure_attached)
+                .and_then(|()| self.ensure_tracking_reflog_leaves_are_safe(repository, updates))
+            {
+                let abort_error = prepared.abort().err();
+                return Err(abort_error.unwrap_or(error));
+            }
+            match prepared.commit() {
+                Ok(_) => Ok(()),
+                Err(error) => {
+                    match self.verify_tracking_references_after_push(
+                        repository,
+                        updates,
+                        allow_symbolic,
+                    ) {
+                        Ok(()) => Ok(()),
+                        Err(verification_error)
+                            if is_tracking_guard_cleanup_error(&verification_error) =>
+                        {
+                            Err(verification_error)
+                        }
+                        Err(_) => Err(error),
+                    }
+                }
+            }
+        })();
+        let cleanup_result = release_branch_reference_locks(guards);
+        match (update_result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(_)) => Err(push_tracking_guard_cleanup_failed_error()),
+            (Err(error), Ok(())) => Err(error),
+            (Err(_), Err(_)) => Err(push_tracking_guard_cleanup_blocked_error()),
+        }
+    }
+
+    fn verify_tracking_references_after_push(
+        &self,
+        repository: &Path,
+        updates: &[PushTrackingUpdate],
+        allow_symbolic: bool,
+    ) -> Result<(), AppError> {
+        let commands = updates
+            .iter()
+            .map(|update| {
+                format!(
+                    "update {} {} {}",
+                    update.tracking_reference, update.pushed_commit, update.pushed_commit
+                )
+            })
+            .collect::<Vec<_>>();
+        let guards = self.tracking_reference_directory_guards(repository, updates)?;
+        let abort_result = (|| {
+            let prepared = PreparedTrackingReferenceUpdate::prepare_commands(
+                self, repository, &commands, false,
+            )?;
+            if !allow_symbolic {
+                if let Err(error) = updates.iter().try_for_each(|update| {
+                    self.ensure_tracking_reference_is_not_symbolic(
+                        repository,
+                        &update.tracking_reference,
+                    )
+                }) {
+                    let abort_error = prepared.abort().err();
+                    return Err(abort_error.unwrap_or(error));
+                }
+            }
+            if let Err(error) = guards
+                .iter()
+                .try_for_each(BranchReferenceLock::ensure_attached)
+                .and_then(|()| self.ensure_tracking_reflog_leaves_are_safe(repository, updates))
+            {
+                let abort_error = prepared.abort().err();
+                return Err(abort_error.unwrap_or(error));
+            }
+            prepared.abort()
+        })();
+        let cleanup_result = release_branch_reference_locks(guards);
+        match (abort_result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Ok(()), Err(_)) => Err(push_tracking_guard_cleanup_failed_error()),
+            (Err(error), Ok(())) => Err(error),
+            (Err(_), Err(_)) => Err(push_tracking_guard_cleanup_blocked_error()),
+        }
+    }
+
+    fn tracking_reference_directory_guards(
+        &self,
+        repository: &Path,
+        updates: &[PushTrackingUpdate],
+    ) -> Result<Vec<BranchReferenceLock>, AppError> {
+        let parents = updates
+            .iter()
+            .map(|update| {
+                update
+                    .tracking_reference
+                    .rsplit_once('/')
+                    .map(|(parent, _)| parent.to_owned())
+                    .ok_or_else(push_tracking_setup_incomplete_error)
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        let mut guards = Vec::with_capacity(parents.len() * 2);
+        for parent in parents {
+            let guard_name = format!(
+                "broknowmygitdesktop-guard-{}",
+                uuid::Uuid::new_v4().simple()
+            );
+            for root in [None, Some("logs")] {
+                let guard_reference = match root {
+                    Some(root) => format!("{root}/{parent}/{guard_name}"),
+                    None => format!("{parent}/{guard_name}"),
+                };
+                match BranchReferenceLock::acquire(self, repository, &guard_reference) {
+                    Ok(guard) => guards.push(guard),
+                    Err(error) => {
+                        return match release_branch_reference_locks(guards) {
+                            Ok(()) => Err(error),
+                            Err(_) => Err(push_tracking_guard_cleanup_blocked_error()),
+                        }
+                    }
+                }
+            }
+        }
+        if let Err(error) = self.ensure_tracking_reflog_leaves_are_safe(repository, updates) {
+            return match release_branch_reference_locks(guards) {
+                Ok(()) => Err(error),
+                Err(_) => Err(push_tracking_guard_cleanup_blocked_error()),
+            };
+        }
+        Ok(guards)
+    }
+
+    fn ensure_tracking_reflog_leaves_are_safe(
+        &self,
+        repository: &Path,
+        updates: &[PushTrackingUpdate],
+    ) -> Result<(), AppError> {
+        let common_directory = fs::canonicalize(self.git_common_directory(repository)?)
+            .map_err(|error| AppError::io("验证 Git 引用日志目录", error))?;
+        for update in updates {
+            let path = common_directory
+                .join("logs")
+                .join(&update.tracking_reference);
+            let metadata = match fs::symlink_metadata(&path) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(AppError::io("检查远程跟踪引用日志", error)),
+            };
+            if !tracking_reflog_leaf_is_safe(&metadata) {
+                return Err(push_tracking_setup_incomplete_error());
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn update_tracking_references_after_push_for_test(
+        &self,
+        repository: &Path,
+        updates: &[(&str, &str, Option<&str>)],
+    ) -> Result<(), AppError> {
+        let updates = updates
+            .iter()
+            .map(
+                |(tracking_reference, pushed_commit, previous_tracking_commit)| {
+                    PushTrackingUpdate {
+                        local_branch: String::new(),
+                        remote_reference: String::new(),
+                        tracking_reference: (*tracking_reference).to_owned(),
+                        pushed_commit: (*pushed_commit).to_owned(),
+                        previous_tracking_commit: previous_tracking_commit.map(str::to_owned),
+                        remote_lease_commit: previous_tracking_commit.map(str::to_owned),
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        self.update_tracking_references_after_push(repository, &updates)
     }
 
     fn push_upstream_for_url(
@@ -2155,11 +2761,11 @@ impl GitCore {
         Err(push_tracking_setup_incomplete_error())
     }
 
-    fn ensure_tracking_reference_is_not_symbolic(
+    fn tracking_reference_is_symbolic(
         &self,
         repository: &Path,
         reference: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<bool, AppError> {
         let output = self.execute(
             Some(repository),
             &[
@@ -2170,9 +2776,24 @@ impl GitCore {
             &GitEnvironment::default(),
         )?;
         if output.status.code() == Some(1) {
-            return Ok(());
+            return Ok(false);
         }
-        Err(push_tracking_setup_incomplete_error())
+        if output.status.success() {
+            return Ok(true);
+        }
+        Err(git_command_error("检查远程跟踪引用", &output))
+    }
+
+    fn ensure_tracking_reference_is_not_symbolic(
+        &self,
+        repository: &Path,
+        reference: &str,
+    ) -> Result<(), AppError> {
+        if self.tracking_reference_is_symbolic(repository, reference)? {
+            Err(push_tracking_setup_incomplete_error())
+        } else {
+            Ok(())
+        }
     }
 
     fn ensure_published_upstream_is_compatible(
@@ -2443,43 +3064,21 @@ impl GitCore {
         pushed_commit: &str,
         previous_tracking_commit: Option<&str>,
     ) -> Result<bool, AppError> {
-        validate_ref_name(tracking_reference, "远程跟踪引用")
-            .map_err(|_| push_tracking_setup_incomplete_error())?;
+        validate_push_tracking_reference(tracking_reference)?;
         parse_commit_id(pushed_commit.as_bytes(), "无法读取首次推送的本地提交标识。")?;
-        let expected = previous_tracking_commit.unwrap_or("");
-        let output = self.execute(
-            Some(repository),
-            &os_arguments(&[
-                "update-ref",
-                "--no-deref",
-                "--create-reflog",
-                "-m",
-                "update by push",
-                tracking_reference,
-                pushed_commit,
-                expected,
-            ]),
-            &GitEnvironment::default(),
+        self.update_tracking_references_after_push_with_policy(
+            repository,
+            &[PushTrackingUpdate {
+                local_branch: String::new(),
+                remote_reference: String::new(),
+                tracking_reference: tracking_reference.to_owned(),
+                pushed_commit: pushed_commit.to_owned(),
+                previous_tracking_commit: previous_tracking_commit.map(str::to_owned),
+                remote_lease_commit: None,
+            }],
+            true,
         )?;
-        if output.status.success() {
-            return Ok(previous_tracking_commit != Some(pushed_commit));
-        }
-        let verification = self.execute(
-            Some(repository),
-            &os_arguments(&[
-                "update-ref",
-                "--no-deref",
-                tracking_reference,
-                pushed_commit,
-                pushed_commit,
-            ]),
-            &GitEnvironment::default(),
-        )?;
-        if verification.status.success() {
-            Ok(false)
-        } else {
-            Err(push_tracking_setup_incomplete_error())
-        }
+        Ok(previous_tracking_commit != Some(pushed_commit))
     }
 
     fn restore_tracking_reference_after_failed_upstream(
@@ -2534,6 +3133,26 @@ impl GitCore {
             return Err(git_command_error("读取远程跟踪分支", &output));
         }
         parse_commit_id(&output.stdout, "无法读取远程跟踪分支提交标识。").map(Some)
+    }
+
+    fn reference_object_id(
+        &self,
+        repository: &Path,
+        reference: &str,
+    ) -> Result<Option<String>, AppError> {
+        validate_refspec(reference)?;
+        let output = self.execute(
+            Some(repository),
+            &os_arguments(&["rev-parse", "--verify", "--quiet", reference]),
+            &GitEnvironment::default(),
+        )?;
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        if !output.status.success() {
+            return Err(git_command_error("读取远程跟踪引用", &output));
+        }
+        parse_commit_id(&output.stdout, "无法读取远程跟踪引用对象标识。").map(Some)
     }
 
     /// Ensure Git can reverse-map the pushed remote branch to a local
@@ -2683,6 +3302,142 @@ fn push_tracking_setup_incomplete_error() -> AppError {
     )
 }
 
+fn push_tracking_preflight_error() -> AppError {
+    AppError::new(
+        "push_tracking_preflight_failed",
+        "本地远程跟踪引用状态异常，无法安全执行推送。",
+    )
+}
+
+fn push_explicit_refspec_required_error() -> AppError {
+    AppError::new(
+        "push_explicit_refspec_required",
+        "使用 URL 推送时必须明确指定推送分支。",
+    )
+}
+
+fn push_existing_tracking_sync_incomplete_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_sync_incomplete",
+        "远程推送已成功，但本地远程跟踪状态未能同步。",
+        "请勿直接重新推送；先执行获取更新以核对远程状态。",
+    )
+}
+
+fn push_partial_remote_success_error() -> AppError {
+    AppError::with_safe_details(
+        "push_partial_remote_success",
+        "前面的推送目标可能已更新，但后续推送目标失败。",
+        "请勿直接重新推送；先核对各推送 URL 的远程状态，并执行获取更新。",
+    )
+}
+
+fn release_branch_reference_locks(locks: Vec<BranchReferenceLock>) -> Result<(), AppError> {
+    let mut first_error = None;
+    for lock in locks {
+        if let Err(error) = lock.release() {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn is_tracking_guard_cleanup_error(error: &AppError) -> bool {
+    matches!(
+        error.code(),
+        "push_tracking_guard_cleanup_failed" | "push_tracking_guard_cleanup_blocked"
+    )
+}
+
+#[cfg(unix)]
+fn tracking_reflog_leaf_is_safe(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink() && metadata.nlink() == 1
+}
+
+#[cfg(windows)]
+fn tracking_reflog_leaf_is_safe(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_type().is_file()
+        && metadata.file_attributes()
+            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+            == 0
+        && metadata.number_of_links() == Some(1)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn tracking_reflog_leaf_is_safe(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_file() && !metadata.file_type().is_symlink()
+}
+
+fn push_may_update_multiple_refs(refspecs: &[String], follow_tags: bool) -> bool {
+    refspecs.is_empty()
+        || refspecs.len() > 1
+        || follow_tags
+        || refspecs.iter().any(|refspec| {
+            let refspec = refspec.strip_prefix('+').unwrap_or(refspec);
+            refspec == ":" || refspec.contains('*')
+        })
+}
+
+fn push_existing_tracking_sync_blocked_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_sync_blocked",
+        "远程推送已成功，但本地 Git 配置正被占用，远程跟踪状态尚未同步。",
+        "请勿直接重新推送；等待其他 Git 操作结束后执行获取更新。",
+    )
+}
+
+fn push_existing_tracking_lock_error(error: AppError) -> AppError {
+    if error.code() == "git_config_locked" {
+        push_existing_tracking_sync_blocked_error()
+    } else {
+        push_existing_tracking_sync_incomplete_error()
+    }
+}
+
+fn push_existing_tracking_cleanup_failed_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_cleanup_failed",
+        "远程推送和本地跟踪状态同步已完成，但相关 Git 配置锁未能清理。",
+        "请关闭应用并检查残留的 Git 配置锁后再继续操作。",
+    )
+}
+
+fn push_tracking_guard_cleanup_failed_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_guard_cleanup_failed",
+        "远程推送和本地跟踪状态同步已完成，但引用目录保护锁未能清理。",
+        "请关闭应用并检查残留的 Git 引用锁后再继续操作。",
+    )
+}
+
+fn push_tracking_guard_cleanup_blocked_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_guard_cleanup_blocked",
+        "远程推送已成功，但本地跟踪状态同步和引用目录保护锁清理未能确认完成。",
+        "请关闭应用并检查残留的 Git 引用锁；清理后执行获取更新以核对远程状态。",
+    )
+}
+
+fn push_tracking_and_configuration_cleanup_blocked_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_and_configuration_cleanup_blocked",
+        "远程推送已成功，但本地跟踪状态同步以及引用与配置锁清理未能确认完成。",
+        "请关闭应用并检查残留的 Git 引用锁和配置锁；清理后执行获取更新以核对远程状态。",
+    )
+}
+
+fn push_existing_tracking_cleanup_blocked_error() -> AppError {
+    AppError::with_safe_details(
+        "push_tracking_cleanup_blocked",
+        "远程推送已成功，但本地跟踪状态同步和 Git 配置锁清理未能确认完成。",
+        "请关闭应用并检查残留的 Git 配置锁；清理后执行获取更新以核对远程状态。",
+    )
+}
+
 fn push_finalized_cleanup_failed_error() -> AppError {
     AppError::with_safe_details(
         "push_finalized_cleanup_failed",
@@ -2765,6 +3520,15 @@ fn expand_refspec_destination(pattern: &str, capture: Option<&str>) -> Option<St
         }
         _ => None,
     }
+}
+
+fn validate_push_tracking_reference(reference: &str) -> Result<(), AppError> {
+    validate_ref_name(reference, "远程跟踪引用")
+        .map_err(|_| push_tracking_setup_incomplete_error())?;
+    if !reference.starts_with("refs/remotes/") {
+        return Err(push_tracking_setup_incomplete_error());
+    }
+    Ok(())
 }
 
 fn push_branches_for_refspec(refspec: &str) -> Result<(String, String), AppError> {

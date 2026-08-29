@@ -1249,8 +1249,933 @@ fn push_with_url_preserves_push_default_upstream_behavior() {
     assert!(output.status.success());
     assert_eq!(output_text(&output.stdout).trim(), expected);
 
+    run_git(
+        &repository,
+        &["config", "--local", "push.default", "matching"],
+    );
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "second"]);
+    let error = git
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: Vec::new(),
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("implicit matching push cannot be synchronized safely");
+    assert_eq!(error.code(), "push_explicit_refspec_required");
+    let output = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/review-target"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output_text(&output.stdout).trim(), expected);
+
     let _ = fs::remove_dir_all(repository);
     let _ = fs::remove_dir_all(remote);
+}
+
+#[test]
+fn push_updates_existing_remote_tracking_state() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-push-tracking-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "second"]);
+    run_git(&repository, &["tag", "should-not-follow"]);
+    run_git(&repository, &["config", "push.followTags", "true"]);
+
+    let git = GitCore::new();
+    assert_eq!(git.status(&repository).unwrap().ahead, 1);
+    let main_head = git.head_commit_id(&repository).unwrap();
+    let (refspecs, set_upstream) = git.push_plan_for_remote(&repository, "origin").unwrap();
+    assert!(!set_upstream);
+    run_git(&repository, &["checkout", "-qb", "feature"]);
+
+    git.push(
+        &repository,
+        &PushOptions {
+            remote: "origin".into(),
+            refspecs,
+            set_upstream,
+            force_with_lease: false,
+            follow_tags: false,
+        },
+    )
+    .expect("push succeeds");
+
+    run_git(&repository, &["checkout", "-q", "main"]);
+    let head = git.head_commit_id(&repository).unwrap();
+    assert_eq!(head, main_head);
+    assert_eq!(git.status(&repository).unwrap().ahead, 0);
+    let tracking = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/remotes/origin/main"])
+        .output()
+        .unwrap();
+    assert!(tracking.status.success());
+    assert_eq!(
+        output_text(&tracking.stdout).trim(),
+        head
+    );
+    let remote_tag = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "--verify", "refs/tags/should-not-follow"])
+        .output()
+        .unwrap();
+    assert!(!remote_tag.status.success());
+
+    let remote_before_reftable_rejection = git.head_commit_id(&repository).unwrap();
+    fs::write(repository.join("history.txt"), "third\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "third"]);
+    run_git(
+        &repository,
+        &["config", "extensions.refStorage", "reftable"],
+    );
+    let error = git
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec!["refs/heads/main:refs/heads/main".into()],
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("unsupported reference storage is rejected before push");
+    assert_eq!(error.code(), "push_tracking_preflight_failed");
+    let remote_main = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/main"])
+        .output()
+        .unwrap();
+    assert!(remote_main.status.success());
+    assert_eq!(
+        output_text(&remote_main.stdout).trim(),
+        remote_before_reftable_rejection
+    );
+
+}
+
+#[test]
+fn short_push_destination_preserves_remote_ref_resolution() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-short-push-destination-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+    let initial = GitCore::new().head_commit_id(&repository).unwrap();
+    run_git(
+        &remote,
+        &["update-ref", "refs/tags/release", &initial],
+    );
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "second"]);
+    let second = GitCore::new().head_commit_id(&repository).unwrap();
+
+    GitCore::new()
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec!["+main:release".into()],
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect("Git resolves the short destination to the existing remote tag");
+    let remote_tag = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "refs/tags/release"])
+        .output()
+        .unwrap();
+    assert!(remote_tag.status.success());
+    assert_eq!(output_text(&remote_tag.stdout).trim(), second);
+    let remote_branch = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "--verify", "refs/heads/release"])
+        .output()
+        .unwrap();
+    assert!(!remote_branch.status.success());
+    assert_eq!(GitCore::new().status(&repository).unwrap().ahead, 1);
+}
+
+#[test]
+fn push_updates_a_custom_remote_tracking_reference() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-push-custom-tracking-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(
+        &repository,
+        &["config", "--unset-all", "remote.origin.fetch"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin-mirror/*",
+        ],
+    );
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+    run_git(
+        &repository,
+        &["tag", "-am", "tracking base", "tracking-base"],
+    );
+    let tracking_tag = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/tags/tracking-base"])
+        .output()
+        .unwrap();
+    assert!(tracking_tag.status.success());
+    run_git(
+        &repository,
+        &[
+            "update-ref",
+            "refs/remotes/origin-mirror/main",
+            output_text(&tracking_tag.stdout).trim(),
+        ],
+    );
+
+    run_git(&repository, &["checkout", "-qb", "other"]);
+    run_git(&repository, &["push", "-qu", "origin", "other"]);
+    fs::write(repository.join("history.txt"), "other second\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "other second"]);
+    let other_head = GitCore::new().head_commit_id(&repository).unwrap();
+    run_git(&repository, &["checkout", "-q", "main"]);
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "second"]);
+
+    let git = GitCore::new();
+    assert_eq!(git.status(&repository).unwrap().ahead, 1);
+    git.push(
+        &repository,
+        &PushOptions {
+            remote: "origin".into(),
+            refspecs: vec!["HEAD".into()],
+            set_upstream: false,
+            force_with_lease: true,
+            follow_tags: false,
+        },
+    )
+    .expect("force-with-lease uses the peeled tracking commit");
+    git.push(
+        &repository,
+        &PushOptions {
+            remote: "origin".into(),
+            refspecs: vec!["other:refs/heads/other".into()],
+            set_upstream: false,
+            force_with_lease: false,
+            follow_tags: false,
+        },
+    )
+    .expect("second tracked branch push succeeds");
+
+    let head = git.head_commit_id(&repository).unwrap();
+    assert_eq!(git.status(&repository).unwrap().ahead, 0);
+    let tracking = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/remotes/origin-mirror/main"])
+        .output()
+        .unwrap();
+    assert!(tracking.status.success());
+    assert_eq!(output_text(&tracking.stdout).trim(), head);
+    let other_tracking = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/remotes/origin-mirror/other"])
+        .output()
+        .unwrap();
+    assert!(other_tracking.status.success());
+    assert_eq!(output_text(&other_tracking.stdout).trim(), other_head);
+
+}
+
+#[test]
+fn multi_ref_push_does_not_require_atomic_server_support() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-atomic-multi-push-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    let remote_commit = |branch: &str| {
+        let output = test_git_command()
+            .args(["--git-dir", remote.to_str().unwrap()])
+            .args(["rev-parse", &format!("refs/heads/{branch}")])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+    run_git(&repository, &["checkout", "-qb", "other"]);
+    run_git(&repository, &["push", "-qu", "origin", "other"]);
+    fs::write(repository.join("history.txt"), "other accepted\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "other accepted"]);
+    run_git(&repository, &["push", "-q", "origin", "other"]);
+    let remote_other = remote_commit("other");
+    run_git(&repository, &["reset", "-q", "--hard", "HEAD^"]);
+    fs::write(repository.join("history.txt"), "other rejected\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "other rejected"]);
+    run_git(&repository, &["checkout", "-q", "main"]);
+    let remote_main = remote_commit("main");
+    fs::write(repository.join("history.txt"), "main accepted\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "main accepted"]);
+
+    let error = GitCore::new()
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec![
+                    "refs/heads/main:refs/heads/main".into(),
+                    "refs/heads/other:refs/heads/other".into(),
+                ],
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("the non-fast-forward branch rejects the atomic push");
+    assert_ne!(error.code(), "push_partial_remote_success");
+    assert_ne!(remote_commit("main"), remote_main);
+    assert_eq!(remote_commit("other"), remote_other);
+    assert_eq!(GitCore::new().status(&repository).unwrap().ahead, 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn tracking_update_rejects_symlinked_reference_ancestry() {
+    use std::os::unix::fs::symlink;
+
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-tracking-symlink-test"),
+    );
+    let repository = root.join("repository");
+    let outside = root.join("outside");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.name", "Push Test"]);
+    run_git(&["config", "user.email", "push@example.invalid"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    let commit = GitCore::new().head_commit_id(&repository).unwrap();
+    let remote_parent = repository.join(".git/refs/remotes/origin");
+    fs::create_dir_all(remote_parent.parent().unwrap()).unwrap();
+    symlink(&outside, &remote_parent).unwrap();
+
+    GitCore::new()
+        .update_tracking_references_after_push_for_test(
+            &repository,
+            &[("refs/remotes/origin/main", &commit, None)],
+        )
+        .expect_err("tracking updates must not follow repository-controlled symlinks");
+    assert!(!outside.join("main").exists());
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn tracking_update_rejects_symlinked_reflog_ancestry() {
+    use std::os::unix::fs::symlink;
+
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-tracking-reflog-symlink-test"),
+    );
+    let repository = root.join("repository");
+    let outside = root.join("outside");
+    fs::create_dir_all(&repository).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.name", "Push Test"]);
+    run_git(&["config", "user.email", "push@example.invalid"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    let commit = GitCore::new().head_commit_id(&repository).unwrap();
+    fs::create_dir_all(repository.join(".git/refs/remotes/origin")).unwrap();
+    let reflog_parent = repository.join(".git/logs/refs/remotes");
+    fs::create_dir_all(&reflog_parent).unwrap();
+    symlink(&outside, reflog_parent.join("origin")).unwrap();
+
+    GitCore::new()
+        .update_tracking_references_after_push_for_test(
+            &repository,
+            &[("refs/remotes/origin/main", &commit, None)],
+        )
+        .expect_err("tracking updates must not follow repository-controlled reflog symlinks");
+    assert!(!repository.join(".git/refs/remotes/origin/main").exists());
+    assert!(fs::read_dir(&outside).unwrap().next().is_none());
+
+    fs::remove_file(reflog_parent.join("origin")).unwrap();
+    fs::create_dir(reflog_parent.join("origin")).unwrap();
+    let outside_log = outside.join("captured-log");
+    symlink(&outside_log, reflog_parent.join("origin/main")).unwrap();
+    GitCore::new()
+        .update_tracking_references_after_push_for_test(
+            &repository,
+            &[("refs/remotes/origin/main", &commit, None)],
+        )
+        .expect_err("tracking updates must not follow a repository-controlled reflog leaf");
+    assert!(!outside_log.exists());
+
+    fs::remove_file(reflog_parent.join("origin/main")).unwrap();
+    fs::write(&outside_log, "unchanged\n").unwrap();
+    fs::hard_link(&outside_log, reflog_parent.join("origin/main")).unwrap();
+    GitCore::new()
+        .update_tracking_references_after_push_for_test(
+            &repository,
+            &[("refs/remotes/origin/main", &commit, None)],
+        )
+        .expect_err("tracking updates must reject a hard-linked reflog leaf");
+    assert_eq!(fs::read_to_string(&outside_log).unwrap(), "unchanged\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn tracking_guards_preserve_shared_repository_directory_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-shared-tracking-guard-test"),
+    );
+    let repository = root.join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    run_git(&["init", "-q", "--shared=group", "-b", "main"]);
+    run_git(&["config", "user.name", "Push Test"]);
+    run_git(&["config", "user.email", "push@example.invalid"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "initial"]);
+    let commit = GitCore::new().head_commit_id(&repository).unwrap();
+
+    GitCore::new()
+        .update_tracking_references_after_push_for_test(
+            &repository,
+            &[("refs/remotes/origin/feature/topic", &commit, None)],
+        )
+        .expect("nested tracking update succeeds");
+    for path in [
+        ".git/refs/remotes/origin/feature",
+        ".git/logs/refs/remotes/origin/feature",
+    ] {
+        let mode = fs::metadata(repository.join(path))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_ne!(mode & 0o020, 0, "{path} remains group-writable");
+        assert_ne!(mode & 0o2000, 0, "{path} retains setgid inheritance");
+    }
+}
+
+#[test]
+fn tracking_reference_batch_update_is_atomic_on_cas_conflict() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-push-tracking-cas-test"),
+    );
+    let repository = root.join("repository");
+    fs::create_dir_all(&repository).unwrap();
+    let run_git = |arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    let read_head = || {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+
+    run_git(&["init", "-q", "-b", "main"]);
+    run_git(&["config", "user.name", "Push Test"]);
+    run_git(&["config", "user.email", "push@example.invalid"]);
+    fs::write(repository.join("history.txt"), "base\n").unwrap();
+    run_git(&["add", "history.txt"]);
+    run_git(&["commit", "-qm", "base"]);
+    let base = read_head();
+    fs::write(repository.join("history.txt"), "target\n").unwrap();
+    run_git(&["commit", "-qam", "target"]);
+    let target = read_head();
+    fs::write(repository.join("history.txt"), "conflict\n").unwrap();
+    run_git(&["commit", "-qam", "conflict"]);
+    let conflict = read_head();
+    run_git(&["update-ref", "refs/remotes/origin/main", &base]);
+    run_git(&["update-ref", "refs/remotes/origin/other", &conflict]);
+
+    let result = GitCore::new().update_tracking_references_after_push_for_test(
+        &repository,
+        &[
+            ("refs/remotes/origin/main", &target, Some(&base)),
+            ("refs/remotes/origin/other", &target, Some(&base)),
+        ],
+    );
+    assert!(result.is_err());
+
+    let read_reference = |reference: &str| {
+        let output = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(["rev-parse", reference])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        output_text(&output.stdout).trim().to_owned()
+    };
+    assert_eq!(read_reference("refs/remotes/origin/main"), base);
+    assert_eq!(read_reference("refs/remotes/origin/other"), conflict);
+}
+
+#[test]
+fn push_reports_partial_success_when_a_later_push_url_fails() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-partial-push-test"),
+    );
+    let remote = root.join("remote.git");
+    let missing_remote = root.join("missing.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+    run_git(
+        &repository,
+        &[
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            remote.to_str().unwrap(),
+        ],
+    );
+    run_git(
+        &repository,
+        &[
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            missing_remote.to_str().unwrap(),
+        ],
+    );
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "second"]);
+
+    let git = GitCore::new();
+    let head = git.head_commit_id(&repository).unwrap();
+    let (refspecs, set_upstream) = git.push_plan_for_remote(&repository, "origin").unwrap();
+    let error = git
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs,
+                set_upstream,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("the second push URL is unavailable");
+    assert_eq!(error.code(), "push_partial_remote_success");
+
+    let remote_head = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/main"])
+        .output()
+        .unwrap();
+    assert!(remote_head.status.success());
+    assert_eq!(output_text(&remote_head.stdout).trim(), head);
+    assert_eq!(git.status(&repository).unwrap().ahead, 1);
+
+    run_git(
+        &repository,
+        &["config", "--unset-all", "remote.origin.pushurl"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.pushurl",
+            remote.to_str().unwrap(),
+        ],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.pushurl",
+            "https://gitee.com/%zz/team/repository.git",
+        ],
+    );
+    fs::write(repository.join("history.txt"), "third\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "third"]);
+    let (refspecs, set_upstream) = git.push_plan_for_remote(&repository, "origin").unwrap();
+    let error = git
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs,
+                set_upstream,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("all push URLs are validated before the first push");
+    assert_eq!(error.code(), "invalid_remote_url");
+    let remote_head_after_invalid_url = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/main"])
+        .output()
+        .unwrap();
+    assert!(remote_head_after_invalid_url.status.success());
+    assert_eq!(remote_head_after_invalid_url.stdout, remote_head.stdout);
+}
+
+#[test]
+fn detached_head_can_push_a_tag_without_tracking_finalization() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-detached-tag-push-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&repository, &["tag", "release-test"]);
+    run_git(&repository, &["tag", "release-test-2"]);
+    run_git(&repository, &["checkout", "-q", "--detach"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+
+    GitCore::new()
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec!["refs/tags/*:refs/tags/*".into()],
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect("tag push succeeds from detached HEAD");
+
+    for tag in ["release-test", "release-test-2"] {
+        let remote_tag = test_git_command()
+            .args(["--git-dir", remote.to_str().unwrap()])
+            .args(["rev-parse", &format!("refs/tags/{tag}")])
+            .output()
+            .unwrap();
+        assert!(remote_tag.status.success());
+    }
+}
+
+#[test]
+fn push_does_not_update_a_tracking_reference_outside_refs_remotes() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-unsafe-push-tracking-test"),
+    );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(
+        &root,
+        &["init", "-q", "-b", "main", repository.to_str().unwrap()],
+    );
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(
+        &repository,
+        &["config", "user.email", "push@example.invalid"],
+    );
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&repository, &["branch", "victim/main"]);
+    run_git(
+        &repository,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(
+        &repository,
+        &["config", "--unset-all", "remote.origin.fetch"],
+    );
+    run_git(
+        &repository,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/victim/*",
+        ],
+    );
+    run_git(
+        &repository,
+        &["config", "branch.main.remote", "origin"],
+    );
+    run_git(
+        &repository,
+        &["config", "branch.main.merge", "refs/heads/main"],
+    );
+    let victim_before = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/victim/main"])
+        .output()
+        .unwrap();
+    assert!(victim_before.status.success());
+
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "second"]);
+    GitCore::new()
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec!["refs/heads/main:refs/heads/main".into()],
+                set_upstream: false,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect("push succeeds without rewriting a local branch");
+
+    let victim_after = test_git_command()
+        .args(["-C", repository.to_str().unwrap()])
+        .args(["rev-parse", "refs/heads/victim/main"])
+        .output()
+        .unwrap();
+    assert!(victim_after.status.success());
+    assert_eq!(victim_after.stdout, victim_before.stdout);
+
+    run_git(&repository, &["branch", "new-branch"]);
+    let error = GitCore::new()
+        .push(
+            &repository,
+            &PushOptions {
+                remote: "origin".into(),
+                refspecs: vec!["refs/heads/new-branch:refs/heads/new-branch".into()],
+                set_upstream: true,
+                force_with_lease: false,
+                follow_tags: false,
+            },
+        )
+        .expect_err("unsafe tracking mapping is rejected before a first push");
+    assert_eq!(error.code(), "push_upstream_fetch_mapping_unavailable");
+    let remote_branch = test_git_command()
+        .args(["--git-dir", remote.to_str().unwrap()])
+        .args(["rev-parse", "--verify", "refs/heads/new-branch"])
+        .output()
+        .unwrap();
+    assert!(!remote_branch.status.success());
 }
 
 #[test]
