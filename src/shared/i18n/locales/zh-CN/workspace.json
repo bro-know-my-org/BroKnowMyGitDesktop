@@ -594,7 +594,6 @@
   "workspace.header.openApplicationMenu": "打开应用菜单",
   "workspace.header.openInFileManager": "在文件管理器中打开",
   "workspace.header.openInPreferredTerminal": "在首选终端中打开",
-  "workspace.header.openRepositoryList": "打开仓库列表",
   "workspace.header.openInSystemDefaultTerminal": "在系统默认终端中打开",
   "workspace.header.openRepositoryWebsite": "打开仓库网页",
   "workspace.header.publishToGithub": "发布到 GitHub",

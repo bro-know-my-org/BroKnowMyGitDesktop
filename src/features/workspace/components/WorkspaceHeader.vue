@@ -363,34 +363,23 @@ export default defineComponent({
                 class="repository-picker-popover"
               >
                 <template #trigger>
-                  <div class="repository-switcher-split">
-                    <button
-                      class="repository-switcher-current"
-                      type="button"
-                      :aria-label="repositorySwitcherAriaLabel"
-                      :aria-expanded="repositoryPickerOpen"
-                      aria-haspopup="dialog"
-                      aria-keyshortcuts="Shift+F10"
-                      :aria-description="t('workspace.header.rightClickForRepositoryActions')"
-                      :title="snapshot?.repository.path"
-                      @click.stop="toggleRepositoryPicker($event)"
-                      @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
-                      @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
-                    >
-                      <span class="repository-switcher-primary">{{ snapshot?.repository.alias || snapshot?.repository.name || t('workspace.header.repository') }}</span>
-                      <span v-if="snapshot?.repository.alias" class="repository-switcher-secondary">{{ snapshot.repository.name }}</span>
-                    </button>
-                    <button
-                      class="repository-switcher-toggle"
-                      type="button"
-                      :aria-label="t('workspace.header.openRepositoryList')"
-                      :aria-expanded="repositoryPickerOpen"
-                      aria-haspopup="dialog"
-                      @click.stop="toggleRepositoryPicker($event)"
-                    >
-                      <span class="repository-switcher-caret" aria-hidden="true">▾</span>
-                    </button>
-                  </div>
+                  <button
+                    class="repository-switcher"
+                    type="button"
+                    :aria-label="repositorySwitcherAriaLabel"
+                    :aria-expanded="repositoryPickerOpen"
+                    aria-haspopup="dialog"
+                    aria-keyshortcuts="Shift+F10"
+                    :aria-description="t('workspace.header.rightClickForRepositoryActions')"
+                    :title="snapshot?.repository.path"
+                    @click.stop="toggleRepositoryPicker($event)"
+                    @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
+                    @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
+                  >
+                    <span class="repository-switcher-primary">{{ snapshot?.repository.alias || snapshot?.repository.name || t('workspace.header.repository') }}</span>
+                    <span v-if="snapshot?.repository.alias" class="repository-switcher-secondary">{{ snapshot.repository.name }}</span>
+                    <span class="repository-switcher-caret" aria-hidden="true">▾</span>
+                  </button>
                 </template>
 
                 <aside
@@ -425,7 +414,10 @@ export default defineComponent({
                         content-class="sidebar-repository-list-content"
                       >
                         <div v-for="group in displayedRepositoryGroups" :key="group.key" class="sidebar-repository-group">
-                          <div class="sidebar-group-heading">
+                          <div
+                            class="sidebar-group-heading"
+                            :class="{ 'sidebar-group-heading-owner': group.key.startsWith('owner:') }"
+                          >
                             <span>{{ group.label }}</span>
                             <span>{{ group.repositories.length }}</span>
                           </div>

@@ -241,6 +241,10 @@
   text-transform: uppercase;
 }
 
+.sidebar-group-heading-owner {
+  text-transform: none;
+}
+
 .sidebar-group-heading span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -536,53 +540,31 @@
   font-size: calc(11px * var(--app-code-font-scale));
 }
 
-.repository-switcher-split {
+.repository-switcher {
   display: inline-flex;
   height: 32px;
   min-width: 0;
   max-width: min(400px, 46vw);
-  align-items: stretch;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
   border: 1px solid var(--app-divider);
   background: var(--app-surface);
-}
-
-.repository-switcher-current,
-.repository-switcher-toggle {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  border: 0;
-  background: transparent;
   color: inherit;
   cursor: pointer;
 }
 
-.repository-switcher-current {
-  gap: 7px;
-  padding: 0 9px;
-}
-
-.repository-switcher-toggle {
-  width: 30px;
-  flex: 0 0 auto;
-  justify-content: center;
-  padding: 0;
-  border-left: 1px solid var(--app-divider);
-}
-
-.repository-switcher-current:hover,
-.repository-switcher-toggle:hover,
-.repository-switcher-split:has(.repository-switcher-toggle[aria-expanded="true"]) {
+.repository-switcher:hover,
+.repository-switcher[aria-expanded="true"] {
   background: var(--app-row-hover);
 }
 
-.repository-switcher-current:focus-visible,
-.repository-switcher-toggle:focus-visible {
+.repository-switcher:focus-visible {
   outline: 2px solid var(--app-focus);
   outline-offset: -2px;
 }
 
-.repository-switcher-toggle[aria-expanded="true"] .repository-switcher-caret {
+.repository-switcher[aria-expanded="true"] .repository-switcher-caret {
   transform: rotate(180deg);
 }
 

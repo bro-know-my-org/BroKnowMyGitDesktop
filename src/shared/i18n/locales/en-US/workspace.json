@@ -594,7 +594,6 @@
   "workspace.header.openApplicationMenu": "Open application menu",
   "workspace.header.openInFileManager": "Open in file manager",
   "workspace.header.openInPreferredTerminal": "Open in preferred terminal",
-  "workspace.header.openRepositoryList": "Open repository list",
   "workspace.header.openInSystemDefaultTerminal": "Open in system default terminal",
   "workspace.header.openRepositoryWebsite": "Open repository website",
   "workspace.header.publishToGithub": "Publish to GitHub",
