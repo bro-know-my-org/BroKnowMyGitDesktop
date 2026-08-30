@@ -1,10 +1,16 @@
-import { reactive, ref, type Ref } from "vue";
+import { computed, reactive, ref, watch, type Ref } from "vue";
 import type { DialogApi, MessageApi } from "naive-ui";
-import { api } from "../../../shared/api/tauri";
+import {
+  api,
+  isAbsoluteExecutablePath,
+  repositoryEditorLaunchShapeIsValid,
+} from "../../../shared/api/tauri";
+import { isAppError } from "../../../shared/api/tauriRuntime";
 import { t } from "../../../shared/i18n";
 import type {
   ExternalEditorConfig,
   LfsStatus,
+  RepositoryEditorConfig,
   RepositorySnapshot,
   SubmoduleInfo,
   WorktreeInfo,
@@ -53,18 +59,47 @@ export function useRepositoryAuxiliary({
   const submodules = ref<SubmoduleInfo[]>([]);
   const lfsStatus = ref<LfsStatus | null>(null);
   const externalEditor = ref<ExternalEditorConfig | null>(null);
+  const repositoryEditors = ref<RepositoryEditorConfig[]>([]);
+  const repositoryEditorsLoaded = ref(false);
   const worktreesLoading = ref(false);
   const submodulesLoading = ref(false);
   const lfsLoading = ref(false);
   const worktreeModalShown = ref(false);
   const lfsTrackModalShown = ref(false);
   const externalEditorModalShown = ref(false);
+  const repositoryEditorsModalShown = ref(false);
+  const installedApplicationPickerShown = ref(false);
   const worktreeForm = reactive({ path: "", mode: "new", branch: "" });
   const lfsTrackForm = reactive({ pattern: "" });
   const externalEditorForm = reactive({ executable: "", arguments: "" });
+  const repositoryEditorForm = reactive({ name: "", executable: "", arguments: "" });
+  const repositoryEditorEditingIndex = ref<number | null>(null);
+  const repositoryEditorEditingName = ref<string | null>(null);
+  const repositoryEditorPickerBusy = ref(false);
+  const installedApplications = ref<RepositoryEditorConfig[]>([]);
+  const installedApplicationOptions = computed(() => installedApplications.value.map(
+    (application, index) => ({ label: application.name, value: index }),
+  ));
+  const installedApplicationSelection = ref<number | null>(null);
+  let installedApplicationsLoaded = false;
+  let installedApplicationsRequest: Promise<RepositoryEditorConfig[]> | null = null;
   let worktreesRequestGeneration = 0;
   let submodulesRequestGeneration = 0;
   let lfsRequestGeneration = 0;
+  let repositoryEditorPickerGeneration = 0;
+  let repositoryEditorsLoadGeneration = 0;
+  let repositoryEditorsRequest: Promise<RepositoryEditorConfig[]> | null = null;
+
+  function invalidateRepositoryEditorPicker(): void {
+    repositoryEditorPickerGeneration += 1;
+    repositoryEditorPickerBusy.value = false;
+    installedApplicationPickerShown.value = false;
+  }
+
+  watch(repositoryEditorsModalShown, (shown) => {
+    if (shown) return;
+    invalidateRepositoryEditorPicker();
+  });
 
   function beginRepositoryMutation(repositoryPath: string): (() => void) | null {
     const releaseOperation = acquireRepositoryOperation(repositoryPath);
@@ -180,6 +215,267 @@ export function useRepositoryAuxiliary({
     } catch (error) {
       reportError(error, t("workspace.controller.couldNotLoadExternalEditorConfiguration"));
     }
+  }
+
+  async function loadRepositoryEditors(): Promise<boolean> {
+    const requestGeneration = repositoryEditorsLoadGeneration;
+    const request = repositoryEditorsRequest ?? api.getRepositoryEditors();
+    repositoryEditorsRequest = request;
+    try {
+      const editors = await request;
+      if (requestGeneration !== repositoryEditorsLoadGeneration) return false;
+      repositoryEditors.value = editors;
+      repositoryEditorsLoaded.value = true;
+      return true;
+    } catch (error) {
+      if (requestGeneration !== repositoryEditorsLoadGeneration) return false;
+      repositoryEditorsLoaded.value = false;
+      reportError(error, t("workspace.controller.couldNotLoadRepositoryEditors"));
+      return false;
+    } finally {
+      if (repositoryEditorsRequest === request) repositoryEditorsRequest = null;
+    }
+  }
+
+  function resetRepositoryEditorForm(): void {
+    invalidateRepositoryEditorPicker();
+    repositoryEditorEditingIndex.value = null;
+    repositoryEditorEditingName.value = null;
+    repositoryEditorForm.name = "";
+    repositoryEditorForm.executable = "";
+    repositoryEditorForm.arguments = "";
+  }
+
+  async function openRepositoryEditorsModal(): Promise<void> {
+    if (!repositoryEditorsLoaded.value && !(await loadRepositoryEditors())) return;
+    installedApplicationsLoaded = false;
+    resetRepositoryEditorForm();
+    repositoryEditorsModalShown.value = true;
+  }
+
+  function editRepositoryEditor(index: number): void {
+    const editor = repositoryEditors.value[index];
+    if (!editor) return;
+    invalidateRepositoryEditorPicker();
+    repositoryEditorEditingIndex.value = index;
+    repositoryEditorEditingName.value = editor.name;
+    repositoryEditorForm.name = editor.name;
+    repositoryEditorForm.executable = editor.executable;
+    repositoryEditorForm.arguments = editor.arguments.join("\n");
+  }
+
+  async function browseRepositoryEditorExecutable(): Promise<void> {
+    if (repositoryEditorPickerBusy.value) return;
+    repositoryEditorPickerBusy.value = true;
+    const requestGeneration = ++repositoryEditorPickerGeneration;
+    installedApplicationPickerShown.value = false;
+    try {
+      const executable = await api.selectApplicationExecutable(
+        t("workspace.dialogs.selectIdeApplication"),
+      );
+      if (
+        executable
+        && requestGeneration === repositoryEditorPickerGeneration
+        && repositoryEditorsModalShown.value
+      ) repositoryEditorForm.executable = executable;
+    } catch (error) {
+      if (
+        requestGeneration === repositoryEditorPickerGeneration
+        && repositoryEditorsModalShown.value
+      ) reportError(error, t("workspace.controller.couldNotSelectIdeApplication"));
+    } finally {
+      if (requestGeneration === repositoryEditorPickerGeneration) {
+        repositoryEditorPickerBusy.value = false;
+      }
+    }
+  }
+
+  async function selectRepositoryEditorApplication(): Promise<void> {
+    if (repositoryEditorPickerBusy.value) return;
+    repositoryEditorPickerBusy.value = true;
+    const requestGeneration = ++repositoryEditorPickerGeneration;
+    try {
+      if (!installedApplicationsLoaded) {
+        try {
+          if (!installedApplicationsRequest) {
+            const request = api.listInstalledApplications();
+            installedApplicationsRequest = request;
+            const clearRequest = () => {
+              if (installedApplicationsRequest === request) installedApplicationsRequest = null;
+            };
+            void request.then(clearRequest, clearRequest);
+          }
+          const applications = await installedApplicationsRequest;
+          if (
+            requestGeneration !== repositoryEditorPickerGeneration
+            || !repositoryEditorsModalShown.value
+          ) return;
+          installedApplications.value = applications;
+          installedApplicationsLoaded = true;
+        } catch (error) {
+          installedApplications.value = [];
+          if (
+            requestGeneration === repositoryEditorPickerGeneration
+            && repositoryEditorsModalShown.value
+          ) reportError(error, t("workspace.controller.couldNotSelectIdeApplication"));
+        }
+      }
+      if (
+        requestGeneration !== repositoryEditorPickerGeneration
+        || !repositoryEditorsModalShown.value
+      ) return;
+      installedApplicationSelection.value = null;
+      if (installedApplications.value.length) installedApplicationPickerShown.value = true;
+      else {
+        const executable = await api.selectApplicationExecutable(
+          t("workspace.dialogs.selectIdeApplication"),
+        );
+        if (
+          executable
+          && requestGeneration === repositoryEditorPickerGeneration
+          && repositoryEditorsModalShown.value
+        ) repositoryEditorForm.executable = executable;
+      }
+    } catch (pickerError) {
+      if (
+        requestGeneration === repositoryEditorPickerGeneration
+        && repositoryEditorsModalShown.value
+      ) {
+          reportError(pickerError, t("workspace.controller.couldNotSelectIdeApplication"));
+      }
+    } finally {
+      if (requestGeneration === repositoryEditorPickerGeneration) {
+        repositoryEditorPickerBusy.value = false;
+      }
+    }
+  }
+
+  function applyInstalledApplication(): void {
+    const index = installedApplicationSelection.value;
+    const application = index === null ? undefined : installedApplications.value[index];
+    if (!application) return;
+    repositoryEditorForm.name = application.name;
+    repositoryEditorForm.executable = application.executable;
+    repositoryEditorForm.arguments = application.arguments.join("\n");
+    installedApplicationPickerShown.value = false;
+  }
+
+  async function saveRepositoryEditor(): Promise<void> {
+    if (mutationBusy.value) return;
+    const name = repositoryEditorForm.name.trim();
+    const executable = repositoryEditorForm.executable.trim();
+    if (!name || !executable || Array.from(name).length > 80 || /[\u0000-\u001f\u007f-\u009f]/u.test(name)) {
+      message.warning(t("workspace.controller.enterTheIdeNameAndAbsoluteExecutablePath"));
+      return;
+    }
+    if (!isAbsoluteExecutablePath(executable)) {
+      message.warning(t("workspace.controller.ideExecutablePathMustBeAbsolute"));
+      return;
+    }
+    const editingName = repositoryEditorEditingName.value;
+    if (repositoryEditors.value.some((editor) =>
+      editor.name !== editingName && editor.name.toLowerCase() === name.toLowerCase()
+    )) {
+      message.warning(t("workspace.controller.ideNameMustBeUnique"));
+      return;
+    }
+    if (editingName === null && repositoryEditors.value.length >= 16) {
+      message.warning(t("workspace.controller.tooManyRepositoryEditors"));
+      return;
+    }
+    const argumentsList = repositoryEditorForm.arguments
+      .split(/\r?\n/u)
+      .map((argument) => argument.trim())
+      .filter(Boolean);
+    if (argumentsList.length > 32) {
+      message.warning(t("workspace.controller.tooManyIdeArguments"));
+      return;
+    }
+    if (!repositoryEditorLaunchShapeIsValid(executable, argumentsList)) {
+      message.warning(t("workspace.controller.ideLaunchConfigurationInvalid"));
+      return;
+    }
+    const editor: RepositoryEditorConfig = {
+      name,
+      executable,
+      arguments: argumentsList,
+    };
+    const nextEditors = [...repositoryEditors.value];
+    if (editingName === null) nextEditors.push(editor);
+    else {
+      const currentIndex = nextEditors.findIndex((candidate) => candidate.name === editingName);
+      if (currentIndex < 0) {
+        message.warning(t("workspace.controller.repositoryEditorListChanged"));
+        return;
+      }
+      nextEditors[currentIndex] = editor;
+    }
+    invalidateRepositoryEditorPicker();
+    mutationBusy.value = true;
+    repositoryEditorsLoadGeneration += 1;
+    repositoryEditorsRequest = null;
+    try {
+      repositoryEditors.value = await api.saveRepositoryEditors(nextEditors, repositoryEditors.value);
+      repositoryEditorsLoadGeneration += 1;
+      repositoryEditorsRequest = null;
+      repositoryEditorsLoaded.value = true;
+      resetRepositoryEditorForm();
+      message.success(t("workspace.controller.repositoryEditorsSaved"));
+    } catch (error) {
+      if (isAppError(error) && error.code === "repository_editors_changed") {
+        repositoryEditorsLoaded.value = false;
+        if (await loadRepositoryEditors()) resetRepositoryEditorForm();
+        else repositoryEditorsModalShown.value = false;
+        message.warning(t("workspace.controller.repositoryEditorListChanged"));
+      } else reportError(error, t("workspace.controller.couldNotSaveRepositoryEditors"));
+    } finally {
+      mutationBusy.value = false;
+    }
+  }
+
+  function confirmRemoveRepositoryEditor(index: number): void {
+    const editor = repositoryEditors.value[index];
+    if (!editor) return;
+    dialog.warning({
+      title: t("workspace.controller.removeRepositoryEditor"),
+      content: t("workspace.controller.removeRepositoryEditorConfirmation", { name: editor.name }),
+      positiveText: t("workspace.controller.remove"),
+      negativeText: t("workspace.controller.cancel"),
+      onPositiveClick: async () => {
+        if (mutationBusy.value) return false;
+        mutationBusy.value = true;
+        repositoryEditorsLoadGeneration += 1;
+        repositoryEditorsRequest = null;
+        invalidateRepositoryEditorPicker();
+        try {
+          const expectedEditors = repositoryEditors.value;
+          repositoryEditors.value = await api.saveRepositoryEditors(
+            expectedEditors.filter((candidate) => candidate.name !== editor.name),
+            expectedEditors,
+          );
+          repositoryEditorsLoadGeneration += 1;
+          repositoryEditorsRequest = null;
+          repositoryEditorsLoaded.value = true;
+          if (repositoryEditorEditingName.value === editor.name) {
+            resetRepositoryEditorForm();
+          } else if (repositoryEditorEditingName.value !== null) {
+            repositoryEditorEditingIndex.value = repositoryEditors.value.findIndex(
+              (candidate) => candidate.name === repositoryEditorEditingName.value,
+            );
+          }
+          message.success(t("workspace.controller.repositoryEditorRemoved"));
+        } catch (error) {
+          if (isAppError(error) && error.code === "repository_editors_changed") {
+            repositoryEditorsLoaded.value = false;
+            if (await loadRepositoryEditors()) resetRepositoryEditorForm();
+            else repositoryEditorsModalShown.value = false;
+            message.warning(t("workspace.controller.repositoryEditorListChanged"));
+          } else reportError(error, t("workspace.controller.couldNotSaveRepositoryEditors"));
+        } finally {
+          mutationBusy.value = false;
+        }
+      },
+    });
   }
 
   function openExternalEditorModal(): void {
@@ -456,22 +752,41 @@ export function useRepositoryAuxiliary({
     submodules,
     lfsStatus,
     externalEditor,
+    repositoryEditors,
+    repositoryEditorsLoaded,
     worktreesLoading,
     submodulesLoading,
     lfsLoading,
     worktreeModalShown,
     lfsTrackModalShown,
     externalEditorModalShown,
+    repositoryEditorsModalShown,
+    installedApplicationPickerShown,
     worktreeForm,
     lfsTrackForm,
     externalEditorForm,
+    repositoryEditorForm,
+    repositoryEditorEditingIndex,
+    repositoryEditorPickerBusy,
+    installedApplications,
+    installedApplicationOptions,
+    installedApplicationSelection,
     loadWorktrees,
     loadSubmodules,
     loadLfsStatus,
     loadExternalEditor,
+    loadRepositoryEditors,
     openExternalEditorModal,
     saveExternalEditor,
     confirmClearExternalEditor,
+    openRepositoryEditorsModal,
+    resetRepositoryEditorForm,
+    editRepositoryEditor,
+    selectRepositoryEditorApplication,
+    browseRepositoryEditorExecutable,
+    applyInstalledApplication,
+    saveRepositoryEditor,
+    confirmRemoveRepositoryEditor,
     openConflictedFilesInExternalEditor,
     openWorktreeModal,
     addWorktree,

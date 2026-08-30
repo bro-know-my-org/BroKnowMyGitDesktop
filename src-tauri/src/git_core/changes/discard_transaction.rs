@@ -632,3 +632,33 @@ impl Drop for ExternalEditorReaperPermit {
     }
 }
 
+struct RepositoryEditorReaperPermit;
+
+impl RepositoryEditorReaperPermit {
+    fn acquire() -> Result<Self, AppError> {
+        let mut active = ACTIVE_REPOSITORY_EDITOR_REAPERS.load(Ordering::Acquire);
+        loop {
+            if active >= MAX_REPOSITORY_EDITOR_REAPERS {
+                return Err(AppError::new(
+                    "repository_editor_busy",
+                    "已有过多 IDE 进程仍在运行，请关闭后再试。",
+                ));
+            }
+            match ACTIVE_REPOSITORY_EDITOR_REAPERS.compare_exchange_weak(
+                active,
+                active + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Self),
+                Err(observed) => active = observed,
+            }
+        }
+    }
+}
+
+impl Drop for RepositoryEditorReaperPermit {
+    fn drop(&mut self) {
+        ACTIVE_REPOSITORY_EDITOR_REAPERS.fetch_sub(1, Ordering::AcqRel);
+    }
+}

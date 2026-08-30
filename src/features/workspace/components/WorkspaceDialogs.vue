@@ -551,6 +551,18 @@ export default defineComponent({
             </n-form-item>
             <n-divider />
             <div class="settings-subsection-heading">
+              <strong>{{ t('workspace.dialogs.repositoryIdes') }}</strong>
+              <n-text depth="3">{{ t('workspace.dialogs.repositoryIdesHint') }}</n-text>
+            </div>
+            <n-space justify="space-between" align="center">
+              <n-text v-if="repositoryEditorsLoaded">{{ t('workspace.dialogs.configuredIdeCount', { count: repositoryEditors.length }) }}</n-text>
+              <n-text v-else depth="3">{{ t('workspace.dialogs.repositoryIdeListUnavailable') }}</n-text>
+              <n-button size="small" tertiary @click="openRepositoryEditorsModal">
+                {{ t('workspace.dialogs.manageIdes') }}
+              </n-button>
+            </n-space>
+            <n-divider />
+            <div class="settings-subsection-heading">
               <strong>{{ t('workspace.dialogs.terminals') }}</strong>
               <n-text depth="3">{{ t('workspace.dialogs.systemDefaultAndPreferredTerminalsAreSeparateTheRepositoryMenuProvidesBothActions') }}</n-text>
             </div>
@@ -780,6 +792,107 @@ export default defineComponent({
         <n-space>
           <n-button @click="externalEditorModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button>
           <n-button type="primary" :loading="mutationBusy" @click="saveExternalEditor">{{ t('workspace.dialogs.saveEditor') }}</n-button>
+        </n-space>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <n-modal
+    v-model:show="repositoryEditorsModalShown"
+    preset="card"
+    :title="t('workspace.dialogs.repositoryIdes')"
+    class="dialog-card"
+    :mask-closable="!mutationBusy"
+  >
+    <n-alert type="info" :bordered="false" class="token-alert">
+      {{ t('workspace.dialogs.repositoryEditorsLaunchHint') }}
+    </n-alert>
+    <n-space v-if="repositoryEditors.length" vertical class="repository-editor-list">
+      <n-card v-for="(editor, index) in repositoryEditors" :key="editor.name" size="small">
+        <n-space justify="space-between" align="center" :wrap="false">
+          <div class="repository-editor-summary">
+            <strong>{{ editor.name }}</strong>
+            <n-text depth="3">{{ editor.executable }}</n-text>
+          </div>
+          <n-space :wrap="false">
+            <n-button size="small" tertiary :disabled="mutationBusy || repositoryEditorPickerBusy" @click="editRepositoryEditor(index)">
+              {{ t('workspace.dialogs.edit') }}
+            </n-button>
+            <n-button size="small" tertiary type="error" :disabled="mutationBusy || repositoryEditorPickerBusy" @click="confirmRemoveRepositoryEditor(index)">
+              {{ t('workspace.dialogs.remove') }}
+            </n-button>
+          </n-space>
+        </n-space>
+      </n-card>
+    </n-space>
+    <n-text v-else depth="3">{{ t('workspace.dialogs.noRepositoryIdesConfigured') }}</n-text>
+    <n-divider />
+    <div class="settings-subsection-heading">
+      <strong>{{ repositoryEditorEditingIndex === null ? t('workspace.dialogs.addIde') : t('workspace.dialogs.editIde') }}</strong>
+    </div>
+    <n-form label-placement="top" :disabled="mutationBusy">
+      <n-form-item :label="t('workspace.dialogs.ideDisplayName')">
+        <n-input v-model:value="repositoryEditorForm.name" :placeholder="t('workspace.dialogs.ideDisplayNamePlaceholder')" />
+      </n-form-item>
+      <n-form-item :label="t('workspace.dialogs.executableAbsolutePath')">
+        <n-space :wrap="false" class="repository-editor-picker">
+          <n-input v-model:value="repositoryEditorForm.executable" :placeholder="t('workspace.dialogs.ideExecutablePlaceholder')" />
+          <n-button :loading="repositoryEditorPickerBusy" :disabled="mutationBusy" @click="selectRepositoryEditorApplication">
+            {{ t('workspace.dialogs.selectApplication') }}
+          </n-button>
+        </n-space>
+      </n-form-item>
+      <n-form-item :label="t('workspace.dialogs.additionalArgumentsOnePerLineOptional')">
+        <n-input v-model:value="repositoryEditorForm.arguments" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" :placeholder="t('workspace.dialogs.placeholderAdditionalArguments')" />
+      </n-form-item>
+    </n-form>
+    <template #action>
+      <n-space justify="space-between">
+        <n-button v-if="repositoryEditorEditingIndex !== null" :disabled="mutationBusy || repositoryEditorPickerBusy" @click="resetRepositoryEditorForm">
+          {{ t('workspace.dialogs.cancelEditing') }}
+        </n-button>
+        <span v-else />
+        <n-space>
+          <n-button :disabled="mutationBusy" @click="repositoryEditorsModalShown = false">{{ t('workspace.dialogs.close') }}</n-button>
+          <n-button type="primary" :loading="mutationBusy" :disabled="repositoryEditorPickerBusy" @click="saveRepositoryEditor">
+            {{ repositoryEditorEditingIndex === null ? t('workspace.dialogs.addIde') : t('workspace.dialogs.saveChanges') }}
+          </n-button>
+        </n-space>
+      </n-space>
+    </template>
+  </n-modal>
+
+  <n-modal
+    v-model:show="installedApplicationPickerShown"
+    preset="card"
+    :title="t('workspace.dialogs.selectIdeApplication')"
+    class="dialog-card"
+    :mask-closable="!repositoryEditorPickerBusy"
+  >
+    <n-text depth="3">{{ t('workspace.dialogs.installedApplicationListHint') }}</n-text>
+    <n-select
+      v-model:value="installedApplicationSelection"
+      class="installed-application-select"
+      filterable
+      clearable
+      :placeholder="t('workspace.dialogs.searchInstalledApplications')"
+      :options="installedApplicationOptions"
+    />
+    <n-text v-if="installedApplicationSelection !== null" depth="3" class="installed-application-path">
+      {{ installedApplications[installedApplicationSelection]?.executable }}
+    </n-text>
+    <template #action>
+      <n-space justify="space-between">
+        <n-button :loading="repositoryEditorPickerBusy" @click="browseRepositoryEditorExecutable">
+          {{ t('workspace.dialogs.browseExecutableFile') }}
+        </n-button>
+        <n-space>
+          <n-button :disabled="repositoryEditorPickerBusy" @click="installedApplicationPickerShown = false">
+            {{ t('workspace.dialogs.cancel') }}
+          </n-button>
+          <n-button type="primary" :disabled="installedApplicationSelection === null" @click="applyInstalledApplication">
+            {{ t('workspace.dialogs.select') }}
+          </n-button>
         </n-space>
       </n-space>
     </template>

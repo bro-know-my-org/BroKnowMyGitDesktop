@@ -50,6 +50,14 @@ mod tests {
     }
 
     #[test]
+    fn older_profile_stores_load_without_repository_editors() {
+        let store: ProfileStore = serde_json::from_str(r#"{"schemaVersion":7}"#)
+            .expect("the new repository editor list has a backward-compatible default");
+
+        assert!(store.repository_editors.is_empty());
+    }
+
+    #[test]
     fn invalid_profile_store_is_backed_up_and_recovers_to_empty_state() {
         let directory = std::env::temp_dir().join(format!("bkm-profile-store-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();

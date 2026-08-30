@@ -1,4 +1,21 @@
 impl GitCore {
+    /// Opens the repository directory in the application's configured
+    /// external editor without involving a shell or repository-local config.
+    pub fn open_repository_in_external_editor(
+        &self,
+        repository: &Path,
+        editor: &ExternalEditorConfig,
+    ) -> Result<(), AppError> {
+        let editor = normalize_external_editor_config(editor.clone())?;
+        let repository_target = fs::canonicalize(repository).map_err(|_| {
+            AppError::new(
+                "external_editor_repository_unavailable",
+                "无法访问当前仓库，未启动外部编辑器。",
+            )
+        })?;
+        launch_repository_editor(&repository_target, &editor, std::slice::from_ref(&repository_target))
+    }
+
     /// Returns index paths for watcher planning. Git ignore rules can match a
     /// path after it has already been committed; those tracked files must
     /// remain observable even when an ignore-aware directory walk skips the
@@ -233,63 +250,7 @@ impl GitCore {
                 "冲突文件路径包含外部编辑器不支持的字符。",
             ));
         }
-        validate_external_editor_launch_size(
-            std::iter::once(editor.executable.as_str())
-                .chain(editor.arguments.iter().map(String::as_str))
-                .chain(files.iter().filter_map(|file| file.to_str())),
-        )?;
-
-        // Reserve the reaper before starting a process so repeated calls
-        // cannot create an unbounded collection of blocked `Child::wait`
-        // threads for editors left open indefinitely.
-        let reaper_permit = ExternalEditorReaperPermit::acquire()?;
-        let mut command = Command::new(&editor.executable);
-        command
-            .args(&editor.arguments)
-            .args(&files)
-            .current_dir(repository)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = command.spawn().map_err(|_| {
-            AppError::new(
-                "external_editor_launch_failed",
-                "无法启动外部编辑器；请检查可执行文件路径和参数。",
-            )
-        })?;
-        // A GUI editor may remain open for a long time. Reap it in a detached
-        // worker so the desktop process never accumulates zombie children and
-        // the IPC call can return immediately for the user to resolve files.
-        let (sender, receiver) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
-        let reaper = thread::Builder::new()
-            .name("bkm-external-editor-reaper".into())
-            .spawn(move || {
-                let _reaper_permit = reaper_permit;
-                if let Ok(mut child) = receiver.recv() {
-                    let _ = child.wait();
-                }
-            });
-        match reaper {
-            Ok(_) => {
-                if let Err(error) = sender.send(child) {
-                    let mut child = error.0;
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(AppError::new(
-                        "external_editor_reaper_failed",
-                        "无法监控外部编辑器进程，请稍后重试。",
-                    ));
-                }
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(AppError::new(
-                    "external_editor_reaper_failed",
-                    "无法监控外部编辑器进程，请稍后重试。",
-                ));
-            }
-        }
+        launch_external_editor(repository, &editor, &files)?;
         Ok(paths)
     }
 
@@ -1468,5 +1429,226 @@ impl GitCore {
             }
         }
         Ok(())
+    }
+}
+
+fn launch_external_editor(
+    repository: &Path,
+    editor: &ExternalEditorConfig,
+    targets: &[PathBuf],
+) -> Result<(), AppError> {
+    validate_external_editor_command_size(editor, targets)?;
+
+    // Reserve the reaper before starting a process so repeated calls cannot
+    // create an unbounded collection of blocked `Child::wait` threads for
+    // editors left open indefinitely.
+    let reaper_permit = ExternalEditorReaperPermit::acquire()?;
+    let mut child = external_editor_command(repository, editor, targets)
+        .spawn()
+        .map_err(|_| {
+        AppError::new(
+            "external_editor_launch_failed",
+            "无法启动外部编辑器；请检查可执行文件路径和参数。",
+        )
+    })?;
+    // A GUI editor may remain open for a long time. Reap it in a detached
+    // worker so the desktop process never accumulates zombie children.
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<std::process::Child>(1);
+    let reaper = thread::Builder::new()
+        .name("bkm-external-editor-reaper".into())
+        .spawn(move || {
+            let _reaper_permit = reaper_permit;
+            if let Ok(mut child) = receiver.recv() {
+                let _ = child.wait();
+            }
+        });
+    match reaper {
+        Ok(_) => {
+            if let Err(error) = sender.send(child) {
+                let mut child = error.0;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AppError::new(
+                    "external_editor_reaper_failed",
+                    "无法监控外部编辑器进程，请稍后重试。",
+                ));
+            }
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::new(
+                "external_editor_reaper_failed",
+                "无法监控外部编辑器进程，请稍后重试。",
+            ));
+        }
+    }
+    Ok(())
+}
+
+type RepositoryEditorReaperJob = (std::process::Child, RepositoryEditorReaperPermit);
+static REPOSITORY_EDITOR_REAPER_SENDER: OnceLock<Mutex<Option<mpsc::Sender<RepositoryEditorReaperJob>>>> =
+    OnceLock::new();
+
+fn enqueue_repository_editor_reaper_job(
+    job: RepositoryEditorReaperJob,
+) -> Result<(), RepositoryEditorReaperJob> {
+    let sender_slot = REPOSITORY_EDITOR_REAPER_SENDER.get_or_init(|| Mutex::new(None));
+    let Ok(mut sender_slot) = sender_slot.lock() else {
+        return Err(job);
+    };
+    if sender_slot.is_none() {
+        let (sender, receiver) = mpsc::channel::<RepositoryEditorReaperJob>();
+        if thread::Builder::new()
+            .name("bkm-repository-editor-reaper".into())
+            .spawn(move || {
+                let mut children = Vec::<RepositoryEditorReaperJob>::new();
+                let mut disconnected = false;
+                loop {
+                    if disconnected {
+                        if children.is_empty() {
+                            break;
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    } else if children.is_empty() {
+                        match receiver.recv() {
+                            Ok(child) => children.push(child),
+                            Err(_) => disconnected = true,
+                        }
+                    } else {
+                        match receiver.recv_timeout(Duration::from_millis(100)) {
+                            Ok(child) => children.push(child),
+                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            Err(mpsc::RecvTimeoutError::Disconnected) => disconnected = true,
+                        }
+                    }
+                    if !disconnected {
+                        while let Ok(child) = receiver.try_recv() {
+                            children.push(child);
+                        }
+                    }
+                    children.retain_mut(|(child, _permit)| match child.try_wait() {
+                        Ok(None) => true,
+                        Ok(Some(_)) => false,
+                        Err(_) => true,
+                    });
+                }
+            })
+            .is_err()
+        {
+            return Err(job);
+        }
+        *sender_slot = Some(sender);
+    }
+    let result = sender_slot.as_ref().expect("sender initialized").send(job);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            *sender_slot = None;
+            Err(error.0)
+        }
+    }
+}
+
+fn external_editor_command(
+    repository: &Path,
+    editor: &ExternalEditorConfig,
+    targets: &[PathBuf],
+) -> Command {
+    let mut command = Command::new(&editor.executable);
+    command
+        .args(&editor.arguments)
+        .args(targets)
+        .current_dir(repository)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+fn validate_external_editor_command_size(
+    editor: &ExternalEditorConfig,
+    targets: &[PathBuf],
+) -> Result<(), AppError> {
+    let command_units = external_editor_command_units(
+        std::iter::once(editor.executable.as_str())
+            .chain(editor.arguments.iter().map(String::as_str)),
+    );
+    let target_units = targets.iter().map(|target| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            2 + target.as_os_str().as_bytes().len().saturating_mul(2)
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            2 + target.as_os_str().encode_wide().count().saturating_mul(2)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            2 + target.to_string_lossy().encode_utf16().count().saturating_mul(2)
+        }
+    });
+    if command_units.saturating_add(target_units.sum::<usize>())
+        > MAX_EXTERNAL_EDITOR_LAUNCH_COMMAND_UNITS
+    {
+        return Err(AppError::new(
+            "external_editor_arguments_invalid",
+            "要在外部编辑器中打开的路径过长。",
+        ));
+    }
+    Ok(())
+}
+
+fn launch_repository_editor(
+    repository: &Path,
+    editor: &ExternalEditorConfig,
+    targets: &[PathBuf],
+) -> Result<(), AppError> {
+    validate_external_editor_command_size(editor, targets)?;
+    let reaper_permit = RepositoryEditorReaperPermit::acquire()?;
+    let mut child = external_editor_command(repository, editor, targets)
+        .spawn()
+        .map_err(|_| {
+            AppError::new(
+                "external_editor_launch_failed",
+                "无法启动外部编辑器；请检查可执行文件路径和参数。",
+            )
+        })?;
+    if let Err((returned_child, _permit)) =
+        enqueue_repository_editor_reaper_job((child, reaper_permit))
+    {
+        child = returned_child;
+        if child.kill().is_ok() {
+            let _ = child.wait();
+        }
+        return Err(AppError::new(
+            "external_editor_reaper_failed",
+            "无法监控外部编辑器进程，请稍后重试。",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod repository_editor_command_tests {
+    use super::*;
+
+    #[test]
+    fn repository_target_is_one_literal_argument_and_sets_exact_working_directory() {
+        let repository = PathBuf::from("/tmp/repository -with spaces");
+        let target = repository.join("--option-like target");
+        let editor = ExternalEditorConfig {
+            executable: "/usr/bin/editor".into(),
+            arguments: vec!["--reuse-window".into()],
+        };
+        let command = external_editor_command(&repository, &editor, std::slice::from_ref(&target));
+
+        assert_eq!(command.get_current_dir(), Some(repository.as_path()));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![OsStr::new("--reuse-window"), target.as_os_str()]
+        );
     }
 }

@@ -136,6 +136,62 @@ pub fn save_external_editor(
     })
 }
 
+#[tauri::command]
+pub fn get_repository_editors(
+    state: State<'_, AppState>,
+) -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    state.repository_editors()
+}
+
+#[tauri::command]
+pub fn save_repository_editors(
+    editors: Vec<RepositoryEditorConfig>,
+    expected_editors: Vec<RepositoryEditorConfig>,
+    state: State<'_, AppState>,
+) -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    let expected_raw = expected_editors;
+    let expected = normalize_repository_editor_configs_structure(expected_raw.clone())?;
+    let editors = normalize_repository_editor_configs_structure(editors)?;
+    let editors = editors
+        .into_iter()
+        .map(|editor| {
+            if expected.contains(&editor) {
+                Ok(editor)
+            } else {
+                normalize_repository_editor_config(editor)
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    state.mutate(|store| {
+        if store.repository_editors != expected_raw {
+            return Err(AppError::new(
+                "repository_editors_changed",
+                "IDE 配置已被其他窗口修改，请刷新后重试。",
+            ));
+        }
+        store.repository_editors = editors.clone();
+        Ok(editors)
+    })
+}
+
+/// Starts one explicitly configured repository editor with the repository directory.
+#[tauri::command]
+pub fn open_repository_in_editor(
+    repository_path: String,
+    editor_name: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let repository = repository_root(&repository_path)?;
+    let editor = state
+        .repository_editors()?
+        .into_iter()
+        .find(|editor| editor.name == editor_name)
+        .ok_or_else(|| AppError::new("repository_editor_not_found", "找不到指定的 IDE 配置。"))?;
+    let editor = normalize_repository_editor_config(editor)?;
+    let launch = repository_editor_launch_config(&editor);
+    GitCore::new().open_repository_in_external_editor(&repository, &launch)
+}
+
 /// Starts the configured external editor with every currently unresolved
 /// conflict file. The editor is not awaited; the user resolves files outside
 /// the app, returns here, refreshes, stages, and then continues the operation.

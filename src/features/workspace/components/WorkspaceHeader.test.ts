@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const componentUrl = new URL("./WorkspaceHeader.vue", import.meta.url);
+const dialogsUrl = new URL("./WorkspaceDialogs.vue", import.meta.url);
+const tauriApiUrl = new URL("../../../shared/api/tauri.ts", import.meta.url);
 const stylesheetUrl = new URL("./WorkspaceHeader.css", import.meta.url);
 
 test("repository switcher keeps one accessible trigger for every interaction", async () => {
@@ -50,4 +52,38 @@ test("repository switcher styles follow explicit state and preserve owner casing
     /\.sidebar-group-heading-owner\s*\{\s*text-transform: none;/u,
   );
   assert.doesNotMatch(stylesheetSource, /:has\(/u);
+});
+
+test("repository context menu lists configured IDEs and opens the selected one", async () => {
+  const componentSource = await readFile(componentUrl, "utf8");
+
+  assert.match(componentSource, /workspace\.repositoryEditors\.value\.map/u);
+  assert.match(componentSource, /key: `open-repository-editor:\$\{editor\.name\}`/u);
+  assert.match(componentSource, /api\.openRepositoryInEditor\(repository\.path, editor\.name\)/u);
+  assert.match(componentSource, /workspace\.openRepositoryEditorsModal\(\)/u);
+});
+
+test("repository IDE manager exposes add, edit, and remove actions", async () => {
+  const dialogsSource = await readFile(dialogsUrl, "utf8");
+
+  assert.match(dialogsSource, /v-model:show="repositoryEditorsModalShown"/u);
+  assert.match(dialogsSource, /v-for="\(editor, index\) in repositoryEditors"/u);
+  assert.match(dialogsSource, /@click="editRepositoryEditor\(index\)"/u);
+  assert.match(dialogsSource, /@click="confirmRemoveRepositoryEditor\(index\)"/u);
+  assert.match(dialogsSource, /@click="saveRepositoryEditor"/u);
+  assert.match(dialogsSource, /@click="selectRepositoryEditorApplication"/u);
+});
+
+test("repository IDE manager uses the Linux application registry with a native-file fallback", async () => {
+  const [apiSource, dialogsSource] = await Promise.all([
+    readFile(tauriApiUrl, "utf8"),
+    readFile(dialogsUrl, "utf8"),
+  ]);
+
+  assert.match(apiSource, /listInstalledApplications\(\)/u);
+  assert.match(apiSource, /request\("list_installed_applications"/u);
+  assert.match(dialogsSource, /v-model:show="installedApplicationPickerShown"/u);
+  assert.match(apiSource, /selectApplicationExecutable\(title: string\)/u);
+  assert.match(apiSource, /openDialog\(\{[\s\S]*?directory: false,[\s\S]*?multiple: false,/u);
+  assert.match(apiSource, /extensions: \["exe", "com"\]/u);
 });

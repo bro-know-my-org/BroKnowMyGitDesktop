@@ -146,6 +146,13 @@ export interface ExternalEditorConfig {
   arguments: string[];
 }
 
+/** A named IDE/editor exposed by repository context menus. */
+export interface RepositoryEditorConfig {
+  name: string;
+  executable: string;
+  arguments: string[];
+}
+
 /** App-local terminal used only by the explicit preferred-terminal action. */
 export interface TerminalConfig {
   executable: string;

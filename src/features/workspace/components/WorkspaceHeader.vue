@@ -39,7 +39,18 @@ export default defineComponent({
     const repositoryContextMenuX = ref(0);
     const repositoryContextMenuY = ref(0);
     const repositoryContextTarget = ref<RepositoryRecord | null>(null);
-    const repositoryContextMenuOptions = computed(() => [
+    const repositoryContextMenuOptions = computed(() => [{
+      label: workspace.t('workspace.header.openInIde'),
+      key: "repository-editors",
+      children: [
+        ...workspace.repositoryEditors.value.map((editor) => ({
+          label: editor.name,
+          key: `open-repository-editor:${editor.name}`,
+        })),
+        ...(workspace.repositoryEditors.value.length ? [{ type: "divider", key: "repository-editors-divider" }] : []),
+        { label: workspace.t('workspace.header.manageIdes'), key: "manage-repository-editors" },
+      ],
+    },
       { label: workspace.t('workspace.header.openInSystemDefaultTerminal'), key: "open-system-terminal" },
       { label: workspace.t('workspace.header.openInPreferredTerminal'), key: "open-preferred-terminal" },
       { label: workspace.t('workspace.header.openInFileManager'), key: "open-file-manager" },
@@ -248,7 +259,26 @@ export default defineComponent({
       repositoryContextMenuOpen.value = false;
       const repository = repositoryContextTarget.value;
       if (!repository) return;
-      if (value === "open-system-terminal") {
+      if (value === "manage-repository-editors") {
+        repositoryPickerOpen.value = false;
+        workspace.openRepositoryEditorsModal();
+      } else if (typeof value === "string" && value.startsWith("open-repository-editor:")) {
+        repositoryPickerOpen.value = false;
+        const editorName = value.slice("open-repository-editor:".length);
+        const editor = workspace.repositoryEditors.value.find((candidate) => candidate.name === editorName);
+        if (!editor) return;
+        try {
+          await api.openRepositoryInEditor(repository.path, editor.name);
+        } catch (error) {
+          if (isAppError(error) && error.code === "repository_editor_not_found") {
+            if (await workspace.loadRepositoryEditors()) {
+              workspace.message.warning(workspace.t("workspace.controller.repositoryEditorListChanged"));
+            }
+            return;
+          }
+          workspace.reportError(error, workspace.t("workspace.controller.couldNotOpenRepositoryInIde"));
+        }
+      } else if (value === "open-system-terminal") {
         repositoryPickerOpen.value = false;
         try {
           await api.openRepositoryInTerminal(repository.path);

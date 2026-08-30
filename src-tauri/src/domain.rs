@@ -411,6 +411,16 @@ pub struct ExternalEditorConfig {
     pub arguments: Vec<String>,
 }
 
+/// A named IDE/editor available from repository context menus.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryEditorConfig {
+    pub name: String,
+    pub executable: String,
+    #[serde(default)]
+    pub arguments: Vec<String>,
+}
+
 /// Application-local preferred terminal configuration. Arguments remain
 /// separate values so launching a repository never requires a shell command.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

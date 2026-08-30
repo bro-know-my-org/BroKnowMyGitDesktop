@@ -5,7 +5,179 @@ use crate::process_tree::ProcessTreeHandle;
 use crate::process_tree::terminate_process_tree;
 
 const MAX_EXTERNAL_EDITOR_CONFIGURATION_COMMAND_UNITS: usize = 16_000;
-const MAX_EXTERNAL_EDITOR_LAUNCH_COMMAND_UNITS: usize = 30_000;
+pub(super) const MAX_EXTERNAL_EDITOR_LAUNCH_COMMAND_UNITS: usize = 30_000;
+const MAX_REPOSITORY_EDITORS: usize = 16;
+const MAX_REPOSITORY_EDITOR_NAME_LENGTH: usize = 80;
+
+pub fn normalize_repository_editor_config(
+    editor: RepositoryEditorConfig,
+) -> Result<RepositoryEditorConfig, AppError> {
+    let editor = normalize_repository_editor_config_structure(editor)?;
+    #[cfg(target_os = "macos")]
+    if Path::new(&editor.executable)
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return normalize_macos_repository_bundle(editor);
+    }
+    let launch = normalize_external_editor_config(ExternalEditorConfig {
+        executable: editor.executable,
+        arguments: editor.arguments,
+    })
+    .map_err(|_| AppError::new("repository_editor_config_invalid", "IDE 配置无效。"))?;
+    Ok(RepositoryEditorConfig {
+        name: editor.name,
+        executable: launch.executable,
+        arguments: launch.arguments,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn normalize_macos_repository_bundle(
+    editor: RepositoryEditorConfig,
+) -> Result<RepositoryEditorConfig, AppError> {
+    let bundle_path = Path::new(&editor.executable);
+    if !editor.arguments.is_empty() {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "macOS 应用包不支持附加参数。",
+        ));
+    }
+    // Validate the bundle and its declared executable before handing it to
+    // LaunchServices. `open -a <bundle> <repository>` preserves Cocoa's
+    // normal open-document/open-folder event and existing-instance behavior.
+    let bundle_executable = resolve_external_editor_executable_path(bundle_path)?;
+    let metadata = fs::metadata(&bundle_executable)
+        .map_err(|_| AppError::new("external_editor_config_invalid", "macOS 应用启动文件无效。"))?;
+    if !metadata.is_file() {
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "macOS 应用启动文件无效。",
+        ));
+    }
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "macOS 应用启动文件不可执行。",
+        ));
+    }
+    let bundle = fs::canonicalize(bundle_path)
+        .map_err(|_| AppError::new("external_editor_config_invalid", "macOS 应用不存在。"))?;
+    let bundle = bundle
+        .into_os_string()
+        .into_string()
+        .map_err(|_| AppError::new("external_editor_config_invalid", "macOS 应用路径无效。"))?;
+    Ok(RepositoryEditorConfig {
+        name: editor.name,
+        executable: bundle,
+        arguments: Vec::new(),
+    })
+}
+
+pub(crate) fn repository_editor_launch_config(
+    editor: &RepositoryEditorConfig,
+) -> ExternalEditorConfig {
+    #[cfg(target_os = "macos")]
+    if Path::new(&editor.executable)
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return ExternalEditorConfig {
+            executable: "/usr/bin/open".to_owned(),
+            arguments: vec!["-a".to_owned(), editor.executable.clone()],
+        };
+    }
+    ExternalEditorConfig {
+        executable: editor.executable.clone(),
+        arguments: editor.arguments.clone(),
+    }
+}
+
+pub(crate) fn normalize_repository_editor_config_structure(
+    editor: RepositoryEditorConfig,
+) -> Result<RepositoryEditorConfig, AppError> {
+    let name = editor.name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_REPOSITORY_EDITOR_NAME_LENGTH
+        || name.chars().any(char::is_control)
+    {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "IDE 名称无效。",
+        ));
+    }
+    let executable = normalize_external_editor_value(&editor.executable, "IDE 可执行文件")?;
+    if !Path::new(&executable).is_absolute() {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "IDE 可执行文件必须使用绝对路径。",
+        ));
+    }
+    if editor.arguments.len() > MAX_EXTERNAL_EDITOR_ARGUMENTS {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "IDE 附加参数过多。",
+        ));
+    }
+    let arguments = editor
+        .arguments
+        .iter()
+        .map(|argument| normalize_external_editor_value(argument, "IDE 参数"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if external_editor_command_units(
+        std::iter::once(executable.as_str()).chain(arguments.iter().map(String::as_str)),
+    ) > MAX_EXTERNAL_EDITOR_CONFIGURATION_COMMAND_UNITS
+    {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "IDE 启动参数过长。",
+        ));
+    }
+    Ok(RepositoryEditorConfig {
+        name: name.to_owned(),
+        executable,
+        arguments,
+    })
+}
+
+pub fn normalize_repository_editor_configs(
+    editors: Vec<RepositoryEditorConfig>,
+) -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    let editors = normalize_repository_editor_configs_structure(editors)?;
+    editors
+        .into_iter()
+        .map(normalize_repository_editor_config)
+        .collect()
+}
+
+pub(crate) fn normalize_repository_editor_configs_structure(
+    editors: Vec<RepositoryEditorConfig>,
+) -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    if editors.len() > MAX_REPOSITORY_EDITORS {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "最多只能配置 16 个 IDE。",
+        ));
+    }
+    let editors = editors
+        .into_iter()
+        .map(normalize_repository_editor_config_structure)
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut names = HashSet::new();
+    if editors
+        .iter()
+        .any(|editor| !names.insert(editor.name.to_lowercase()))
+    {
+        return Err(AppError::new(
+            "repository_editor_config_invalid",
+            "IDE 名称不能重复。",
+        ));
+    }
+    Ok(editors)
+}
 
 /// Normalizes the app-local external editor configuration. The UI supplies
 /// one argument per line; retaining them as individual values means paths
@@ -52,18 +224,6 @@ pub(super) fn external_editor_command_units<'a>(
         .sum()
 }
 
-pub(super) fn validate_external_editor_launch_size<'a>(
-    values: impl IntoIterator<Item = &'a str>,
-) -> Result<(), AppError> {
-    if external_editor_command_units(values) > MAX_EXTERNAL_EDITOR_LAUNCH_COMMAND_UNITS {
-        return Err(AppError::new(
-            "external_editor_arguments_invalid",
-            "要在外部编辑器中打开的路径过长。",
-        ));
-    }
-    Ok(())
-}
-
 fn normalize_external_editor_executable(value: &str) -> Result<String, AppError> {
     let value = normalize_external_editor_value(value, "外部编辑器可执行文件")?;
     let path = Path::new(&value);
@@ -73,7 +233,8 @@ fn normalize_external_editor_executable(value: &str) -> Result<String, AppError>
             "外部编辑器配置无效。",
         ));
     }
-    let canonical = fs::canonicalize(path)
+    let resolved_path = resolve_external_editor_executable_path(path)?;
+    let canonical = fs::canonicalize(&resolved_path)
         .map_err(|_| AppError::new("external_editor_config_invalid", "外部编辑器配置无效。"))?;
     let metadata = fs::metadata(&canonical)
         .map_err(|_| AppError::new("external_editor_config_invalid", "外部编辑器配置无效。"))?;
@@ -108,7 +269,20 @@ fn normalize_external_editor_executable(value: &str) -> Result<String, AppError>
             ));
         }
     }
-    let executable = canonical
+    #[cfg(target_os = "linux")]
+    let launch_path = if resolved_path.parent() == Some(Path::new("/snap/bin"))
+        && resolved_path.file_name().is_some()
+        && canonical == Path::new("/usr/bin/snap")
+    {
+        // Snap dispatches applications by argv[0]. `/snap/bin/<app>` is a
+        // root-managed link to the common launcher, so preserve that identity.
+        resolved_path
+    } else {
+        canonical
+    };
+    #[cfg(not(target_os = "linux"))]
+    let launch_path = canonical;
+    let executable = launch_path
         .into_os_string()
         .into_string()
         .map_err(|_| AppError::new("external_editor_config_invalid", "外部编辑器配置无效。"))?;
@@ -121,6 +295,92 @@ fn normalize_external_editor_executable(value: &str) -> Result<String, AppError>
         ));
     }
     Ok(executable)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_external_editor_executable_path(path: &Path) -> Result<PathBuf, AppError> {
+    Ok(path.to_path_buf())
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_external_editor_executable_path(path: &Path) -> Result<PathBuf, AppError> {
+    if !path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    {
+        return Ok(path.to_path_buf());
+    }
+    let bundle = fs::canonicalize(path)
+        .map_err(|_| AppError::new("external_editor_config_invalid", "macOS 应用不存在。"))?;
+    if !bundle.is_dir() {
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "macOS 应用包无效。",
+        ));
+    }
+    let info = read_bounded_plist(&bundle.join("Contents/Info.plist"))
+        .map_err(|_| AppError::new("external_editor_config_invalid", "macOS 应用包无效。"))?;
+    let executable_name = info
+        .as_dictionary()
+        .and_then(|dictionary| dictionary.get("CFBundleExecutable"))
+        .and_then(plist::Value::as_string)
+        .ok_or_else(|| AppError::new("external_editor_config_invalid", "macOS 应用包无效。"))?;
+    let executable_name_path = Path::new(executable_name);
+    if executable_name_path.components().count() != 1
+        || !matches!(
+            executable_name_path.components().next(),
+            Some(std::path::Component::Normal(_))
+        )
+    {
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "macOS 应用启动文件无效。",
+        ));
+    }
+    let executable = fs::canonicalize(bundle.join("Contents/MacOS").join(executable_name))
+        .map_err(|_| {
+            AppError::new(
+                "external_editor_config_invalid",
+                "macOS 应用启动文件不存在。",
+            )
+        })?;
+    if !executable.starts_with(&bundle) {
+        return Err(AppError::new(
+            "external_editor_config_invalid",
+            "macOS 应用启动文件位于应用包外。",
+        ));
+    }
+    Ok(executable)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn read_bounded_plist(path: &Path) -> Result<plist::Value, std::io::Error> {
+    use std::io::{Cursor, Error, ErrorKind, Read};
+    use std::os::unix::fs::OpenOptionsExt;
+
+    const MAX_PLIST_BYTES: u64 = 1024 * 1024;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_PLIST_BYTES {
+        return Err(Error::new(ErrorKind::InvalidData, "plist is too large"));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)?;
+    if !file.metadata()?.file_type().is_file() {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "plist is not a regular file",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PLIST_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_PLIST_BYTES as usize {
+        return Err(Error::new(ErrorKind::InvalidData, "plist is too large"));
+    }
+    plist::Value::from_reader(Cursor::new(bytes))
+        .map_err(|error| Error::new(ErrorKind::InvalidData, error))
 }
 
 pub(super) fn normalize_external_editor_value(

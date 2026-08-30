@@ -21,6 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_EXTERNAL_EDITOR_REAPERS: usize = 4;
 static ACTIVE_EXTERNAL_EDITOR_REAPERS: AtomicUsize = AtomicUsize::new(0);
+const MAX_REPOSITORY_EDITOR_REAPERS: usize = 128;
+static ACTIVE_REPOSITORY_EDITOR_REAPERS: AtomicUsize = AtomicUsize::new(0);
 
 pub(crate) struct WorktreeExcludesFile {
     pub(crate) path: PathBuf,

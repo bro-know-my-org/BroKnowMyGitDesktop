@@ -354,6 +354,46 @@
   margin-bottom: 16px;
 }
 
+.repository-editor-list {
+  width: 100%;
+  max-height: min(320px, 35vh);
+  overflow-y: auto;
+}
+
+.repository-editor-picker,
+.repository-editor-picker .n-input {
+  width: 100%;
+}
+
+.repository-editor-summary {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.repository-editor-summary .n-text {
+  overflow-wrap: anywhere;
+}
+
+.repository-editor-summary strong {
+  overflow-wrap: anywhere;
+}
+
+.repository-editor-picker > .n-space-item:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.installed-application-select {
+  margin-top: 16px;
+}
+
+.installed-application-path {
+  display: block;
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
+
 .binding-note {
   margin-top: 16px;
 }

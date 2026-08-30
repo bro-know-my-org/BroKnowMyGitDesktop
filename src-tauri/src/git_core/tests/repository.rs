@@ -50,6 +50,125 @@ fn normalizes_external_editor_arguments_without_shell_parsing() {
 }
 
 #[test]
+fn normalizes_named_repository_editors_and_rejects_duplicate_names() {
+    let executable = std::env::current_exe().expect("test executable path is available");
+    let editors = normalize_repository_editor_configs(vec![RepositoryEditorConfig {
+        name: "  VS Code  ".into(),
+        executable: executable.to_string_lossy().into_owned(),
+        arguments: vec![" --reuse-window ".into()],
+    }])
+    .expect("repository editor configuration is valid");
+    assert_eq!(editors[0].name, "VS Code");
+    assert_eq!(editors[0].arguments, vec!["--reuse-window"]);
+
+    let error = normalize_repository_editor_configs(vec![
+        RepositoryEditorConfig {
+            name: "IDEA".into(),
+            executable: executable.to_string_lossy().into_owned(),
+            arguments: Vec::new(),
+        },
+        RepositoryEditorConfig {
+            name: "idea".into(),
+            executable: executable.to_string_lossy().into_owned(),
+            arguments: Vec::new(),
+        },
+    ])
+    .expect_err("repository editor names identify menu actions and must be unique");
+    assert_eq!(error.code(), "repository_editor_config_invalid");
+}
+
+#[test]
+fn structurally_valid_stale_editors_can_still_be_listed_and_repaired() {
+    #[cfg(windows)]
+    let paths = [r"C:\unavailable\first-ide.exe", r"C:\unavailable\second-ide.exe"];
+    #[cfg(not(windows))]
+    let paths = ["/unavailable/first-ide", "/unavailable/second-ide"];
+    let editors = normalize_repository_editor_configs_structure(vec![
+        RepositoryEditorConfig {
+            name: "Moved IDE".into(),
+            executable: paths[0].into(),
+            arguments: Vec::new(),
+        },
+        RepositoryEditorConfig {
+            name: "Uninstalled IDE".into(),
+            executable: paths[1].into(),
+            arguments: Vec::new(),
+        },
+    ])
+    .expect("filesystem availability is checked only for changed entries and launch");
+
+    assert_eq!(editors.len(), 2);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn repository_editor_rejects_a_non_executable_linux_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = std::env::temp_dir().join(format!("bkm-non-executable-{}", uuid::Uuid::new_v4()));
+    fs::write(&path, b"not executable").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    let error = normalize_repository_editor_config(RepositoryEditorConfig {
+        name: "Not executable".into(),
+        executable: path.to_string_lossy().into_owned(),
+        arguments: Vec::new(),
+    })
+    .expect_err("Linux application selections must retain an executable bit");
+    assert_eq!(error.code(), "repository_editor_config_invalid");
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn repository_editor_rejects_windows_command_scripts() {
+    let path = std::env::temp_dir().join(format!("bkm-editor-{}.cmd", uuid::Uuid::new_v4()));
+    fs::write(&path, b"@echo off\r\n").unwrap();
+    let error = normalize_repository_editor_config(RepositoryEditorConfig {
+        name: "Command script".into(),
+        executable: path.to_string_lossy().into_owned(),
+        arguments: Vec::new(),
+    })
+    .expect_err("Windows IDE launching must not route through a command processor");
+    assert_eq!(error.code(), "repository_editor_config_invalid");
+    fs::remove_file(path).unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn repository_editor_resolves_a_macos_application_bundle() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let bundle = std::env::temp_dir().join(format!("BkmEditor-{}.app", uuid::Uuid::new_v4()));
+    let contents = bundle.join("Contents");
+    let macos = contents.join("MacOS");
+    fs::create_dir_all(&macos).unwrap();
+    fs::write(
+        contents.join("Info.plist"),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleExecutable</key><string>BkmEditor</string></dict></plist>"#,
+    )
+    .unwrap();
+    let executable = macos.join("BkmEditor");
+    fs::write(&executable, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let editor = normalize_repository_editor_config(RepositoryEditorConfig {
+        name: "BKM Editor".into(),
+        executable: bundle.to_string_lossy().into_owned(),
+        arguments: Vec::new(),
+    })
+    .expect("a selected macOS application bundle is validated and preserved");
+    assert_eq!(Path::new(&editor.executable), fs::canonicalize(&bundle).unwrap());
+    assert!(editor.arguments.is_empty());
+    let launch = repository_editor_launch_config(&editor);
+    assert_eq!(launch.executable, "/usr/bin/open");
+    assert_eq!(launch.arguments[0], "-a");
+    assert_eq!(Path::new(&launch.arguments[1]), fs::canonicalize(&bundle).unwrap());
+    fs::remove_dir_all(bundle).unwrap();
+}
+
+#[test]
 fn recognizes_every_unmerged_porcelain_status() {
     for (index_status, worktree_status) in [
         ("D", "D"),

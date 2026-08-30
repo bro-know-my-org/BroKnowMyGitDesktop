@@ -44,6 +44,7 @@ import type {
   RemoteProfile,
   RemoteUrlKind,
   RemoteBinding,
+  RepositoryEditorConfig,
   RepositoryRecord,
   RepositoryDiscoveryResult,
   RepositoryImportResult,
@@ -315,12 +316,41 @@ let browserWorktrees = rawCopy(initialBrowserWorktrees);
 let browserSubmodules = rawCopy(initialBrowserSubmodules);
 let browserLfsStatus = rawCopy(initialBrowserLfsStatus);
 let browserExternalEditor: ExternalEditorConfig | null = null;
+let browserRepositoryEditors: RepositoryEditorConfig[] = [];
 let browserPreferredTerminal: TerminalConfig | null = null;
 
-function isAbsoluteExecutablePath(value: string): boolean {
+export function isAbsoluteExecutablePath(value: string): boolean {
   const windows = typeof navigator !== "undefined" && /^Win/u.test(navigator.platform);
   if (!windows) return value.startsWith("/");
   return /^(?:[A-Za-z]:[\\/]|\\\\\?\\[A-Za-z]:[\\/]|\\\\\?\\UNC\\[^\\/]+\\[^\\/]+(?:\\|$)|\\\\[^?.\\/][^\\/]*\\[^\\/]+(?:\\|$))/iu.test(value);
+}
+
+export function repositoryEditorLaunchShapeIsValid(
+    executable: string,
+    editorArguments: string[],
+): boolean {
+  const macApplication = typeof navigator !== "undefined"
+    && /^Mac/u.test(navigator.platform)
+    && /\.app\/?$/iu.test(executable);
+  const launchExecutable = macApplication ? "/usr/bin/open" : executable;
+  const launchArguments = macApplication ? ["-a", executable] : editorArguments;
+  const launchValues = [launchExecutable, ...launchArguments];
+  const commandUnits = launchValues.reduce(
+    (total, value) => total + 2 + value.length * 2,
+    0,
+  );
+  return Boolean(executable)
+    && isAbsoluteExecutablePath(executable)
+    && (!(typeof navigator !== "undefined" && /^Win/u.test(navigator.platform))
+      || /\.(?:exe|com)$/iu.test(executable))
+    && (!macApplication || editorArguments.length === 0)
+    && launchArguments.length <= 32
+    && launchValues.every((value) =>
+      value.length > 0
+      && new TextEncoder().encode(value).length <= 4096
+      && !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+    )
+    && commandUnits <= 16_000;
 }
 
 function validateBrowserPreferredTerminalShape(terminal: unknown): TerminalConfig {
@@ -651,6 +681,22 @@ export const api = {
     if (isBrowserDemo()) return "/demo/projects";
     const selected = await openDialog({ title, directory: true, multiple: false });
     return Array.isArray(selected) ? selected[0] ?? null : selected;
+  },
+
+  async selectApplicationExecutable(title: string): Promise<string | null> {
+    if (isBrowserDemo()) return null;
+    const windows = typeof navigator !== "undefined" && /^Win/u.test(navigator.platform);
+    const selected = await openDialog({
+      title,
+      directory: false,
+      multiple: false,
+      ...(windows ? { filters: [{ name: title, extensions: ["exe", "com"] }] } : {}),
+    });
+    return Array.isArray(selected) ? selected[0] ?? null : selected;
+  },
+
+  listInstalledApplications(): Promise<RepositoryEditorConfig[]> {
+    return request("list_installed_applications", {}, () => []);
   },
 
   async openExternalUrl(url: string): Promise<void> {
@@ -1031,6 +1077,49 @@ export const api = {
       }
       browserExternalEditor = { executable, arguments: editorArguments };
       return copy(browserExternalEditor);
+    });
+  },
+
+  getRepositoryEditors(): Promise<RepositoryEditorConfig[]> {
+    return request("get_repository_editors", {}, () => copy(browserRepositoryEditors));
+  },
+
+  saveRepositoryEditors(
+    editors: RepositoryEditorConfig[],
+    expectedEditors: RepositoryEditorConfig[],
+  ): Promise<RepositoryEditorConfig[]> {
+    return request("save_repository_editors", { editors, expectedEditors }, () => {
+      if (JSON.stringify(browserRepositoryEditors) !== JSON.stringify(expectedEditors)) {
+        throw browserError("repository_editors_changed");
+      }
+      if (editors.length > 16) throw browserError("repository_editor_config_invalid");
+      const names = new Set<string>();
+      const normalized = editors.map((editor) => {
+        const name = editor.name.trim();
+        const executable = editor.executable.trim();
+        const editorArguments = editor.arguments.map((argument) => argument.trim());
+        const normalizedName = name.toLowerCase();
+        if (
+          !name
+          || Array.from(name).length > 80
+          || /[\u0000-\u001f\u007f-\u009f]/u.test(name)
+          || !repositoryEditorLaunchShapeIsValid(executable, editorArguments)
+          || names.has(normalizedName)
+        ) throw browserError("repository_editor_config_invalid");
+        names.add(normalizedName);
+        return { name, executable, arguments: editorArguments };
+      });
+      browserRepositoryEditors = normalized;
+      return copy(browserRepositoryEditors);
+    });
+  },
+
+  async openRepositoryInEditor(repositoryPath: string, editorName: string): Promise<void> {
+    await request("open_repository_in_editor", { repositoryPath, editorName }, () => {
+      requireBrowserSnapshot(repositoryPath);
+      if (!browserRepositoryEditors.some((editor) => editor.name === editorName)) {
+        throw browserError("repository_editor_not_found");
+      }
     });
   },
 

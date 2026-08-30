@@ -20,13 +20,15 @@ use crate::domain::{
     github_endpoint_has_gh_compatible_api, hostname_from_git_authority, normalize_git_authority,
     parse_remote_url, AccountProfile, AccountSelection, AuthenticationMethod, AuthenticationStatus,
     CodeHostCapabilities, CodeHostEndpoint, CodeHostKind, CommitSummary, ExternalEditorConfig,
-    GitOperationKind, LfsStatus, RemoteBinding, RemoteProfile, RepositoryRecord, ResetMode,
-    StashEntry, SubmoduleInfo, WorktreeInfo,
+    GitOperationKind, LfsStatus, RemoteBinding, RemoteProfile, RepositoryEditorConfig,
+    RepositoryRecord, ResetMode, StashEntry, SubmoduleInfo, WorktreeInfo,
 };
 use crate::git_core::{
-    normalize_external_editor_config, validate_git_remote_url, validate_ref_name, CloneOptions,
-    DiffOptions, FetchOptions, GitCore, GitEnvironment, NetworkConfigurationAssessment,
-    PublishedRemoteState, PullOptions, PushOptions, RemoteUrlKind, RepositoryLocksResult,
+    normalize_external_editor_config, normalize_repository_editor_config,
+    normalize_repository_editor_configs_structure, repository_editor_launch_config,
+    validate_git_remote_url, validate_ref_name, CloneOptions, DiffOptions, FetchOptions, GitCore,
+    GitEnvironment, NetworkConfigurationAssessment, PublishedRemoteState, PullOptions, PushOptions,
+    RemoteUrlKind, RepositoryLocksResult,
 };
 use crate::github_adapter::GitHubAdapter;
 use crate::persistence::{

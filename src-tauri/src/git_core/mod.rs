@@ -9,8 +9,8 @@ use crate::app_error::AppError;
 use crate::domain::{
     endpoint_for_host, parse_remote_url, sanitize_remote_url, BranchInfo, CodeHostEndpoint,
     CodeHostKind, CommitSummary, ExternalEditorConfig, GitOperationKind, GitStatus, GitStatusEntry,
-    LfsStatus, RemoteBranchInfo, RemoteProfile, RepositoryRecord, ResetMode, StashEntry,
-    SubmoduleInfo, SubmoduleStatus, TagInfo, WorktreeInfo,
+    LfsStatus, RemoteBranchInfo, RemoteProfile, RepositoryEditorConfig, RepositoryRecord,
+    ResetMode, StashEntry, SubmoduleInfo, SubmoduleStatus, TagInfo, WorktreeInfo,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -75,7 +76,15 @@ mod workspace;
 mod tests;
 
 pub(crate) use changes::{CleanUntrackedPathFingerprint, DiscardChangesFingerprint};
-pub use editor::normalize_external_editor_config;
+#[cfg(target_os = "macos")]
+pub(crate) use editor::read_bounded_plist;
+pub use editor::{
+    normalize_external_editor_config, normalize_repository_editor_config,
+    normalize_repository_editor_configs,
+};
+pub(crate) use editor::{
+    normalize_repository_editor_configs_structure, repository_editor_launch_config,
+};
 pub use environment::GitEnvironment;
 pub use models::{
     CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions, RemoteUrlKind,

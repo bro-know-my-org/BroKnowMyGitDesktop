@@ -1,6 +1,9 @@
 use super::support::repository_root;
 use crate::app_error::AppError;
-use crate::domain::TerminalConfig;
+use crate::domain::{RepositoryEditorConfig, TerminalConfig};
+use crate::git_core::normalize_repository_editor_config;
+#[cfg(target_os = "macos")]
+use crate::git_core::read_bounded_plist;
 use crate::persistence::AppState;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,14 +14,28 @@ use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 #[cfg(target_os = "linux")]
-use std::path::PathBuf;
-
-#[cfg(target_os = "linux")]
 use std::{
     env, fs,
     io::Read,
     os::fd::AsRawFd,
     process::{Output, Stdio},
+};
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
+
+#[cfg(target_os = "macos")]
+use std::{env, fs};
+
+#[cfg(windows)]
+use std::{
+    ffi::OsString,
+    io::Read,
+    os::windows::ffi::OsStringExt,
+    path::PathBuf,
+    process::Stdio,
+    thread,
+    time::{Duration, Instant},
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -56,6 +73,13 @@ pub struct SystemFontPreferences {
 pub struct SystemTerminalInfo {
     executable: String,
     arguments: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn list_installed_applications() -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    tauri::async_runtime::spawn_blocking(platform_installed_applications)
+        .await
+        .map_err(|_| AppError::new("command_failed", "系统应用列表后台任务未能完成。"))?
 }
 
 #[derive(Debug)]
@@ -804,9 +828,14 @@ fn resolve_terminal_launch_spec_with_path(
     let resolved = resolve_terminal_executable_with_path(&terminal.executable, path)?;
     terminal.executable = resolved.into_os_string().into_string().ok()?;
     resolve_env_wrapped_terminal_commands(&mut terminal, path)?;
-    if discovered_terminal_embeds_child_command(&terminal.executable, &terminal.arguments)
-        || terminal_arguments_override_working_directory(&terminal.executable, &terminal.arguments)
-        || wrapper_arguments_override_working_directory(&terminal.executable, &terminal.arguments)
+    let executable_identity = fs::canonicalize(&terminal.executable)
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()?;
+    if discovered_terminal_embeds_child_command(&executable_identity, &terminal.arguments)
+        || terminal_arguments_override_working_directory(&executable_identity, &terminal.arguments)
+        || wrapper_arguments_override_working_directory(&executable_identity, &terminal.arguments)
     {
         return None;
     }
@@ -820,7 +849,11 @@ fn resolve_terminal_executable_with_path(
 ) -> Option<PathBuf> {
     let executable = Path::new(executable);
     let resolved = if executable.is_absolute() {
-        fs::canonicalize(executable).ok()?
+        let canonical = fs::canonicalize(executable).ok()?;
+        if !terminal_path_is_executable(&canonical) {
+            return None;
+        }
+        canonical
     } else if executable.components().count() > 1 {
         return None;
     } else {
@@ -829,7 +862,7 @@ fn resolve_terminal_executable_with_path(
             .filter(|directory| directory.is_absolute())
             .map(|directory| directory.join(executable))
             .find_map(|candidate| {
-                let resolved = fs::canonicalize(candidate).ok()?;
+                let resolved = fs::canonicalize(&candidate).ok()?;
                 terminal_path_is_executable(&resolved).then_some(resolved)
             })?
     };
@@ -844,7 +877,11 @@ fn resolve_env_wrapped_terminal_commands(
     terminal: &mut TerminalLaunchSpec,
     path: Option<&std::ffi::OsStr>,
 ) -> Option<()> {
-    let mut executable = terminal.executable.clone();
+    let mut executable = fs::canonicalize(&terminal.executable)
+        .ok()?
+        .into_os_string()
+        .into_string()
+        .ok()?;
     let mut argument_offset = 0;
     for _ in 0..32 {
         if !is_env_executable(&executable) {
@@ -856,7 +893,11 @@ fn resolve_env_wrapped_terminal_commands(
             resolve_terminal_executable_with_path(&terminal.arguments[command_index], path)?;
         let resolved = resolved.into_os_string().into_string().ok()?;
         terminal.arguments[command_index] = resolved.clone();
-        executable = resolved;
+        executable = fs::canonicalize(&resolved)
+            .ok()?
+            .into_os_string()
+            .into_string()
+            .ok()?;
         argument_offset = command_index + 1;
     }
     None
@@ -955,6 +996,561 @@ fn xdg_data_directories_from(
             .filter(|directory| directory.is_absolute()),
     );
     directories
+}
+
+#[cfg(target_os = "linux")]
+fn platform_installed_applications() -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    Ok(linux_installed_applications_from_data_directories(
+        &xdg_data_directories(),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_installed_applications_from_data_directories(
+    data_directories: &[PathBuf],
+) -> Vec<RepositoryEditorConfig> {
+    const MAX_DESKTOP_FILES: usize = 4096;
+    let mut seen_desktop_ids = BTreeSet::new();
+    let mut applications = Vec::new();
+    let mut visited_entries = 0;
+    for (index, data_directory) in data_directories.iter().enumerate() {
+        let roots_left = data_directories.len().saturating_sub(index).max(1);
+        let quota = (20_000_usize.saturating_sub(visited_entries) / roots_left).max(1);
+        let root_visit_limit = visited_entries.saturating_add(quota).min(20_000);
+        let applications_directory = data_directory.join("applications");
+        let mut desktop_files = Vec::new();
+        collect_linux_desktop_files(
+            &applications_directory,
+            &applications_directory,
+            0,
+            &mut desktop_files,
+            MAX_DESKTOP_FILES,
+            &mut visited_entries,
+            root_visit_limit,
+        );
+        desktop_files.sort_by(|left, right| left.0.cmp(&right.0));
+        for (desktop_id, path) in desktop_files {
+            if !seen_desktop_ids.insert(desktop_id) {
+                continue;
+            }
+            let Some(contents) = read_bounded_regular_text_file(&path, 1024 * 1024) else {
+                continue;
+            };
+            if let Some(application) = desktop_entry_repository_editor(&contents) {
+                applications.push(application);
+            }
+        }
+    }
+    applications.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left.executable.cmp(&right.executable))
+            .then_with(|| left.arguments.cmp(&right.arguments))
+    });
+    let mut seen_applications = BTreeSet::new();
+    applications.retain(|application| {
+        seen_applications.insert((
+            application.name.clone(),
+            application.executable.clone(),
+            application.arguments.clone(),
+        ))
+    });
+    applications
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_desktop_files(
+    applications_directory: &Path,
+    directory: &Path,
+    depth: usize,
+    files: &mut Vec<(String, PathBuf)>,
+    limit: usize,
+    visited_entries: &mut usize,
+    visit_limit: usize,
+) {
+    if depth > 8 || files.len() >= limit || *visited_entries >= visit_limit {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        *visited_entries += 1;
+        if files.len() >= limit || *visited_entries > visit_limit {
+            return;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        if file_type.is_dir() {
+            collect_linux_desktop_files(
+                applications_directory,
+                &path,
+                depth + 1,
+                files,
+                limit,
+                visited_entries,
+                visit_limit,
+            );
+        } else if (file_type.is_file() || file_type.is_symlink())
+            && path
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("desktop"))
+        {
+            let Ok(relative) = path.strip_prefix(applications_directory) else {
+                continue;
+            };
+            let desktop_id = relative
+                .components()
+                .filter_map(|component| component.as_os_str().to_str())
+                .collect::<Vec<_>>()
+                .join("-");
+            if !desktop_id.is_empty() {
+                files.push((desktop_id, path));
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_entry_repository_editor(contents: &str) -> Option<RepositoryEditorConfig> {
+    if !ini_section_value(contents, "[Desktop Entry]", "Type")?
+        .trim()
+        .eq_ignore_ascii_case("Application")
+        || desktop_entry_boolean(contents, "Hidden")
+        || desktop_entry_boolean(contents, "NoDisplay")
+        || desktop_entry_boolean(contents, "Terminal")
+        || ini_section_value(contents, "[Desktop Entry]", "Path")
+            .is_some_and(|path| !path.trim().is_empty())
+    {
+        return None;
+    }
+    if let Some(try_exec) = ini_section_value(contents, "[Desktop Entry]", "TryExec") {
+        let path = env::var_os("PATH");
+        resolve_terminal_executable_with_path(try_exec.trim(), path.as_deref())?;
+    }
+    let name = desktop_entry_application_name(contents)?;
+    let exec = ini_section_value(contents, "[Desktop Entry]", "Exec")?.trim();
+    let mut values = parse_repository_desktop_exec(exec)?;
+    let snap_launcher = resolve_snap_application_launcher(values.first()?);
+    let mut launch = resolve_terminal_launch_spec(TerminalLaunchSpec {
+        executable: values.remove(0),
+        arguments: values,
+    })?;
+    if repository_launch_uses_command_interpreter(&launch.executable) {
+        return None;
+    }
+    if let Some(snap_launcher) = snap_launcher {
+        launch.executable = snap_launcher.to_string_lossy().into_owned();
+    }
+    normalize_repository_editor_config(RepositoryEditorConfig {
+        name,
+        executable: launch.executable,
+        arguments: launch.arguments,
+    })
+    .ok()
+}
+
+#[cfg(target_os = "linux")]
+fn repository_launch_uses_command_interpreter(executable: &str) -> bool {
+    Path::new(executable)
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| {
+            let name = name.to_ascii_lowercase();
+            matches!(
+                name.as_str(),
+                "sh" | "bash"
+                    | "dash"
+                    | "zsh"
+                    | "fish"
+                    | "env"
+                    | "python"
+                    | "python3"
+                    | "perl"
+                    | "ruby"
+                    | "node"
+                    | "pwsh"
+            ) || ["python", "perl", "ruby"].iter().any(|family| {
+                name.strip_prefix(family).is_some_and(|version| {
+                    !version.is_empty()
+                        && version
+                            .chars()
+                            .all(|character| character.is_ascii_digit() || character == '.')
+                })
+            })
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_snap_application_launcher(executable: &str) -> Option<PathBuf> {
+    let path = Path::new(executable);
+    let candidates = if path.is_absolute() {
+        vec![path.to_path_buf()]
+    } else if path.components().count() == 1 {
+        let path_value = env::var_os("PATH");
+        path_value
+            .as_deref()
+            .into_iter()
+            .flat_map(env::split_paths)
+            .filter(|directory| directory.is_absolute())
+            .map(|directory| directory.join(path))
+            .collect()
+    } else {
+        return None;
+    };
+    let (candidate, canonical) = candidates.into_iter().find_map(|candidate| {
+        let canonical = fs::canonicalize(&candidate).ok()?;
+        terminal_path_is_executable(&canonical).then_some((candidate, canonical))
+    })?;
+    (candidate.parent() == Some(Path::new("/snap/bin"))
+        && candidate.file_name().is_some()
+        && canonical == Path::new("/usr/bin/snap"))
+    .then_some(candidate)
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_entry_boolean(contents: &str, key: &str) -> bool {
+    ini_section_value(contents, "[Desktop Entry]", key)
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_entry_application_name(contents: &str) -> Option<String> {
+    let mut locale_candidates = Vec::new();
+    if let Ok(language) = env::var("LANGUAGE") {
+        locale_candidates.extend(language.split(':').map(str::to_owned));
+    }
+    for variable in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Ok(locale) = env::var(variable) {
+            locale_candidates.push(locale);
+        }
+    }
+    for locale in locale_candidates {
+        let locale = locale.split('.').next().unwrap_or_default();
+        if locale.is_empty() || matches!(locale, "C" | "POSIX") {
+            continue;
+        }
+        let (base, modifier) = locale.split_once('@').unwrap_or((locale, ""));
+        let language = base.split_once('_').map_or(base, |(language, _)| language);
+        let mut candidates = vec![locale.to_owned(), base.to_owned()];
+        if !modifier.is_empty() {
+            candidates.push(format!("{language}@{modifier}"));
+        }
+        candidates.push(language.to_owned());
+        candidates.dedup();
+        for candidate in candidates {
+            let key = format!("Name[{candidate}]");
+            if let Some(name) = ini_section_value(contents, "[Desktop Entry]", &key)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                return decode_desktop_localized_string(name);
+            }
+        }
+    }
+    ini_section_value(contents, "[Desktop Entry]", "Name")
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .and_then(decode_desktop_localized_string)
+}
+
+#[cfg(target_os = "linux")]
+fn decode_desktop_localized_string(value: &str) -> Option<String> {
+    let mut decoded = String::with_capacity(value.len());
+    let mut characters = value.chars();
+    while let Some(character) = characters.next() {
+        if character != '\\' {
+            decoded.push(character);
+            continue;
+        }
+        decoded.push(match characters.next()? {
+            's' => ' ',
+            'n' => '\n',
+            't' => '\t',
+            'r' => '\r',
+            '\\' => '\\',
+            _ => return None,
+        });
+    }
+    Some(decoded)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_installed_applications() -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/System/Library/CoreServices"),
+    ];
+    if let Some(home) = env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        roots.insert(0, home.join("Applications"));
+    }
+    let mut bundles = Vec::new();
+    let mut visited_entries = 0;
+    let root_count = roots.len();
+    for (index, root) in roots.into_iter().enumerate() {
+        let roots_left = root_count.saturating_sub(index).max(1);
+        let quota = (20_000_usize.saturating_sub(visited_entries) / roots_left).max(1);
+        let root_visit_limit = visited_entries.saturating_add(quota).min(20_000);
+        collect_macos_application_bundles(
+            &root,
+            0,
+            &mut bundles,
+            2048,
+            &mut visited_entries,
+            root_visit_limit,
+        );
+    }
+    bundles.sort();
+    let mut applications = bundles
+        .into_iter()
+        .filter_map(|bundle| macos_application_repository_editor(&bundle))
+        .collect::<Vec<_>>();
+    applications.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.executable.cmp(&right.executable))
+    });
+    let mut seen_launches = BTreeSet::new();
+    applications.retain(|application| {
+        seen_launches.insert((
+            application.executable.clone(),
+            application.arguments.clone(),
+        ))
+    });
+    Ok(applications)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_macos_application_bundles(
+    directory: &Path,
+    depth: usize,
+    bundles: &mut Vec<PathBuf>,
+    limit: usize,
+    visited_entries: &mut usize,
+    visit_limit: usize,
+) {
+    if depth > 4 || bundles.len() >= limit || *visited_entries >= visit_limit {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        *visited_entries += 1;
+        if bundles.len() >= limit || *visited_entries > visit_limit {
+            return;
+        }
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        let is_application = path
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"));
+        if file_type.is_dir() && is_application {
+            bundles.push(path);
+        } else if file_type.is_symlink() && is_application {
+            if let Ok(bundle) = fs::canonicalize(path) {
+                if bundle.is_dir() {
+                    bundles.push(bundle);
+                }
+            }
+        } else if file_type.is_dir() {
+            collect_macos_application_bundles(
+                &path,
+                depth + 1,
+                bundles,
+                limit,
+                visited_entries,
+                visit_limit,
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_application_repository_editor(bundle: &Path) -> Option<RepositoryEditorConfig> {
+    let info = read_bounded_plist(&bundle.join("Contents/Info.plist")).ok();
+    let name = info
+        .as_ref()
+        .and_then(plist::Value::as_dictionary)
+        .and_then(|dictionary| {
+            dictionary
+                .get("CFBundleDisplayName")
+                .or_else(|| dictionary.get("CFBundleName"))
+        })
+        .and_then(plist::Value::as_string)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            bundle
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .map(str::to_owned)
+        })?;
+    normalize_repository_editor_config(RepositoryEditorConfig {
+        name,
+        executable: bundle.to_string_lossy().into_owned(),
+        arguments: Vec::new(),
+    })
+    .ok()
+}
+
+#[cfg(windows)]
+#[derive(serde::Deserialize)]
+struct WindowsStartMenuApplication {
+    name: String,
+    executable: String,
+}
+
+#[cfg(windows)]
+fn windows_path_is_remote(path: &str) -> bool {
+    use std::path::{Component, Prefix};
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, DRIVE_REMOTE};
+
+    if matches!(
+        Path::new(path).components().next(),
+        Some(Component::Prefix(prefix))
+            if matches!(prefix.kind(), Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _))
+    ) {
+        return true;
+    }
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let mut root = format!("{}:\\", bytes[0] as char)
+            .encode_utf16()
+            .collect::<Vec<_>>();
+        root.push(0);
+        // SAFETY: `root` is a NUL-terminated UTF-16 drive root.
+        return unsafe { GetDriveTypeW(root.as_ptr()) } == DRIVE_REMOTE;
+    }
+    false
+}
+
+#[cfg(windows)]
+fn system_powershell_executable() -> Option<PathBuf> {
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    let mut buffer = vec![0_u16; 32_768];
+    // SAFETY: `buffer` is writable for the supplied length. The API returns
+    // the number of UTF-16 units written, excluding the terminating NUL.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    buffer.truncate(length);
+    Some(PathBuf::from(OsString::from_wide(&buffer)).join("WindowsPowerShell/v1.0/powershell.exe"))
+}
+
+#[cfg(windows)]
+fn bounded_powershell_output(script: &'static str) -> Result<Vec<u8>, AppError> {
+    const MAX_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
+    let failure = || AppError::new("command_failed", "无法读取 Windows 开始菜单应用列表。");
+    let executable = system_powershell_executable().ok_or_else(failure)?;
+    let mut child = Command::new(executable)
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| failure())?;
+    let stdout = child.stdout.take().ok_or_else(failure)?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        Some(bytes)
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let succeeded = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let bytes = reader.join().ok().flatten().ok_or_else(failure)?;
+    if !succeeded || bytes.len() > MAX_OUTPUT_BYTES as usize {
+        return Err(failure());
+    }
+    Ok(bytes)
+}
+
+#[cfg(windows)]
+fn platform_installed_applications() -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    const SCRIPT: &str = r#"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$shell = New-Object -ComObject WScript.Shell
+$roots = @(
+  [Environment]::GetFolderPath('StartMenu'),
+  [Environment]::GetFolderPath('CommonStartMenu')
+)
+$items = @($roots | Where-Object { $_ } | ForEach-Object {
+  Get-ChildItem -LiteralPath $_ -Filter *.lnk -File -Recurse -ErrorAction SilentlyContinue
+} | Select-Object -First 20000 | ForEach-Object {
+  $shortcut = $shell.CreateShortcut($_.FullName)
+  if ($shortcut.TargetPath -and -not $shortcut.Arguments -and -not $shortcut.WorkingDirectory) {
+    [PSCustomObject]@{ name = $_.BaseName; executable = $shortcut.TargetPath }
+  }
+})
+ConvertTo-Json -Compress -InputObject $items
+"#;
+    let output = bounded_powershell_output(SCRIPT)?;
+    let entries = serde_json::from_slice::<Vec<WindowsStartMenuApplication>>(&output)
+        .map_err(|_| AppError::new("command_failed", "Windows 开始菜单应用列表格式无效。"))?;
+    let mut applications = entries
+        .into_iter()
+        .filter(|entry| {
+            !entry.executable.starts_with("\\\\") && !entry.executable.starts_with("//")
+        })
+        .filter_map(|entry| {
+            let application = normalize_repository_editor_config(RepositoryEditorConfig {
+                name: entry.name,
+                executable: entry.executable,
+                arguments: Vec::new(),
+            })
+            .ok()?;
+            (!windows_path_is_remote(&application.executable)).then_some(application)
+        })
+        .collect::<Vec<_>>();
+    applications.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.executable.cmp(&right.executable))
+    });
+    let mut seen_executables = BTreeSet::new();
+    applications.retain(|application| seen_executables.insert(application.executable.clone()));
+    Ok(applications)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn platform_installed_applications() -> Result<Vec<RepositoryEditorConfig>, AppError> {
+    Ok(Vec::new())
 }
 
 #[cfg(target_os = "linux")]
@@ -1184,9 +1780,7 @@ fn flatpak_application_command(arguments: &[String], ref_index: usize) -> Option
             continue;
         }
         if argument == "--command" {
-            let Some(value) = arguments.get(index + 1) else {
-                return None;
-            };
+            let value = arguments.get(index + 1)?;
             command = Some(value.as_str());
             index += 2;
             continue;
@@ -1361,6 +1955,53 @@ fn parse_desktop_exec(value: &str) -> Option<Vec<String>> {
             continue;
         }
         if value.len() > 4096 || value.chars().any(char::is_control) {
+            return None;
+        }
+        normalized.push(value);
+    }
+    if normalized.is_empty()
+        || terminal_arguments_override_working_directory(&normalized[0], &normalized[1..])
+    {
+        return None;
+    }
+    Some(normalized)
+}
+
+/// Repository launch always appends exactly one local directory argument.
+/// Only accept desktop entries whose optional file placeholder describes that
+/// same final argument; URI placeholders and embedded placeholders need richer
+/// launch semantics and are intentionally left out of the picker.
+#[cfg(target_os = "linux")]
+fn parse_repository_desktop_exec(value: &str) -> Option<Vec<String>> {
+    let mut values = parse_desktop_exec_words(value)?;
+    let has_final_file_placeholder = values
+        .last()
+        .is_some_and(|value| matches!(value.as_str(), "%f" | "%F"));
+    if !has_final_file_placeholder {
+        return None;
+    }
+    if has_final_file_placeholder {
+        if values
+            .get(values.len().saturating_sub(2))
+            .is_some_and(|argument| desktop_option_requires_value(argument))
+        {
+            return None;
+        }
+        values.pop();
+    }
+    if values.iter().any(|value| {
+        value.contains("%f") || value.contains("%F") || value.contains("%u") || value.contains("%U")
+    }) {
+        return None;
+    }
+
+    let mut normalized = Vec::new();
+    for value in values {
+        if matches!(value.as_str(), "%i" | "%c" | "%k") {
+            return None;
+        }
+        let value = decode_desktop_percent_escapes(&value)?;
+        if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
             return None;
         }
         normalized.push(value);
@@ -1855,6 +2496,38 @@ fn read_bounded_text_file(path: &Path, maximum_bytes: u64) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+fn read_bounded_regular_text_file(path: &Path, maximum_bytes: u64) -> Option<String> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let metadata = fs::symlink_metadata(path).ok()?;
+    let resolved;
+    let path = if metadata.file_type().is_symlink() {
+        resolved = fs::canonicalize(path).ok()?;
+        resolved.as_path()
+    } else {
+        path
+    };
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > maximum_bytes {
+        return None;
+    }
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.file_type().is_file() {
+        return None;
+    }
+    let mut contents = String::new();
+    file.by_ref()
+        .take(maximum_bytes + 1)
+        .read_to_string(&mut contents)
+        .ok()?;
+    (contents.len() as u64 <= maximum_bytes).then_some(contents)
+}
+
+#[cfg(target_os = "linux")]
 fn kde_font_preferences() -> Option<SystemFontPreferences> {
     let contents = read_kdeglobals()?;
     let interface = kde_general_font_preference(&contents, "font");
@@ -2146,10 +2819,11 @@ fn sanitize_font_family(value: &str) -> Option<String> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{
-        build_linux_terminal_candidates, desktop_entry_terminal_launch_spec,
-        kde_general_font_preference, kde_terminal_candidates, kde_terminal_launch_specs,
-        resolve_terminal_launch_spec_with_path, split_pango_family_and_style,
-        xdg_data_directories_from,
+        build_linux_terminal_candidates, desktop_entry_repository_editor,
+        desktop_entry_terminal_launch_spec, kde_general_font_preference, kde_terminal_candidates,
+        kde_terminal_launch_specs, linux_installed_applications_from_data_directories,
+        repository_launch_uses_command_interpreter, resolve_terminal_launch_spec_with_path,
+        split_pango_family_and_style, xdg_data_directories_from,
     };
     use std::{collections::BTreeSet, ffi::OsStr, fs, os::unix::fs::PermissionsExt, path::PathBuf};
     use uuid::Uuid;
@@ -2255,6 +2929,111 @@ Exec="/opt/Terminal App/bin/terminal" --new-window
         let terminal = desktop_entry_terminal_launch_spec(desktop_entry).unwrap();
         assert_eq!(terminal.executable, "/opt/Terminal App/bin/terminal");
         assert_eq!(terminal.arguments, ["--new-window"]);
+    }
+
+    #[test]
+    fn reads_visible_applications_from_the_linux_desktop_registry() {
+        let executable = std::env::current_exe().unwrap();
+        let desktop_entry = format!(
+            "[Desktop Entry]\nType=Application\nName=Visual Studio Code\nExec=\"{}\" --reuse-window %F\n",
+            executable.to_string_lossy(),
+        );
+
+        let application = desktop_entry_repository_editor(&desktop_entry).unwrap();
+        assert_eq!(application.name, "Visual Studio Code");
+        assert_eq!(
+            application.executable,
+            fs::canonicalize(executable).unwrap().to_string_lossy()
+        );
+        assert_eq!(application.arguments, ["--reuse-window"]);
+
+        assert!(desktop_entry_repository_editor(
+            "[Desktop Entry]\nType=Application\nName=Hidden IDE\nHidden=true\nExec=/bin/false\n"
+        )
+        .is_none());
+        assert!(desktop_entry_repository_editor(
+            "[Desktop Entry]\nType=Application\nName=Menu-hidden IDE\nNoDisplay=true\nExec=/bin/false\n"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_desktop_entries_that_cannot_take_one_appended_repository_path() {
+        for exec in [
+            "/bin/false %U",
+            "/bin/false %f --after-target",
+            "/bin/false --file=%F",
+            "/bin/false --config %F",
+        ] {
+            let entry =
+                format!("[Desktop Entry]\nType=Application\nName=Unsupported IDE\nExec={exec}\n");
+            assert!(desktop_entry_repository_editor(&entry).is_none(), "{exec}");
+        }
+        assert!(desktop_entry_repository_editor(
+            "[Desktop Entry]\nType=Application\nName=Custom cwd\nPath=/tmp\nExec=/bin/false\n"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn rejects_versioned_command_interpreters_for_repository_launches() {
+        for executable in [
+            "/usr/bin/python3.12",
+            "/usr/bin/perl5.36.0",
+            "/usr/bin/ruby3.3",
+        ] {
+            assert!(repository_launch_uses_command_interpreter(executable));
+        }
+        assert!(!repository_launch_uses_command_interpreter("/usr/bin/code"));
+    }
+
+    #[test]
+    fn decodes_desktop_application_name_escapes() {
+        let executable = std::env::current_exe().unwrap();
+        let entry = format!(
+            "[Desktop Entry]\nType=Application\nName=Visual\\sStudio\\sCode\nExec=\"{}\" %F\n",
+            executable.to_string_lossy(),
+        );
+
+        assert_eq!(
+            desktop_entry_repository_editor(&entry).unwrap().name,
+            "Visual Studio Code"
+        );
+    }
+
+    #[test]
+    fn enumerates_xdg_application_menu_entries_with_user_precedence() {
+        let root = std::env::temp_dir().join(format!("bkm-xdg-apps-{}", Uuid::new_v4()));
+        let user_data = root.join("user");
+        let system_data = root.join("system");
+        fs::create_dir_all(user_data.join("applications")).unwrap();
+        fs::create_dir_all(system_data.join("applications")).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let visible_entry = format!(
+            "[Desktop Entry]\nType=Application\nName=Fixture IDE\nExec=\"{}\" %F\n",
+            executable.to_string_lossy(),
+        );
+        fs::write(
+            system_data.join("applications/fixture-ide.desktop"),
+            &visible_entry,
+        )
+        .unwrap();
+
+        let applications = linux_installed_applications_from_data_directories(&[
+            user_data.clone(),
+            system_data.clone(),
+        ]);
+        assert_eq!(applications.len(), 1);
+        assert_eq!(applications[0].name, "Fixture IDE");
+
+        fs::write(
+            user_data.join("applications/fixture-ide.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Hidden override\nHidden=true\nExec=/bin/false\n",
+        )
+        .unwrap();
+        let hidden = linux_installed_applications_from_data_directories(&[user_data, system_data]);
+        assert!(hidden.is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
