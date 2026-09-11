@@ -109,8 +109,8 @@
   flex: 0 0 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-right: 1ch;
-  border-right: 1px solid rgb(139 148 158 / 28%);
-  color: #8b949e;
+  border-right: 1px solid var(--app-diff-gutter-border);
+  color: var(--app-diff-muted);
   font-variant-numeric: tabular-nums;
   opacity: 0.8;
   text-align: right;
@@ -124,7 +124,7 @@
 }
 
 .diff-line-numbers > span:first-child {
-  border-right: 1px solid rgb(139 148 158 / 16%);
+  border-right: 1px solid var(--app-diff-gutter-divider);
 }
 
 .diff-line-prefix {
@@ -154,30 +154,30 @@
 }
 
 .diff-line.is-file-header {
-  background: rgb(56 139 253 / 14%);
-  color: #79c0ff;
+  background: var(--app-diff-header-bg);
+  color: var(--app-diff-header-text);
   font-weight: clamp(100, calc(650 + var(--app-code-font-weight-offset)), 900);
 }
 
 .diff-line.is-meta {
-  color: #8b949e;
+  color: var(--app-diff-muted);
 }
 
 .diff-line.is-hunk {
-  background: rgb(210 168 255 / 12%);
-  color: #d2a8ff;
+  background: var(--app-diff-hunk-bg);
+  color: var(--app-diff-hunk-text);
 }
 
 .diff-line.is-add,
 .diff-line.is-add-file {
-  background: rgb(46 160 67 / 16%);
-  color: #7ee787;
+  background: var(--app-diff-add-bg);
+  color: var(--app-diff-add-text);
 }
 
 .diff-line.is-remove,
 .diff-line.is-remove-file {
-  background: rgb(248 81 73 / 16%);
-  color: #ffa198;
+  background: var(--app-diff-remove-bg);
+  color: var(--app-diff-remove-text);
 }
 
 .diff-line.is-add-file,
@@ -186,54 +186,54 @@
 }
 
 .diff-line.is-no-newline {
-  color: #e3b341;
+  color: var(--app-diff-warning);
 }
 
 .diff-line-code .hljs-comment,
 .diff-line-code .hljs-quote {
-  color: #8b949e;
+  color: var(--app-diff-muted);
   font-style: italic;
 }
 
 .diff-line-code .hljs-keyword,
 .diff-line-code .hljs-selector-tag,
 .diff-line-code .hljs-type {
-  color: #ff7b72;
+  color: var(--app-diff-syntax-keyword);
 }
 
 .diff-line-code .hljs-title,
 .diff-line-code .hljs-title[class~="class_"],
 .diff-line-code .hljs-title[class~="function_"] {
-  color: #d2a8ff;
+  color: var(--app-diff-syntax-title);
 }
 
 .diff-line-code .hljs-string,
 .diff-line-code .hljs-regexp,
 .diff-line-code .hljs-attr {
-  color: #a5d6ff;
+  color: var(--app-diff-syntax-string);
 }
 
 .diff-line-code .hljs-number,
 .diff-line-code .hljs-literal,
 .diff-line-code .hljs-symbol,
 .diff-line-code .hljs-bullet {
-  color: #79c0ff;
+  color: var(--app-diff-syntax-number);
 }
 
 .diff-line-code [class~="hljs-built_in"],
 .diff-line-code .hljs-variable,
 .diff-line-code .hljs-template-variable,
 .diff-line-code .hljs-params {
-  color: #ffa657;
+  color: var(--app-diff-syntax-variable);
 }
 
 .diff-line-code .hljs-meta,
 .diff-line-code .hljs-doctag {
-  color: #7ee787;
+  color: var(--app-diff-syntax-tag);
 }
 
 .diff-line-code .hljs-tag,
 .diff-line-code .hljs-name,
 .diff-line-code .hljs-attribute {
-  color: #7ee787;
+  color: var(--app-diff-syntax-tag);
 }
