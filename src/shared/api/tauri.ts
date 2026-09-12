@@ -2194,6 +2194,21 @@ export const api = {
     });
   },
 
+  listGitHubCloneRepositories(accountProfileId: string, page: number): Promise<CodeHostRepositoryInfo[]> {
+    return request("list_github_clone_repositories", { accountProfileId, page }, () => {
+      const account = browserAccounts.find((entry) => entry.id === accountProfileId);
+      if (!account) throw browserError("account_not_found");
+      const endpoint = browserEndpoints.find((entry) => entry.id === account.endpointId);
+      if (!endpoint) throw browserError("endpoint_not_found");
+      if (account.authMethod !== "ghCli" || endpoint.kind !== "gitHub") throw browserError("github_adapter_auth_unsupported");
+      if (!Number.isInteger(page) || page < 1 || page > 1000) throw browserError("github_api_invalid_request");
+      return page === 1 ? ["desktop", "private-project"].map((name, index) => ({
+        fullName: `${account.login}/${name}`, description: null, defaultBranch: "main",
+        webUrl: `https://github.com/${account.login}/${name}`, isPrivate: index === 1,
+      })) : [];
+    });
+  },
+
   listPullRequests(repositoryPath: string, remoteName: string): Promise<PullRequestSummary[]> {
     return request("list_pull_requests", { repositoryPath, remoteName }, () => {
       requireBrowserGitHubRemote(repositoryPath, remoteName);

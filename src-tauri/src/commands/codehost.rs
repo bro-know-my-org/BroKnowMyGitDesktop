@@ -65,6 +65,38 @@ pub(super) fn pending_publish_checkout_changed_before_remote_added(
 }
 
 #[tauri::command]
+pub async fn list_github_clone_repositories(
+    account_profile_id: String,
+    page: u32,
+    state: State<'_, AppState>,
+) -> Result<Vec<CodeHostRepositoryInfo>, AppError> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = state.acquire_account_operation_lease(&account_profile_id)?;
+        let store = state.snapshot()?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_profile_id)
+            .ok_or_else(|| AppError::new("account_not_found", "找不到所选账号。"))?;
+        let endpoint = store
+            .endpoint(&account.endpoint_id)
+            .ok_or_else(|| AppError::new("endpoint_not_found", "找不到账号所属平台。"))?;
+        if account.auth_method != AuthenticationMethod::GhCli
+            || endpoint.kind != CodeHostKind::GitHub
+        {
+            return Err(AppError::new(
+                "github_adapter_auth_unsupported",
+                "仓库列表需要 GitHub CLI 账号。",
+            ));
+        }
+        GitHubAdapter.list_clone_repositories(&endpoint, &account.login, page)
+    })
+    .await
+    .map_err(|_| AppError::new("command_failed", "仓库列表后台任务未能完成。"))?
+}
+
+#[tauri::command]
 pub async fn list_github_publish_owners(
     endpoint_id: String,
     account_profile_id: String,

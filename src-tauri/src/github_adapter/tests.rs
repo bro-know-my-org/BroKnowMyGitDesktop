@@ -5,6 +5,31 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn clone_repository_list_preserves_private_and_empty_repository_metadata() {
+        let repositories = parse_clone_repositories(
+            r#"[
+            {"full_name":"team/private","description":null,"default_branch":null,
+             "html_url":"https://github.com/team/private","private":true},
+            {"full_name":"me/public","description":"Example","default_branch":"main",
+             "html_url":"https://github.com/me/public","private":false}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(repositories[0].full_name, "team/private");
+        assert_eq!(repositories[0].is_private, Some(true));
+        assert_eq!(repositories[0].default_branch, None);
+        assert_eq!(repositories[1].is_private, Some(false));
+        assert_eq!(repositories[1].description.as_deref(), Some("Example"));
+        assert!(parse_clone_repositories("[]").unwrap().is_empty());
+        assert_eq!(
+            parse_clone_repositories(r#"{"message":"Bad credentials"}"#)
+                .unwrap_err()
+                .code(),
+            "github_api_invalid_response"
+        );
+    }
+
+    #[test]
     fn gh_pipe_reader_reports_limit_without_draining_remaining_output() {
         let error = read_gh_pipe(Cursor::new(vec![b'x'; 16]), 8)
             .expect_err("oversized output must stop the reader immediately");

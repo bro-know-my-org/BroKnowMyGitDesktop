@@ -1,4 +1,50 @@
+fn parse_clone_repositories(response: &str) -> Result<Vec<CodeHostRepositoryInfo>, AppError> {
+    #[derive(Deserialize)]
+    struct Repository {
+        full_name: String,
+        description: Option<String>,
+        default_branch: Option<String>,
+        html_url: String,
+        private: bool,
+    }
+    let repositories: Vec<Repository> = serde_json::from_str(response)
+        .map_err(|_| AppError::new("github_api_invalid_response", "无法解析仓库列表。"))?;
+    Ok(repositories
+        .into_iter()
+        .map(|repository| CodeHostRepositoryInfo {
+            full_name: repository.full_name,
+            description: repository.description,
+            default_branch: repository.default_branch,
+            web_url: repository.html_url,
+            is_private: Some(repository.private),
+        })
+        .collect())
+}
+
 impl GitHubAdapter {
+    pub(crate) fn list_clone_repositories(
+        &self,
+        endpoint: &CodeHostEndpoint,
+        login: &str,
+        page: u32,
+    ) -> Result<Vec<CodeHostRepositoryInfo>, AppError> {
+        if !(1..=1000).contains(&page) {
+            return Err(AppError::new(
+                "github_api_invalid_request",
+                "仓库列表页码无效。",
+            ));
+        }
+        let deadline = Self::operation_deadline();
+        let identity = pin_gh_identity_until(endpoint, login, deadline)?;
+        let response = self.gh_api_until_with_identity(
+            endpoint,
+            &format!("user/repos?per_page=100&page={page}&sort=full_name&direction=asc&affiliation=owner,collaborator,organization_member"),
+            deadline,
+            Some(&identity),
+        )?;
+        parse_clone_repositories(&response)
+    }
+
     const FORK_REPOSITORY_PAGE_SIZE: usize = 100;
     const FORK_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(500);
 

@@ -40,6 +40,7 @@ pub fn run() {
             commands::add_discovered_repositories,
             commands::init_repository,
             commands::clone_repository,
+            commands::list_github_clone_repositories,
             commands::get_repository_snapshot,
             commands::refresh_repository_snapshot,
             commands::watch_repository_changes,
