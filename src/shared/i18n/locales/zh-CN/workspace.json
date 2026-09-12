@@ -414,7 +414,7 @@
   "workspace.dialogs.repositoryIdeListUnavailable": "IDE 配置暂时不可用，请点击管理重试。",
   "workspace.dialogs.saveChanges": "保存修改",
   "workspace.dialogs.selectApplication": "选择应用…",
-  "workspace.dialogs.browseExecutableFile": "浏览可执行文件…",
+  "workspace.dialogs.browseExecutableFile": "输入或浏览路径…",
   "workspace.dialogs.installedApplicationListHint": "此列表来自当前系统的应用菜单。选择应用后仍可调整显示名称和附加参数。",
   "workspace.dialogs.searchInstalledApplications": "搜索已安装应用",
   "workspace.dialogs.select": "选择",
@@ -722,5 +722,11 @@
   "workspace.controller.someGitLockPathsCouldNotBeInspected": "部分标准 Git 锁路径无法检查，当前列表可能不完整。",
   "workspace.controller.otherGitLock": "其他 Git 锁",
   "workspace.controller.unknownModificationTime": "修改时间未知",
-  "workspace.controller.close": "关闭"
+  "workspace.controller.close": "关闭",
+  "workspace.pathPicker.folderPath": "存放目录的完整路径",
+  "workspace.pathPicker.absolutePath": "请输入绝对路径，例如 /home/me/projects 或 C:\\Projects。",
+  "workspace.pathPicker.placeholder": "粘贴或输入完整路径",
+  "workspace.pathPicker.hint": "可以直接输入路径，也可以浏览选择。浏览后会回到这里确认所选路径。",
+  "workspace.pathPicker.browse": "浏览系统文件…",
+  "workspace.pathPicker.usePath": "使用此路径"
 }

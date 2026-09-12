@@ -22,6 +22,7 @@ import {
   worktreesAreEqual,
 } from "./workspaceControllerSupport";
 import { acquireRepositoryOperation } from "./repositoryOperationLock";
+import { selectPath } from "../../../shared/pathPicker";
 
 interface RepositoryAuxiliaryDependencies {
   activeRepositoryPath: Ref<string | null>;
@@ -270,9 +271,10 @@ export function useRepositoryAuxiliary({
     const requestGeneration = ++repositoryEditorPickerGeneration;
     installedApplicationPickerShown.value = false;
     try {
-      const executable = await api.selectApplicationExecutable(
-        t("workspace.dialogs.selectIdeApplication"),
-      );
+      const executable = await selectPath({
+        title: t("workspace.dialogs.selectIdeApplication"), directory: false,
+        initialPath: repositoryEditorForm.executable,
+      });
       if (
         executable
         && requestGeneration === repositoryEditorPickerGeneration
@@ -327,9 +329,10 @@ export function useRepositoryAuxiliary({
       installedApplicationSelection.value = null;
       if (installedApplications.value.length) installedApplicationPickerShown.value = true;
       else {
-        const executable = await api.selectApplicationExecutable(
-          t("workspace.dialogs.selectIdeApplication"),
-        );
+        const executable = await selectPath({
+          title: t("workspace.dialogs.selectIdeApplication"), directory: false,
+          initialPath: repositoryEditorForm.executable,
+        });
         if (
           executable
           && requestGeneration === repositoryEditorPickerGeneration

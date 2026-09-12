@@ -677,17 +677,18 @@ function isValidBrowserGitHubRouteSegment(value: string): boolean {
 }
 
 export const api = {
-  async selectRepositoryDiscoveryDirectory(title: string): Promise<string | null> {
+  async selectRepositoryDiscoveryDirectory(title: string, defaultPath?: string): Promise<string | null> {
     if (isBrowserDemo()) return "/demo/projects";
-    const selected = await openDialog({ title, directory: true, multiple: false });
+    const selected = await openDialog({ title, directory: true, multiple: false, defaultPath });
     return Array.isArray(selected) ? selected[0] ?? null : selected;
   },
 
-  async selectApplicationExecutable(title: string): Promise<string | null> {
+  async selectApplicationExecutable(title: string, defaultPath?: string): Promise<string | null> {
     if (isBrowserDemo()) return null;
     const windows = typeof navigator !== "undefined" && /^Win/u.test(navigator.platform);
     const selected = await openDialog({
       title,
+      defaultPath,
       directory: false,
       multiple: false,
       ...(windows ? { filters: [{ name: title, extensions: ["exe", "com"] }] } : {}),

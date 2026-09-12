@@ -83,7 +83,7 @@ test("repository IDE manager uses the Linux application registry with a native-f
   assert.match(apiSource, /listInstalledApplications\(\)/u);
   assert.match(apiSource, /request\("list_installed_applications"/u);
   assert.match(dialogsSource, /v-model:show="installedApplicationPickerShown"/u);
-  assert.match(apiSource, /selectApplicationExecutable\(title: string\)/u);
+  assert.match(apiSource, /selectApplicationExecutable\(title: string[,)]/u);
   assert.match(apiSource, /openDialog\(\{[\s\S]*?directory: false,[\s\S]*?multiple: false,/u);
   assert.match(apiSource, /extensions: \["exe", "com"\]/u);
 });

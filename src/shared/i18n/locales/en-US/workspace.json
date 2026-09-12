@@ -414,7 +414,7 @@
   "workspace.dialogs.repositoryIdeListUnavailable": "IDE configurations are temporarily unavailable. Choose Manage to retry.",
   "workspace.dialogs.saveChanges": "Save changes",
   "workspace.dialogs.selectApplication": "Choose application…",
-  "workspace.dialogs.browseExecutableFile": "Browse executable file…",
+  "workspace.dialogs.browseExecutableFile": "Enter or browse a path…",
   "workspace.dialogs.installedApplicationListHint": "This list comes from the current system's application menu. You can adjust the display name and arguments after choosing an application.",
   "workspace.dialogs.searchInstalledApplications": "Search installed applications",
   "workspace.dialogs.select": "Select",
@@ -722,5 +722,11 @@
   "workspace.controller.someGitLockPathsCouldNotBeInspected": "Some standard Git lock paths could not be inspected. The list may be incomplete.",
   "workspace.controller.otherGitLock": "Other Git lock",
   "workspace.controller.unknownModificationTime": "Unknown modification time",
-  "workspace.controller.close": "Close"
+  "workspace.controller.close": "Close",
+  "workspace.pathPicker.folderPath": "Full folder path",
+  "workspace.pathPicker.absolutePath": "Enter an absolute path, such as /home/me/projects or C:\\Projects.",
+  "workspace.pathPicker.placeholder": "Paste or type a full path",
+  "workspace.pathPicker.hint": "Enter a path directly or browse for one. Review the selected path here before confirming.",
+  "workspace.pathPicker.browse": "Browse system files…",
+  "workspace.pathPicker.usePath": "Use this path"
 }
