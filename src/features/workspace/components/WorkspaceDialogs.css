@@ -116,13 +116,22 @@
   min-height: 260px;
 }
 
+.dialog-output {
+  max-height: 425px;
+}
+
+.dialog-output .diff-output {
+  max-height: none;
+  overflow: visible;
+}
+
 .dialog-data-content > .n-spin-container,
 .dialog-data-content > .n-spin-container > .n-spin-content {
   min-height: inherit;
 }
 
 .git-lock-recovery,
-.git-lock-recovery-list,
+.git-lock-recovery-list-content,
 .git-lock-recovery-item {
   display: grid;
 }
@@ -133,8 +142,10 @@
 
 .git-lock-recovery-list {
   max-height: 300px;
+}
+
+.git-lock-recovery-list-content {
   gap: 8px;
-  overflow: auto;
 }
 
 .git-lock-recovery-item {
@@ -175,8 +186,11 @@
 
 .settings-tabs > .n-tabs-pane-wrapper {
   min-width: 0;
+  overflow: hidden;
+}
+
+.settings-scrollbar {
   max-height: min(680px, calc(100vh - 190px));
-  overflow-y: auto;
 }
 
 .settings-section,
@@ -356,7 +370,6 @@
 .repository-editor-list {
   width: 100%;
   max-height: min(320px, 35vh);
-  overflow-y: auto;
 }
 
 .repository-editor-picker,

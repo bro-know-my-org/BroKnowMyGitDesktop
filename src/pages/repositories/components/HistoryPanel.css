@@ -362,8 +362,7 @@
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
 }
 
 .history-diff-content .diff-output {
@@ -371,7 +370,7 @@
   min-width: 0;
   min-height: 0;
   max-height: none;
-  flex: 1 0 auto;
+  flex: 1 1 auto;
 }
 
 .history-diff-more {

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
 import CloneRepositoryForm from "./CloneRepositoryForm.vue";
 import packageMetadata from "../../../../package.json";
 import { api } from "../../../shared/api/tauri";
@@ -40,7 +40,7 @@ import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { CloneRepositoryForm, FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
+  components: { CloneRepositoryForm, FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const repositoryDiscoveryRowHeight = computed(() =>
@@ -460,6 +460,7 @@ export default defineComponent({
   <n-modal v-model:show="settingsModalShown" preset="card" :title="t('workspace.dialogs.settings')" class="settings-dialog-card">
     <n-tabs v-model:value="settingsSection" type="line" :placement="settingsTabsPlacement" class="settings-tabs">
       <n-tab-pane name="general" :tab="t('workspace.dialogs.general')">
+        <n-scrollbar class="settings-scrollbar">
         <section class="settings-section">
           <div class="settings-section-heading">
             <strong>{{ t('workspace.dialogs.appearanceAndLanguage') }}</strong>
@@ -635,8 +636,10 @@ export default defineComponent({
             </n-space>
           </n-form>
         </section>
+        </n-scrollbar>
       </n-tab-pane>
       <n-tab-pane name="repository" :tab="t('workspace.dialogs.currentRepository')">
+        <n-scrollbar class="settings-scrollbar">
         <section class="settings-section">
           <div class="settings-section-heading">
             <strong>{{ t('workspace.dialogs.securityAndTrust') }}</strong>
@@ -730,8 +733,10 @@ export default defineComponent({
             </div>
           </n-spin>
         </section>
+        </n-scrollbar>
       </n-tab-pane>
       <n-tab-pane name="about" :tab="t('workspace.dialogs.about')">
+        <n-scrollbar class="settings-scrollbar">
         <section class="settings-about">
           <div class="about-brand-mark" aria-hidden="true">BK</div>
           <div class="settings-about-heading">
@@ -744,6 +749,7 @@ export default defineComponent({
             <strong>Tauri 2 · Vue 3 · TypeScript · Rust</strong>
           </div>
         </section>
+        </n-scrollbar>
       </n-tab-pane>
     </n-tabs>
     <template #action>
@@ -808,7 +814,8 @@ export default defineComponent({
     <n-alert type="info" :bordered="false" class="token-alert">
       {{ t('workspace.dialogs.repositoryEditorsLaunchHint') }}
     </n-alert>
-    <n-space v-if="repositoryEditors.length" vertical class="repository-editor-list">
+    <n-scrollbar v-if="repositoryEditors.length" class="repository-editor-list">
+    <n-space vertical>
       <n-card v-for="(editor, index) in repositoryEditors" :key="editor.name" size="small">
         <n-space justify="space-between" align="center" :wrap="false">
           <div class="repository-editor-summary">
@@ -826,6 +833,7 @@ export default defineComponent({
         </n-space>
       </n-card>
     </n-space>
+    </n-scrollbar>
     <n-text v-else depth="3">{{ t('workspace.dialogs.noRepositoryIdesConfigured') }}</n-text>
     <n-divider />
     <div class="settings-subsection-heading">
@@ -908,7 +916,9 @@ export default defineComponent({
     <n-text depth="3">{{ selectedChange?.path || '—' }}</n-text>
     <div class="dialog-data-content">
       <n-spin :show="blameLoading">
-        <pre v-if="blameText" class="diff-output dialog-output">{{ blameText }}</pre>
+        <n-scrollbar v-if="blameText" class="dialog-output" x-scrollable>
+          <pre class="diff-output" tabindex="0">{{ blameText }}</pre>
+        </n-scrollbar>
         <n-text v-else-if="!blameLoading" depth="3">{{ t('workspace.dialogs.thisFileHasNoBlameRecordsToDisplay') }}</n-text>
       </n-spin>
     </div>
@@ -924,7 +934,9 @@ export default defineComponent({
     <n-alert type="info" :bordered="false" class="token-alert">{{ t('workspace.dialogs.reflogRecordsLocalReferenceMovementsAndHelpsLocateCommitsBeforeResetsRebasesOrAccidentalChangesU') }}</n-alert>
     <div class="dialog-data-content">
       <n-spin :show="reflogLoading">
-        <pre v-if="reflogText" class="diff-output dialog-output">{{ reflogText }}</pre>
+        <n-scrollbar v-if="reflogText" class="dialog-output" x-scrollable>
+          <pre class="diff-output" tabindex="0">{{ reflogText }}</pre>
+        </n-scrollbar>
         <n-text v-else-if="!reflogLoading" depth="3">{{ t('workspace.dialogs.thisRepositoryHasNoReflogRecordsToDisplay') }}</n-text>
       </n-spin>
     </div>
@@ -1233,7 +1245,7 @@ export default defineComponent({
   </n-modal>
 
   <n-drawer v-model:show="bindingDrawerShown" :width="440" placement="right">
-    <n-drawer-content :title="t('workspace.dialogs.remoteAccountBinding')" closable>
+    <n-drawer-content :title="t('workspace.dialogs.remoteAccountBinding')" :native-scrollbar="false" closable>
       <template v-if="bindingRemote">
         <n-descriptions :column="1" size="small" label-placement="left">
           <n-descriptions-item :label="t('workspace.dialogs.remote')">{{ bindingRemote.name }}</n-descriptions-item>

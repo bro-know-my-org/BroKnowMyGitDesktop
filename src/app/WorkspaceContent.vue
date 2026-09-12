@@ -17,6 +17,8 @@ export default defineComponent({
 <template>
 <n-layout-content
   class="content-area"
+  :native-scrollbar="false"
+  content-class="content-scroll-body"
   :class="{
     'is-repository-panel-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history'),
     'is-fixed-repository-content': section === 'repositories' && (activeTab === 'changes' || activeTab === 'history') && !browserDemo,

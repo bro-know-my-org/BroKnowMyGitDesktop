@@ -1,7 +1,7 @@
 .operation-alert {
-  max-height: 30%;
+  height: auto;
+  max-height: 30vh;
   flex: 0 0 auto;
-  overflow-y: auto;
   margin-bottom: 18px;
 }
 
@@ -57,7 +57,7 @@
 }
 
 @media (width >= 1121px) {
-  .content-area.is-fixed-repository-content > .n-layout-scroll-container {
+  .content-area.is-fixed-repository-content > .n-scrollbar > .n-scrollbar-container {
     overflow-y: hidden;
   }
 

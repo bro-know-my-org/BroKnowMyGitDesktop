@@ -7,10 +7,12 @@
   flex: 1 1 0;
 }
 
-.content-area > .n-layout-scroll-container {
+.content-scroll-body {
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
+}
+
+.content-area > .n-scrollbar > .n-scrollbar-container {
   overscroll-behavior: contain;
 }
 

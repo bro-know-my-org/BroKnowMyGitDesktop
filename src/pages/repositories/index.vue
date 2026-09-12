@@ -1,6 +1,6 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NSpin, NTabPane, NTabs, NTag, NText } from "naive-ui";
+import { NAlert, NButton, NCard, NGrid, NGridItem, NScrollbar, NSpace, NSpin, NTabPane, NTabs, NTag, NText } from "naive-ui";
 import RepositoryBranchesPanel from "./components/BranchesPanel.vue";
 import RepositoryChangesPanel from "./components/ChangesPanel.vue";
 import RepositoryHistoryPanel from "./components/HistoryPanel.vue";
@@ -10,7 +10,7 @@ import { t } from "../../shared/i18n";
 
 export default defineComponent({
   name: "RepositoriesPage",
-  components: { NAlert, NButton, NCard, NGrid, NGridItem, NSpace, NSpin, NTabPane, NTabs, NTag, NText, RepositoryChangesPanel, RepositoryHistoryPanel, RepositoryBranchesPanel, RepositoryOverviewPanel },
+  components: { NAlert, NButton, NCard, NGrid, NGridItem, NScrollbar, NSpace, NSpin, NTabPane, NTabs, NTag, NText, RepositoryChangesPanel, RepositoryHistoryPanel, RepositoryBranchesPanel, RepositoryOverviewPanel },
   setup() {
     return { ...useWorkspaceControllerContext(), t };
   },
@@ -19,7 +19,8 @@ export default defineComponent({
 
 <template>
 <section v-if="snapshot" class="repository-page">
-            <n-alert v-if="snapshot.operation || conflictedChanges.length" type="warning" class="operation-alert" :bordered="false">
+            <n-scrollbar v-if="snapshot.operation || conflictedChanges.length" class="operation-alert">
+            <n-alert type="warning" :bordered="false">
               <template #header>
                 {{ snapshot.operation ? t('repository.page.gitOperationNeedsAttention') : t('repository.page.unresolvedConflictsDetected') }}
               </template>
@@ -36,6 +37,7 @@ export default defineComponent({
                 <n-button v-if="snapshot.operation" size="tiny" tertiary type="error" :loading="mutationBusy" @click="confirmAbortGitOperation">{{ t('repository.page.abort') }}</n-button>
               </n-space>
             </n-alert>
+            </n-scrollbar>
 
             <n-tabs v-model:value="activeTab" type="line" :tabs-padding="8" :pane-style="{ padding: '0' }" class="repository-tabs">
               <n-tab-pane name="changes" :tab="t('repository.page.changes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('changes', event) }" display-directive="show:lazy"><RepositoryChangesPanel /></n-tab-pane>

@@ -1,5 +1,5 @@
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { NButton, NSpace, useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
+import { NButton, NScrollbar, NSpace, useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
@@ -893,8 +893,10 @@ async function inspectRepositoryLocks(
       title: t("workspace.controller.gitLockRecovery"),
       content: () => h("div", { class: "git-lock-recovery" }, [
         h("div", t("workspace.controller.closeOtherGitClientsBeforeCleaningLocks")),
-        h("div", { class: "git-lock-recovery-list" },
-          locks.map((lock) => h("div", {
+        h(NScrollbar, {
+          class: "git-lock-recovery-list",
+          contentClass: "git-lock-recovery-list-content",
+        }, { default: () => locks.map((lock) => h("div", {
             key: lock.id,
             class: "git-lock-recovery-item",
           }, [
@@ -912,7 +914,7 @@ async function inspectRepositoryLocks(
               ),
             }, { default: () => t("workspace.controller.openGitMetadataDirectory") }),
           ])),
-        ),
+        }),
       ]),
       negativeText: t("workspace.controller.close"),
       onNegativeClick: () => releaseOwnedGitLockRecoveryDialog(dialogOwner),
@@ -1626,7 +1628,7 @@ function markRepositoryViewportInteraction(): void {
 
 function captureRepositoryViewport(): RepositoryViewportSnapshot | null {
   if (typeof document === "undefined") return null;
-  const element = document.querySelector<HTMLElement>(".content-area > .n-layout-scroll-container");
+  const element = document.querySelector<HTMLElement>(".content-area > .n-scrollbar > .n-scrollbar-container");
   if (!element) return null;
   return {
     element,

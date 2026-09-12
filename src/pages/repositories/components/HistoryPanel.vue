@@ -400,7 +400,7 @@ export default defineComponent({
                 </div>
 
                 <n-drawer v-model:show="stashDrawerShown" width="min(560px, 94vw)" placement="right">
-                  <n-drawer-content :title="t('repository.history.stash')" closable>
+                  <n-drawer-content :title="t('repository.history.stash')" :native-scrollbar="false" closable>
                     <div class="history-stash-toolbar">
                       <span class="history-stash-summary">{{ t('repository.history.stashCount', { count: stashes.length }) }}</span>
                       <n-button type="primary" :disabled="!snapshot.status.entries.length" @click="openStashModal">

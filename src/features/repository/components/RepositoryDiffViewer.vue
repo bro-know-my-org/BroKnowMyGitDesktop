@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import hljs from "highlight.js/lib/common";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { NScrollbar } from "naive-ui";
 import { diffLineWrapping } from "../../../shared/diffPreferences";
 import { resolvedDiffLineHeight } from "../../../shared/fonts";
 
@@ -22,7 +23,8 @@ const maximumHighlightedHunkCharacters = 100_000;
 const maximumHighlightCacheCharacters = 500_000;
 const maximumHighlightCacheEntries = 128;
 const wrappedLineChunkSize = 500;
-const scroller = ref<HTMLElement | null>(null);
+const scrollbar = ref<InstanceType<typeof NScrollbar> | null>(null);
+const scroller = computed(() => scrollbar.value?.scrollbarInstRef?.containerRef ?? null);
 const wrappedLinesContainer = ref<HTMLElement | null>(null);
 const wrappedRenderSentinel = ref<HTMLElement | null>(null);
 const visibleStart = ref(0);
@@ -578,15 +580,14 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    ref="scroller"
+  <NScrollbar
+    ref="scrollbar"
     class="diff-output virtual-diff-output"
     :class="{ 'wrapped-diff-output': diffLineWrapping }"
-    role="region"
-    tabindex="0"
-    :aria-label="label"
+    :x-scrollable="!diffLineWrapping"
     @scroll="scheduleVisibleLineUpdate"
   >
+    <div role="region" tabindex="0" :aria-label="label">
     <div v-if="!diffLineWrapping" class="virtual-diff-spacer" :style="spacerStyle">
       <span
         v-for="entry in visibleLines"
@@ -641,5 +642,6 @@ onBeforeUnmount(() => {
         aria-hidden="true"
       />
     </div>
-  </div>
+    </div>
+  </NScrollbar>
 </template>
