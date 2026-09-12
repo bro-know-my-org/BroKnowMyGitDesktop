@@ -28,6 +28,8 @@ export function useWorkspaceAccounts({
   const endpoints = ref<CodeHostEndpoint[]>([...builtinEndpoints]);
   const accountsLoading = ref(false);
   const accountStatusRefreshing = ref(false);
+  const cliAccountDetections = new Map<string, Promise<AccountProfile[]>>();
+  const pendingAccountRemovals = new Set<Set<string>>();
   const accountModalShown = ref(false);
   const customEndpointModalShown = ref(false);
   const accountForm = reactive({
@@ -59,10 +61,29 @@ export function useWorkspaceAccounts({
     { label: t("common.authentication.method.sshAgent"), value: "sshAgent" },
   ]);
 
+  async function updateAccountsFrom(load: () => Promise<AccountProfile[]>): Promise<void> {
+    const before = new Map(accounts.value.map((account) => [account.id, account]));
+    const removed = new Set<string>();
+    pendingAccountRemovals.add(removed);
+    try {
+      const loaded = await load();
+      const current = new Map(accounts.value.map((account) => [account.id, account]));
+      // Preserve profiles changed locally while this older backend snapshot was in flight.
+      const merged = new Map(loaded.filter((account) => !removed.has(account.id) && (!before.has(account.id) || current.has(account.id)))
+        .map((account) => [account.id, account]));
+      for (const account of current.values()) {
+        if (account !== before.get(account.id)) merged.set(account.id, account);
+      }
+      accounts.value = [...merged.values()];
+    } finally {
+      pendingAccountRemovals.delete(removed);
+    }
+  }
+
   async function loadAccounts(): Promise<void> {
     accountsLoading.value = true;
     try {
-      accounts.value = await api.listAccounts();
+      await updateAccountsFrom(() => api.listAccounts());
     } catch (error) {
       reportError(error, t("workspace.controller.couldNotLoadAccounts"));
     } finally {
@@ -75,7 +96,7 @@ export function useWorkspaceAccounts({
     if (!force && Date.now() - lastAccountStatusRefreshAt < accountStatusRefreshCacheMs) return;
     accountStatusRefreshing.value = true;
     try {
-      accounts.value = await api.refreshAccountStatuses();
+      await updateAccountsFrom(() => api.refreshAccountStatuses());
       lastAccountStatusRefreshAt = Date.now();
     } catch (error) {
       if (force) reportError(error, t("workspace.controller.couldNotRefreshAccountAuthenticationStatus"));
@@ -187,11 +208,23 @@ export function useWorkspaceAccounts({
     }
   }
 
+  function detectCliAccounts(endpointId: string): Promise<AccountProfile[]> {
+    if (!capabilityForEndpoint(endpointId).accountImport) return Promise.resolve([]);
+    const existing = cliAccountDetections.get(endpointId);
+    if (existing) return existing;
+    const request = api.importCliAccounts(endpointId).then((imported) => {
+      accounts.value = [...new Map([...accounts.value, ...imported].map((account) => [account.id, account])).values()];
+      return imported;
+    }).finally(() => cliAccountDetections.delete(endpointId));
+    cliAccountDetections.set(endpointId, request);
+    return request;
+  }
+
   async function importCliAccounts(endpointId: string): Promise<void> {
     if (!capabilityForEndpoint(endpointId).accountImport) return;
     mutationBusy.value = true;
     try {
-      const imported = await api.importCliAccounts(endpointId);
+      const imported = await detectCliAccounts(endpointId);
       await loadAccounts();
       message.success(imported.length
         ? t("workspace.controller.detectedCountCliAccountS", { count: imported.length })
@@ -230,6 +263,7 @@ export function useWorkspaceAccounts({
         mutationBusy.value = true;
         try {
           await api.removeAccount(account.id);
+          for (const removed of pendingAccountRemovals) removed.add(account.id);
           accounts.value = accounts.value.filter((item) => item.id !== account.id);
           message.success(t("workspace.controller.accountRemoved"));
         } catch (error) {
@@ -263,6 +297,7 @@ export function useWorkspaceAccounts({
     openCustomEndpointModal,
     saveCustomEndpoint,
     importCliAccounts,
+    detectCliAccounts,
     setDefaultCandidate,
     confirmRemoveAccount,
   };

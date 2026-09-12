@@ -1,6 +1,7 @@
 <script lang="ts">
 import { computed, defineComponent, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
+import CloneRepositoryForm from "./CloneRepositoryForm.vue";
 import packageMetadata from "../../../../package.json";
 import { api } from "../../../shared/api/tauri";
 import { diffLineWrapping, setDiffLineWrapping } from "../../../shared/diffPreferences";
@@ -39,7 +40,7 @@ import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
+  components: { CloneRepositoryForm, FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const repositoryDiscoveryRowHeight = computed(() =>
@@ -930,15 +931,10 @@ export default defineComponent({
     <template #action><n-space justify="end"><n-button @click="reflogModalShown = false">{{ t('workspace.dialogs.close') }}</n-button></n-space></template>
   </n-modal>
 
-  <n-modal v-model:show="cloneModalShown" preset="card" :title="t('workspace.dialogs.cloneRepository')" class="dialog-card" :mask-closable="!mutationBusy">
-    <n-form label-placement="top">
-      <n-form-item :label="t('workspace.dialogs.remoteUrl')"><n-input v-model:value="cloneForm.url" :placeholder="t('workspace.dialogs.httpsGitExampleComOrgRepositoryGitOrGitHostOrgRepositoryGit')" /></n-form-item>
-      <n-form-item :label="t('workspace.dialogs.destinationFolder')"><n-input v-model:value="cloneForm.destinationPath" :placeholder="t('workspace.dialogs.placeholderCloneDestination')" /></n-form-item>
-      <n-form-item :label="t('workspace.dialogs.gitServiceEndpointOptionalForPrivateRepositories')"><n-select v-model:value="cloneForm.endpointId" clearable :options="endpoints.map((endpoint) => ({ label: endpoint.displayName, value: endpoint.id }))" :placeholder="t('workspace.dialogs.leaveEmptyToUseNormalSystemGitBehavior')" /></n-form-item>
-      <n-form-item :label="t('workspace.dialogs.accountUsedForClone')"><n-select v-model:value="cloneForm.accountId" :options="cloneAccountOptions" /></n-form-item>
-    </n-form>
+  <n-modal v-model:show="cloneModalShown" preset="card" :title="t('workspace.dialogs.cloneRepository')" class="dialog-card" :mask-closable="!mutationBusy" :closable="!mutationBusy" :close-on-esc="!mutationBusy">
+    <CloneRepositoryForm v-if="cloneModalShown" />
       <n-alert type="info" :bordered="false">{{ t('workspace.dialogs.withoutAnAppAccountCloneUsesSystemGitAndKeepsSshLfsHooksAndYourExistingCredentialHelperCompatibl') }}</n-alert>
-    <template #action><n-space justify="end"><n-button @click="cloneModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="cloneRepository">{{ t('workspace.dialogs.clone') }}</n-button></n-space></template>
+    <template #action><n-space justify="end"><n-button :disabled="mutationBusy" @click="cloneModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="mutationBusy || !cloneForm.url.trim() || !cloneForm.destinationPath.trim()" @click="cloneRepository">{{ t('workspace.dialogs.clone') }}</n-button></n-space></template>
   </n-modal>
 
   <n-modal v-model:show="initModalShown" preset="card" :title="t('workspace.dialogs.newLocalRepository')" class="dialog-card" :mask-closable="!mutationBusy">

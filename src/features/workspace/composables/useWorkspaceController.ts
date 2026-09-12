@@ -215,6 +215,7 @@ const {
   openCustomEndpointModal,
   saveCustomEndpoint,
   importCliAccounts,
+  detectCliAccounts,
   setDefaultCandidate,
   confirmRemoveAccount,
 } = useWorkspaceAccounts({
@@ -340,7 +341,7 @@ const bindingDrawerShown = ref(false);
 const bindingRemote = ref<RemoteProfile | null>(null);
 const settingsModalShown = ref(false);
 
-const cloneForm = reactive({ url: "", destinationPath: "", endpointId: "", accountId: "none" });
+const cloneForm = reactive({ url: "", destinationPath: "", parentPath: "", endpointId: "", accountId: "none", repositoryDerivedRouting: false });
 const initForm = reactive({ destinationPath: "", initialBranch: "main" });
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
@@ -1806,6 +1807,7 @@ async function reconcileSnapshotAfterMutationError(repositoryPath: string): Prom
 }
 
 async function cloneRepository(): Promise<void> {
+  if (mutationBusy.value) return;
   if (!cloneForm.url.trim() || !cloneForm.destinationPath.trim()) {
     message.warning(t("workspace.controller.enterARemoteUrlAndDestinationFolder"));
     return;
@@ -1840,6 +1842,8 @@ async function cloneRepository(): Promise<void> {
     cloneModalShown.value = false;
     cloneForm.url = "";
     cloneForm.destinationPath = "";
+    cloneForm.parentPath = "";
+    cloneForm.repositoryDerivedRouting = false;
     cloneForm.endpointId = "";
     cloneForm.accountId = "none";
     message.success(t("workspace.controller.repositoryClonedOpeningItNow"));
@@ -2814,6 +2818,7 @@ onBeforeUnmount(() => {
     openCustomEndpointModal,
     saveCustomEndpoint,
     importCliAccounts,
+    detectCliAccounts,
     setDefaultCandidate,
     confirmRemoveAccount,
     loadRepositoryInfo,
