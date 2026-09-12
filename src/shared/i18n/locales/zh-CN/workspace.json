@@ -638,6 +638,7 @@
   "workspace.header.publishToGithub": "发布到 GitHub",
   "workspace.header.forkAndPushCurrentBranch": "Fork 并推送当前分支",
   "workspace.header.pull": "拉取",
+  "workspace.header.pullFromRemote": "从 {remote} 拉取更新（{count} 个待拉取提交）。",
   "workspace.header.push": "推送",
   "workspace.header.pushFirst": "首次推送",
   "workspace.header.pushToSelectedRemote": "推送到当前 remote",

@@ -638,6 +638,7 @@
   "workspace.header.publishToGithub": "Publish to GitHub",
   "workspace.header.forkAndPushCurrentBranch": "Fork and push current branch",
   "workspace.header.pull": "Pull",
+  "workspace.header.pullFromRemote": "Pull updates from {remote} ({count} incoming commits).",
   "workspace.header.push": "Push",
   "workspace.header.pushFirst": "First push",
   "workspace.header.pushToSelectedRemote": "Push to remote",
