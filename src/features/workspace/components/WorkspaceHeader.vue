@@ -464,7 +464,13 @@ export default defineComponent({
                     </div>
                     <div class="repository-picker-command-tools">
                       <span>{{ t('workspace.header.switchRepository') }}</span>
-                      <n-select v-model:value="repositoryGrouping" size="tiny" :options="repositoryGroupingOptions" class="repository-grouping-select" />
+                      <n-select
+                        v-model:value="repositoryGrouping"
+                        size="tiny"
+                        :options="repositoryGroupingOptions"
+                        :consistent-menu-width="false"
+                        class="repository-grouping-select"
+                      />
                     </div>
                   </div>
 

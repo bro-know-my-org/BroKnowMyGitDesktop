@@ -129,6 +129,7 @@
 
 .repository-picker-command-tools {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
@@ -163,7 +164,8 @@
 }
 
 .repository-grouping-select {
-  width: 102px;
+  width: calc(200px * var(--app-font-scale));
+  max-width: 100%;
   flex: 0 0 auto;
 }
 
@@ -635,10 +637,6 @@
 }
 
 @media (width <= 1120px) {
-  .repository-grouping-select {
-    width: 90px;
-  }
-
   .topbar-content {
     gap: 12px;
     padding: 0 12px 0 8px;
