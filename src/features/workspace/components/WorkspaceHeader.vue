@@ -524,7 +524,7 @@ export default defineComponent({
                   </div>
 
                   <div class="repository-picker-footer">
-                    <n-dropdown :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
+                    <n-dropdown trigger="click" placement="top-start" to="body" :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
                       <n-button size="small" block class="repository-add-button">
                         <svg class="repository-add-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
                         {{ t('workspace.header.addRepository') }}
