@@ -255,8 +255,6 @@
 .history-file-list {
   min-height: 0;
   flex: 1 1 0;
-  overflow: auto;
-  overscroll-behavior: contain;
   padding: 2px 3px 3px;
 }
 

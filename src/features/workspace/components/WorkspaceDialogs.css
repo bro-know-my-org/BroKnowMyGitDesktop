@@ -42,7 +42,6 @@
 
 .repository-discovery-list {
   max-height: clamp(120px, calc(100vh - 340px), 420px);
-  overflow-y: auto;
   border: 1px solid var(--app-divider);
   border-top: 0;
 }

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { NScrollbar } from "naive-ui";
 import { calculateVirtualWindow, preserveLogicalScrollTop } from "./window.mjs";
 
 const props = withDefaults(defineProps<{
@@ -17,7 +18,9 @@ defineSlots<{
   default(props: { index: number; tabIndex: number }): unknown;
 }>();
 
-const scroller = ref<HTMLElement | null>(null);
+const scrollbar = ref<InstanceType<typeof NScrollbar> | null>(null);
+// Virtualization must measure and scroll the inner viewport, not the scrollbar wrapper.
+const scroller = computed(() => scrollbar.value?.scrollbarInstRef?.containerRef ?? null);
 const scrollTop = ref(0);
 const viewportHeight = ref(0);
 const activeIndex = ref(0);
@@ -210,8 +213,8 @@ defineExpose({ scrollToIndex });
 </script>
 
 <template>
-  <div
-    ref="scroller"
+  <NScrollbar
+    ref="scrollbar"
     class="fixed-virtual-list"
     role="list"
     @focusin="handleFocusIn"
@@ -233,14 +236,18 @@ defineExpose({ scrollToIndex });
         <slot :index="index" :tab-index="activeIndex === index ? 0 : -1" />
       </div>
     </div>
-  </div>
+  </NScrollbar>
 </template>
 
 <style scoped>
 .fixed-virtual-list {
+  box-sizing: border-box;
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+}
+
+.fixed-virtual-list :deep(.n-scrollbar-container) {
   overscroll-behavior: contain;
 }
 
