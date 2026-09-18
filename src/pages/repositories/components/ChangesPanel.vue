@@ -1,6 +1,7 @@
 <script lang="ts">
 import { computed, defineComponent } from "vue";
 import { NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText } from "naive-ui";
+import RepositoryFileDiff from "../../../features/repository/components/RepositoryFileDiff.vue";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
@@ -10,7 +11,7 @@ import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue"
 
 export default defineComponent({
   name: "RepositoryChangesPanel",
-  components: { FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText, RepositoryDiffViewer },
+  components: { FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NEmpty, NInput, NSpace, NSpin, NText, RepositoryDiffViewer, RepositoryFileDiff },
   setup() {
     const workspace = useWorkspaceControllerContext();
     return {
@@ -126,11 +127,14 @@ export default defineComponent({
                   <n-card size="small" :title="selectedChange ? selectedChange.path : t('repository.changes.diffPreview')" class="diff-card changes-diff-card">
                     <template #header-extra>
                       <n-space v-if="selectedChange" size="small">
+                        <n-button v-if="selectedChange.worktreeStatus" size="tiny" :type="selectedDiffStaged ? 'default' : 'primary'" @click="loadDiff(selectedChange, activeRepositoryPath, true, false)">{{ t('repository.resource.worktree') }}</n-button>
+                        <n-button v-if="selectedChange.indexStatus" size="tiny" :type="selectedDiffStaged ? 'primary' : 'default'" @click="loadDiff(selectedChange, activeRepositoryPath, true, true)">{{ t('repository.resource.index') }}</n-button>
                         <n-button size="tiny" tertiary :loading="blameLoading" :disabled="!snapshot.hasHead || (!selectedChange.indexStatus && selectedChange.worktreeStatus === '?')" @click="openFileBlame">{{ t('repository.changes.viewBlame') }}</n-button>
                         <n-button size="tiny" text type="error" :loading="mutationBusy" @click="discardSelectedChange">{{ t('repository.changes.discardFile') }}</n-button>
                       </n-space>
                     </template>
                     <div class="changes-diff-panel">
+                      <RepositoryFileDiff :repository-path="activeRepositoryPath" :comparison="selectedChange ? { path: selectedChange.path, previousPath: selectedDiffStaged || ['R', 'C'].includes(selectedChange.worktreeStatus) ? selectedChange.originalPath : null, staged: selectedDiffStaged } : null" :diff-text="diffText" :loading="diffLoading">
                       <n-spin v-if="diffLoading" size="small" class="changes-diff-loading" />
                       <template v-else-if="hasDiffText">
                         <RepositoryDiffViewer
@@ -152,6 +156,7 @@ export default defineComponent({
                         </RepositoryDiffViewer>
                       </template>
                       <n-empty v-else :description="selectedChange ? t('repository.changes.noTextDiffAvailableFile') : t('repository.changes.selectFileViewItsDiff')" size="small" :show-icon="false" />
+                      </RepositoryFileDiff>
                     </div>
                   </n-card>
                 </div>

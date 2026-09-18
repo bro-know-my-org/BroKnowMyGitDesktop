@@ -1,6 +1,7 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
 import { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, useMessage } from "naive-ui";
+import RepositoryFileDiff from "../../../features/repository/components/RepositoryFileDiff.vue";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
 import { useWorkspaceControllerContext } from "../../../features/workspace/composables/workspaceContext";
@@ -11,7 +12,7 @@ import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue"
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer },
+  components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer, RepositoryFileDiff },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const message = useMessage();
@@ -366,6 +367,7 @@ export default defineComponent({
                           <span v-if="selectedCommitFile" class="history-file-kind">{{ commitFileStatusLabel(selectedCommitFile) }}</span>
                         </header>
                         <div class="history-diff-content">
+                          <RepositoryFileDiff :repository-path="activeRepositoryPath" :comparison="selectedCommitFile && selectedCommit ? { path: selectedCommitFile.path, previousPath: selectedCommitFile.previousPath, staged: false, revision: selectedCommit.sha } : null" :diff-text="commitDiffText" :loading="commitDiffLoading">
                           <n-spin v-if="commitDiffLoading" size="small" class="history-diff-loading" />
                           <template v-else-if="commitDiffText">
                             <RepositoryDiffViewer
@@ -393,6 +395,7 @@ export default defineComponent({
                             size="small"
                             :show-icon="false"
                           />
+                          </RepositoryFileDiff>
                         </div>
                       </section>
                     </div>

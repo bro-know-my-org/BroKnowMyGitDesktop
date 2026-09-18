@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computed, nextTick, ref } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { api } from "../../../shared/api/tauri";
 import type { GitStatusEntry } from "../../../shared/types/domain";
 import { useRepositoryChanges } from "./useRepositoryChanges";
@@ -129,4 +129,28 @@ test("stale blame requests cannot update or clear newer repository state", async
   } finally {
     api.getFileBlame = originalGetFileBlame;
   }
+});
+
+
+test("same-path resource refresh renders loading and preserves the chosen comparison", async () => {
+  const changes = useRepositoryChanges({
+    activeRepositoryPath: ref("/repo"), snapshot: ref(null), currentBranch: computed(() => "main"), commits: ref([]),
+    getSelectionGeneration: () => 1, repositorySelectionIsCurrent: () => true,
+    applySnapshot: () => true, loadHistory: async () => undefined,
+    isChangeFullyIncluded: () => false, isConflictedEntry: () => false,
+    splitDiffHunks: () => [], splitDiffLines: () => [], reportError: (error) => assert.fail(String(error)),
+    message: {} as never, dialog: {} as never,
+  });
+  const states: boolean[] = [];
+  const stop = watch(changes.diffLoading, (value) => states.push(value), { flush: "post" });
+  const entry = { ...change("icon.png"), indexStatus: "M" };
+  await changes.loadDiff(entry, "/repo", true, true);
+  await nextTick();
+  await changes.loadDiff(entry);
+  await nextTick();
+  assert.deepEqual(states, [true, false, true, false]);
+  assert.equal(changes.selectedDiffStaged.value, true);
+  await changes.loadDiff(entry, "/repo", true, false);
+  assert.equal(changes.selectedDiffStaged.value, false);
+  stop();
 });

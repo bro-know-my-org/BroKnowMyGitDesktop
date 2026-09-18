@@ -1,3 +1,4 @@
+import { skipResourceTextDiff } from "../../repository/utils/resourcePreview";
 import { computed, ref, watch, type Ref } from "vue";
 import { api } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
@@ -544,7 +545,7 @@ export function useRepositoryHistory({
     maximumBytes: number,
   ): Promise<void> {
     try {
-      const nextDiff = await api.getCommitFileDiff(
+      const nextDiff = skipResourceTextDiff(file.path, file.previousPath) ? { text: "", truncated: false } : await api.getCommitFileDiff(
         repositoryPath,
         commit.sha,
         file.path,

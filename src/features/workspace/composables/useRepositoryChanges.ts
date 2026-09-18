@@ -1,4 +1,5 @@
-import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import { skipResourceTextDiff } from "../../repository/utils/resourcePreview";
+import { computed, nextTick, ref, watch, type ComputedRef, type Ref } from "vue";
 import type { DialogApi, MessageApi } from "naive-ui";
 import { api } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
@@ -148,6 +149,7 @@ export function useRepositoryChanges({
     entry: GitStatusEntry,
     repositoryPath = activeRepositoryPath.value,
     reportErrors = true,
+    stagedOverride?: boolean,
   ): Promise<void> {
     if (!repositoryPath || activeRepositoryPath.value !== repositoryPath) return;
     const selectionGeneration = getSelectionGeneration();
@@ -158,14 +160,19 @@ export function useRepositoryChanges({
       blameLoading.value = false;
       blameModalShown.value = false;
     }
+    const staged = stagedOverride ?? (selectedChange.value?.path === entry.path
+      ? selectedDiffStaged.value && Boolean(entry.indexStatus) || !entry.worktreeStatus
+      : Boolean(entry.indexStatus) && !entry.worktreeStatus);
     selectedChange.value = entry;
-    selectedDiffStaged.value = Boolean(entry.indexStatus) && !entry.worktreeStatus;
+    selectedDiffStaged.value = staged;
+    diffText.value = "";
     diffLoading.value = true;
     try {
-      const diff = await api.getFileDiff(
+      const previousPath = staged || ["R", "C"].includes(entry.worktreeStatus) ? entry.originalPath : null;
+      const diff = skipResourceTextDiff(entry.path, previousPath) ? await nextTick(() => "") : await api.getFileDiff(
         repositoryPath,
         entry.path,
-        Boolean(entry.indexStatus) && !entry.worktreeStatus,
+        staged,
       );
       if (
         activeRepositoryPath.value !== repositoryPath
