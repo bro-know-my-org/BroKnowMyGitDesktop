@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { NButton, NSelect, NSlider } from "naive-ui";
 import { t } from "../../../shared/i18n";
 import { pixelDifference } from "../utils/resourcePreview";
-const props = defineProps<{ urls: (string | null)[] }>();
+const props = defineProps<{ urls: (string | null)[]; sideIndices?: number[] }>();
 type Mode = "sideBySide" | "wipe" | "overlay" | "difference";
 const mode = ref<Mode>("sideBySide"), zoom = ref<number | null>(null), amount = ref(50);
 const images = shallowRef<(HTMLImageElement | null)[]>([null, null]);
@@ -14,9 +14,10 @@ let observer: ResizeObserver | undefined, generation = 0, differenceGeneration =
 const options = computed(() => (["sideBySide", "wipe", "overlay", "difference"] as Mode[]).map((value) => ({
   value, label: t(`repository.resource.${value}`), disabled: value !== "sideBySide" && !images.value.every(Boolean),
 })));
+const visibleIndices = computed(() => props.sideIndices ?? props.urls.flatMap((url, index) => url ? [index] : []));
 const width = computed(() => Math.max(1, ...images.value.map((image) => image?.naturalWidth ?? 0)));
 const height = computed(() => Math.max(1, ...images.value.map((image) => image?.naturalHeight ?? 0)));
-const fitScale = computed(() => Math.max(0.01, Math.min(1, (availableWidth.value / (mode.value === "sideBySide" ? 2 : 1) - 24) / width.value, 460 / height.value)));
+const fitScale = computed(() => Math.max(0.01, Math.min(1, (availableWidth.value / (mode.value === "sideBySide" ? Math.max(1, visibleIndices.value.length) : 1) - 24) / width.value, 460 / height.value)));
 const scale = computed(() => zoom.value === null ? fitScale.value : zoom.value / 100);
 const zoomPercent = computed(() => Math.round(scale.value * 100));
 const stageStyle = computed(() => ({ width: `${width.value * scale.value}px`, height: `${height.value * scale.value}px` }));
@@ -100,7 +101,7 @@ onBeforeUnmount(() => { generation++; differenceGeneration++; observer?.disconne
 <template>
   <div ref="host" class="resource-image-diff">
     <div class="resource-toolbar">
-      <n-select v-model:value="mode" :options="options" :aria-label="t('repository.resource.compareMode')" class="resource-mode" size="small" />
+      <n-select v-if="visibleIndices.length === 2" v-model:value="mode" :options="options" :aria-label="t('repository.resource.compareMode')" class="resource-mode" size="small" />
       <n-button size="small" :disabled="zoomPercent <= 25" :aria-label="t('repository.resource.zoomOut')" @click="zoom = Math.max(25, (Math.ceil(zoomPercent / 25) - 1) * 25)">−</n-button>
       <span>{{ zoomPercent }}%</span>
       <n-button size="small" :disabled="zoomPercent >= 800" :aria-label="t('repository.resource.zoomIn')" @click="zoom = Math.min(800, (Math.floor(zoomPercent / 25) + 1) * 25)">+</n-button>
@@ -112,13 +113,13 @@ onBeforeUnmount(() => { generation++; differenceGeneration++; observer?.disconne
       <label :for="`resource-${mode}`">{{ t(mode === 'wipe' ? 'repository.resource.wipePosition' : 'repository.resource.opacity') }}</label>
       <n-slider :id="`resource-${mode}`" v-model:value="amount" :aria-label="t(mode === 'wipe' ? 'repository.resource.wipePosition' : 'repository.resource.opacity')" class="resource-slider" />
     </div>
-    <div class="resource-columns resource-dimensions">
-      <span v-for="(image, index) in images" :key="index">{{ image ? `${image.naturalWidth} × ${image.naturalHeight} px` : failures[index] ? t('repository.resource.decodeFailed') : '—' }}</span>
+    <div class="resource-columns resource-dimensions" :class="{ 'resource-columns-single': visibleIndices.length === 1 }">
+      <span v-for="index in visibleIndices" :key="index">{{ images[index] ? `${images[index]!.naturalWidth} × ${images[index]!.naturalHeight} px` : failures[index] ? t('repository.resource.decodeFailed') : '—' }}</span>
     </div>
-    <div v-if="mode === 'sideBySide'" class="resource-columns">
-      <div v-for="(url, index) in urls" :key="index" class="resource-image-scroll resource-checker" tabindex="0" @scroll="syncScroll">
+    <div v-if="mode === 'sideBySide'" class="resource-columns" :class="{ 'resource-columns-single': visibleIndices.length === 1 }">
+      <div v-for="index in visibleIndices" :key="index" class="resource-image-scroll resource-checker" tabindex="0" @scroll="syncScroll">
         <div :style="stageStyle">
-          <img v-if="url && images[index]" :src="url" :style="imageStyle(index)" :alt="t(index === 0 ? 'repository.resource.before' : 'repository.resource.after')" />
+          <img v-if="urls[index] && images[index]" :src="urls[index]!" :style="imageStyle(index)" :alt="t(index === 0 ? 'repository.resource.before' : 'repository.resource.after')" />
         </div>
       </div>
     </div>

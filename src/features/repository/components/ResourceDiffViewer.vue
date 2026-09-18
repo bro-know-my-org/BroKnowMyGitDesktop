@@ -16,6 +16,8 @@ let generation = 0;
 const urls = computed(() => preview.value?.sides.map((side) => side?.file && !side.notice ? resourceUrl(side.file) : null) ?? [null, null]);
 const kinds = computed(() => preview.value?.sides.map((side) => resourceKind(side?.path ?? props.comparison.path)) ?? []);
 const images = computed(() => preview.value?.sides.every((side, i) => !side || kinds.value[i] === "image"));
+const visibleSides = computed(() => preview.value?.sides.flatMap((side, index) => side ? [{ side, index }] : []) ?? []);
+const sideIndices = computed(() => visibleSides.value.map(({ index }) => index));
 const sizeDelta = computed(() => (preview.value?.sides[1]?.size ?? 0) - (preview.value?.sides[0]?.size ?? 0));
 function release() {
   const previous = preview.value;
@@ -52,16 +54,15 @@ onBeforeUnmount(() => { generation++; release(); });
     </n-alert>
     <template v-else-if="preview">
       <div class="resource-summary">{{ t('repository.resource.sizeChange') }}: {{ sizeDelta > 0 ? '+' : sizeDelta < 0 ? '−' : '' }}{{ formatResourceSize(Math.abs(sizeDelta)) }}</div>
-      <div class="resource-columns">
-        <section v-for="(side, index) in preview.sides" :key="index" class="resource-side">
+      <div class="resource-columns" :class="{ 'resource-columns-single': visibleSides.length === 1 }">
+        <section v-for="{ side, index } in visibleSides" :key="index" class="resource-side">
           <header class="resource-side-header">
             <strong>{{ t(index === 0 ? 'repository.resource.before' : 'repository.resource.after') }}</strong>
             <span v-if="side">{{ formatResourceSize(side.size) }} · {{ resourceExtension(side.path).toUpperCase() || t('repository.resource.binaryFile') }}</span>
             <n-button v-if="side?.exportable" size="tiny" :loading="exporting === index" :disabled="exporting !== null" @click="save(index)">{{ t('repository.resource.export') }}</n-button>
           </header>
           <div v-if="side" class="resource-path" :title="side.path">{{ side.path }}</div>
-          <p v-if="!side" class="resource-notice">{{ t(index === 0 ? 'repository.resource.added' : 'repository.resource.deleted') }}</p>
-          <p v-else-if="side.notice" class="resource-notice">{{ t(`repository.resource.${side.notice}`) }}</p>
+          <p v-if="side.notice" class="resource-notice">{{ t(`repository.resource.${side.notice}`) }}</p>
           <template v-else-if="!images && urls[index]">
             <p v-if="failed[index]" class="resource-notice">{{ t('repository.resource.decodeFailed') }}</p>
             <MediaResourcePreview v-else-if="kinds[index] === 'video' || kinds[index] === 'audio'" :url="urls[index]!" :kind="kinds[index] as 'audio' | 'video'" />
@@ -71,7 +72,7 @@ onBeforeUnmount(() => { generation++; release(); });
           </template>
         </section>
       </div>
-      <ImageResourceDiff v-if="images && urls.some(Boolean)" :urls="urls" />
+      <ImageResourceDiff v-if="images && urls.some(Boolean)" :urls="urls" :side-indices="sideIndices" />
     </template>
   </section>
 </template>
