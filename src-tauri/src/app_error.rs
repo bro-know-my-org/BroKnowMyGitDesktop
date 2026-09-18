@@ -1,3 +1,5 @@
+mod diagnostic;
+
 use serde::Serialize;
 use std::fmt::{Display, Formatter};
 
@@ -11,6 +13,8 @@ pub struct AppError {
     code: String,
     message: String,
     details: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<String>,
 }
 
 impl AppError {
@@ -23,6 +27,7 @@ impl AppError {
             code: code.into(),
             message: message.into(),
             details: None,
+            diagnostic: None,
         }
     }
 
@@ -37,13 +42,18 @@ impl AppError {
             code: code.into(),
             message: message.into(),
             details: Some(details.into()),
+            diagnostic: None,
         }
     }
 
-    /// I/O errors are deliberately not forwarded over IPC. OS diagnostics can
-    /// include a credential-bearing path or command-line value.
-    pub fn io(_action: &str, _error: impl Display) -> Self {
-        Self::new("io_error", "本地操作未能完成。")
+    /// Runtime output may only cross IPC through this redaction boundary.
+    pub(crate) fn with_diagnostic(mut self, diagnostic: &str) -> Self {
+        self.diagnostic = diagnostic::sanitize(diagnostic);
+        self
+    }
+
+    pub fn io(_action: &str, error: impl Display) -> Self {
+        Self::new("io_error", "本地操作未能完成。").with_diagnostic(&error.to_string())
     }
 
     pub fn code(&self) -> &str {
@@ -79,8 +89,22 @@ mod tests {
             "https://token-value@example.test/private repository",
         );
         assert_eq!(error.details(), None);
-        assert!(!error.message().contains("token-value"));
+        let json = serde_json::to_value(&error).unwrap();
+        assert!(!json.to_string().contains("token-value"));
+        assert!(json["diagnostic"].as_str().unwrap().contains("[REDACTED]"));
         assert_eq!(error.message(), "本地操作未能完成。");
+    }
+
+    #[test]
+    fn io_errors_retain_actionable_os_diagnostics() {
+        let error = AppError::io(
+            "读取文件",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(serde_json::to_value(error).unwrap()["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("permission denied"));
     }
 
     #[test]

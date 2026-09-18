@@ -1,21 +1,22 @@
 use super::*;
 
 pub(super) fn git_command_error(operation: &'static str, output: &Output) -> AppError {
-    const MAX_CLASSIFICATION_BYTES: usize = 64 * 1024;
-    let stderr = bounded_diagnostic_bytes(&output.stderr, MAX_CLASSIFICATION_BYTES);
-    let stdout = bounded_diagnostic_bytes(&output.stdout, MAX_CLASSIFICATION_BYTES);
-    let diagnostic = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&stderr),
-        String::from_utf8_lossy(&stdout)
-    );
-    git_error_from_diagnostic(operation, &diagnostic)
+    git_output_error(operation, output, &[], false)
 }
 
 pub(super) fn git_command_error_with_metadata_directories(
     operation: &'static str,
     output: &Output,
     metadata_directories: &[PathBuf],
+) -> AppError {
+    git_output_error(operation, output, metadata_directories, true)
+}
+
+fn git_output_error(
+    operation: &'static str,
+    output: &Output,
+    metadata_directories: &[PathBuf],
+    metadata_context_supplied: bool,
 ) -> AppError {
     const MAX_CLASSIFICATION_BYTES: usize = 64 * 1024;
     let stderr = bounded_diagnostic_bytes(&output.stderr, MAX_CLASSIFICATION_BYTES);
@@ -25,11 +26,19 @@ pub(super) fn git_command_error_with_metadata_directories(
         String::from_utf8_lossy(&stderr),
         String::from_utf8_lossy(&stdout)
     );
-    git_error_from_diagnostic_with_metadata_directories(
+    // Classification may discard bytes, but redaction must see complete tokens.
+    let original_diagnostic = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    classify_git_error_from_diagnostic(
         operation,
         &diagnostic,
         metadata_directories,
+        metadata_context_supplied,
     )
+    .with_diagnostic(&original_diagnostic)
 }
 
 pub(super) fn git_output_may_report_lock_contention(output: &Output) -> bool {
@@ -65,19 +74,21 @@ fn bounded_diagnostic_bytes(bytes: &[u8], maximum: usize) -> Vec<u8> {
     retained
 }
 
-/// Classifies known Git failures but never returns original process output.
-/// Git may echo a URL or a server response containing a token, so forwarding
-/// raw stdout/stderr would violate the credential boundary.
+/// Classify known failures and retain diagnostics through the IPC redactor.
+#[cfg(test)]
 pub(super) fn git_error_from_diagnostic(operation: &'static str, diagnostic: &str) -> AppError {
     classify_git_error_from_diagnostic(operation, diagnostic, &[], false)
+        .with_diagnostic(diagnostic)
 }
 
+#[cfg(test)]
 pub(super) fn git_error_from_diagnostic_with_metadata_directories(
     operation: &'static str,
     diagnostic: &str,
     metadata_directories: &[PathBuf],
 ) -> AppError {
     classify_git_error_from_diagnostic(operation, diagnostic, metadata_directories, true)
+        .with_diagnostic(diagnostic)
 }
 
 fn classify_git_error_from_diagnostic(
@@ -216,6 +227,23 @@ fn classify_git_error_from_diagnostic(
         (
             "git_authentication_failed",
             "请检查 remote 绑定的账号、SSH agent 或系统 Git credential helper。",
+        )
+    } else if operation == "推送改动"
+        && contains_any(
+            &diagnostic,
+            &[
+                "gh006",
+                "gh013",
+                "protected branch",
+                "repository rule violations",
+                "changes must be made through a pull request",
+                "branch is locked",
+            ],
+        )
+    {
+        (
+            "git_push_rejected_by_policy",
+            "远端分支保护或仓库规则拒绝了推送；请查看具体原因，按要求通过 PR 合入或满足规则后重试。",
         )
     } else if operation == "推送改动"
         && (contains_any(

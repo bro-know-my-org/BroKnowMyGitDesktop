@@ -1,10 +1,11 @@
+import { asAppError } from "../../../shared/api/appError";
 import { buildCloneOptions, defaultCloneOptionsForm, validCloneDepth } from "./cloneOptions";
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { NButton, NScrollbar, NSpace, useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, builtinEndpoints, isAppError, isBrowserDemo, toggleDevtools } from "../../../shared/api/tauri";
-import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, formatDate, localizedErrorDetails, localizedErrorMessage, setAppLocale, t } from "../../../shared/i18n";
+import { appLocale, authenticationMethodLabel, authenticationStatusLabel, endpointKindLabel, formatDate, localizedErrorMessage, setAppLocale, t } from "../../../shared/i18n";
 import { completeStartupPerformance, markPerformance, measurePerformance } from "../../../shared/performance";
 import { colorMode, resetThemeColor, setColorMode, themeColor } from "../../../shared/theme";
 import { settingsSection } from "../../../shared/settingsNavigation";
@@ -709,11 +710,13 @@ function normalizedAppError(error: unknown): AppError {
   const appError: AppError = isAppError(error)
     ? error
     : { code: "unexpected_error", message: t("workspace.controller.anUnexpectedErrorOccurred"), details: null };
-  return {
-    ...appError,
-    message: localizedErrorMessage(appError.code),
-    details: localizedErrorDetails(appError.code) || null,
-  };
+  return asAppError(appError);
+}
+
+function renderErrorDetails(details: AppError["details"]) {
+  return details ? () => h("div", {
+    style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "320px", overflow: "auto" },
+  }, details) : undefined;
 }
 
 const recoverableGitLockCodes = new Set([
@@ -951,7 +954,7 @@ function reportRepositoryLockError(
     title: action,
     content: appError.message,
     meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
-    description: appError.details || undefined,
+    description: renderErrorDetails(appError.details),
     action: () => h(NSpace, { size: 8 }, {
       default: () => [
         h(NButton, {
@@ -1017,7 +1020,7 @@ function reportError(
     title: action,
     content: appError.message,
     meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
-    description: appError.details || undefined,
+    description: renderErrorDetails(appError.details),
     duration: 0,
     closable: true,
   });
@@ -1166,7 +1169,7 @@ function reportUnsafeNetworkConfiguration(
     title: actionLabel,
     content: appError.message,
     meta: `${t("workspace.content.errorCode")}: ${appError.code}`,
-    description: appError.details || undefined,
+    description: renderErrorDetails(appError.details),
     action: () => h(NSpace, { size: 8 }, {
       default: () => [
         h(NButton, {

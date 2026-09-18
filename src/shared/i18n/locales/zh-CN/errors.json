@@ -103,6 +103,8 @@
   "errors.git_remote_not_found.details": "请检查远程地址、访问权限和账号绑定。",
   "errors.git_remote_ref_not_found": "远程分支已不存在，请获取远程更新并刷新分支列表。",
   "errors.git_remote_ref_not_found.details": "请获取远程更新并刷新分支列表。",
+  "errors.git_push_rejected_by_policy": "远端分支保护或仓库规则拒绝了推送。",
+  "errors.git_push_rejected_by_policy.details": "请查看具体原因，按要求通过 PR 合入或满足仓库规则后重试。",
   "errors.git_push_permission_denied": "没有权限向该 Git 远程仓库推送。",
   "errors.git_push_permission_denied.details": "请改用自己的 Fork，或为当前账号授予该源仓库的写入权限。",
   "errors.git_unavailable": "无法启动系统 Git",

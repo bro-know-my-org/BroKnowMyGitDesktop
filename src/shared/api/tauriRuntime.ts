@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { localizedErrorDetails, localizedErrorMessage } from "../i18n";
+import { asAppError } from "./appError";
 import { measureCommand, performanceProfilingEnabled } from "../performance";
 import type { AppError } from "../types/domain";
 
@@ -15,36 +15,6 @@ export function isBrowserDemo(): boolean {
 export async function toggleDevtools(): Promise<void> {
   if (!isTauriRuntime()) return;
   await invoke("plugin:webview|internal_toggle_devtools");
-}
-
-function asAppError(error: unknown): AppError {
-  if (typeof error === "object" && error !== null && "message" in error) {
-    const candidate = error as Partial<AppError>;
-    const code = typeof candidate.code === "string" ? candidate.code : "command_failed";
-    const details = candidate.details ? localizedErrorDetails(code) : "";
-    return {
-      code,
-      message: localizedErrorMessage(code),
-      details: details || null,
-    };
-  }
-
-  const raw = typeof error === "string" ? error : localizedErrorMessage("command_failed");
-  try {
-    const parsed = JSON.parse(raw) as Partial<AppError>;
-    if (typeof parsed.message === "string") {
-      const code = typeof parsed.code === "string" ? parsed.code : "command_failed";
-      const details = parsed.details ? localizedErrorDetails(code) : "";
-      return {
-        code,
-        message: localizedErrorMessage(code),
-        details: details || null,
-      };
-    }
-  } catch {
-    // Tauri also returns ordinary strings for some command failures.
-  }
-  return { code: "command_failed", message: localizedErrorMessage("command_failed"), details: null };
 }
 
 export async function request<T>(

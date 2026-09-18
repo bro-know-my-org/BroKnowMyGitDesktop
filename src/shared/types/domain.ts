@@ -32,6 +32,8 @@ export interface AppError {
   code: string;
   message: string;
   details?: string | null;
+  /** Runtime diagnostic, redacted by the backend before crossing IPC. */
+  diagnostic?: string | null;
 }
 
 export type RepositoryLockKind = "configuration" | "index" | "reference" | "shallow" | "other";

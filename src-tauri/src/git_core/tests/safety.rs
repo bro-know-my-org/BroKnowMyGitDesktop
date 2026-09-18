@@ -634,11 +634,7 @@ fn git_failure_never_echoes_token_like_diagnostic_content() {
         "推送改动",
         "remote: authentication failed for https://secret-token@gitee.com/org/repo.git",
     );
-    let returned = format!(
-        "{} {}",
-        error.message(),
-        error.details().unwrap_or_default()
-    );
+    let returned = serde_json::to_string(&error).unwrap();
     assert_eq!(error.code(), "git_authentication_failed");
     assert!(!returned.contains("secret-token"));
 }
@@ -979,10 +975,7 @@ fn classifies_gitlab_push_permission_denial() {
 
 #[test]
 fn ssh_publickey_permission_denial_remains_authentication_failure() {
-    let error = git_error_from_diagnostic(
-        "推送改动",
-        "permission denied (publickey).",
-    );
+    let error = git_error_from_diagnostic("推送改动", "permission denied (publickey).");
     assert_eq!(error.code(), "git_authentication_failed");
 }
 
@@ -1133,4 +1126,48 @@ fn repository_configured_excludes_cannot_expand_watcher_scope_outside_repository
             .map(|exclude| exclude.path),
         None
     );
+}
+
+#[test]
+fn git_rejections_retain_redacted_diagnostics_over_ipc() {
+    for (diagnostic, code) in [
+        ("remote: GH013: Repository rule violations\nremote: Changes must be made through a pull request.", "git_push_rejected_by_policy"),
+        ("remote: error: GH006: Protected branch update failed", "git_push_rejected_by_policy"),
+        ("remote: custom hook rejected: missing ticket number", "git_command_failed"),
+    ] {
+        let error = git_error_from_diagnostic("推送改动", diagnostic);
+        assert_eq!(error.code(), code);
+        let json = serde_json::to_value(error).unwrap();
+        assert_eq!(json["diagnostic"], diagnostic);
+    }
+}
+
+#[test]
+fn git_output_redacts_credentials_before_classification_truncation() {
+    let status = test_git_command().arg("--version").output().unwrap().status;
+    // The classification tail starts inside this URL, after its scheme.
+    let raw = format!(
+        "{}\nhttps://example.test/{}tail-secret\nremote: GH013: Repository rule violations",
+        "progress\n".repeat(5_000),
+        "x".repeat(40_000),
+    );
+    for (stdout, stderr) in [
+        (raw.as_bytes().to_vec(), vec![]),
+        (vec![], raw.into_bytes()),
+    ] {
+        let output = Output {
+            status,
+            stdout,
+            stderr,
+        };
+        for error in [
+            git_command_error("推送改动", &output),
+            git_command_error_with_metadata_directories("推送改动", &output, &[]),
+        ] {
+            assert_eq!(error.code(), "git_push_rejected_by_policy");
+            let json = serde_json::to_string(&error).unwrap();
+            assert!(!json.contains("tail-secret"));
+            assert!(json.contains("Repository rule violations"));
+        }
+    }
 }

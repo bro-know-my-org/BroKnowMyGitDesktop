@@ -103,6 +103,8 @@
   "errors.git_remote_not_found.details": "Check the remote URL, access permissions, and account binding.",
   "errors.git_remote_ref_not_found": "The remote branch no longer exists. Fetch remote updates and refresh the branch list.",
   "errors.git_remote_ref_not_found.details": "Fetch remote updates and refresh the branch list.",
+  "errors.git_push_rejected_by_policy": "Remote branch protection or repository rules rejected the push.",
+  "errors.git_push_rejected_by_policy.details": "Check the diagnostic below. Use a pull request or satisfy the repository rules before retrying.",
   "errors.git_push_permission_denied": "You do not have permission to push to this Git remote.",
   "errors.git_push_permission_denied.details": "Use your own Fork, or grant the current account write access to the source repository.",
   "errors.git_unavailable": "The system Git executable could not be started.",

@@ -325,6 +325,7 @@ dependencies = [
  "notify",
  "percent-encoding",
  "plist",
+ "regex",
  "serde",
  "serde_json",
  "sha2",

@@ -11,6 +11,7 @@ const source = await readFile(new URL("./useWorkspaceController.ts", import.meta
 const syntax = ts.createSourceFile("controller.ts", source, ts.ScriptTarget.Latest, true);
 const names = new Set([
   "runNetworkAction", "reportUnsafeNetworkConfiguration", "approveNetworkConfigurationAndRetry",
+  "renderErrorDetails",
 ]);
 const functions = [];
 function collect(node) {
