@@ -4,6 +4,7 @@ import { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
+import { writeClipboardText } from "../../../shared/clipboard";
 import { settingsSection } from "../../../shared/settingsNavigation";
 import { filterRepositoryGroups } from "../composables/workspaceControllerSupport";
 
@@ -56,6 +57,7 @@ export default defineComponent({
       { label: workspace.t('workspace.header.openInPreferredTerminal'), key: "open-preferred-terminal" },
       { label: workspace.t('workspace.header.openInFileManager'), key: "open-file-manager" },
       { label: workspace.t('workspace.header.openRepositoryWebsite'), key: "open-remote" },
+      { label: workspace.t("workspace.header.copyAbsolutePath"), key: "copy-absolute-path" },
       { type: "divider", key: "open-divider" },
       { label: workspace.t('workspace.header.setRepositoryAlias'), key: "edit-alias" },
       { label: workspace.t('workspace.header.editRepositoryGroup'), key: "edit-group" },
@@ -340,6 +342,14 @@ export default defineComponent({
       } else if (value === "open-remote") {
         repositoryPickerOpen.value = false;
         await openRemoteRepository(repository);
+      } else if (value === "copy-absolute-path") {
+        repositoryPickerOpen.value = false;
+        try {
+          await writeClipboardText(repository.path);
+          workspace.message.success(workspace.t("workspace.header.absolutePathCopied"));
+        } catch {
+          workspace.message.error(workspace.t("workspace.header.couldNotCopyAbsolutePath"));
+        }
       } else if (value === "edit-alias") {
         repositoryPickerOpen.value = false;
         workspace.openRepositoryAliasEditor(repository);
