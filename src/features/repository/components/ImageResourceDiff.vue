@@ -137,14 +137,14 @@ onBeforeUnmount(() => { generation++; differenceGeneration++; observer?.disconne
       <span v-for="index in visibleIndices" :key="index">{{ images[index] ? `${images[index]!.naturalWidth} × ${images[index]!.naturalHeight} px` : failures[index] ? t('repository.resource.decodeFailed') : '—' }}</span>
     </div>
     <div v-if="mode === 'sideBySide'" class="resource-columns" :class="{ 'resource-columns-single': visibleIndices.length === 1 }">
-      <div v-for="index in visibleIndices" :key="index" class="resource-image-scroll resource-checker" tabindex="0" @scroll="syncScroll" @wheel="wheelZoom">
+      <div v-for="index in visibleIndices" :key="index" class="resource-image-scroll" tabindex="0" @scroll="syncScroll" @wheel="wheelZoom">
         <div :style="stageStyle">
-          <img v-if="urls[index] && images[index]" :src="urls[index]!" :style="imageStyle(index)" :alt="t(index === 0 ? 'repository.resource.before' : 'repository.resource.after')" />
+          <img v-if="urls[index] && images[index]" class="resource-checker" :src="urls[index]!" :style="imageStyle(index)" :alt="t(index === 0 ? 'repository.resource.before' : 'repository.resource.after')" />
         </div>
       </div>
     </div>
-    <div v-else class="resource-image-scroll resource-checker" tabindex="0" @wheel="wheelZoom">
-      <div class="resource-image-stage" :style="stageStyle">
+    <div v-else class="resource-image-scroll" tabindex="0" @wheel="wheelZoom">
+      <div class="resource-image-stage resource-checker" :style="stageStyle">
         <template v-if="mode !== 'difference'">
           <img :src="urls[0]!" :style="imageStyle(0)" :alt="t('repository.resource.before')" />
           <div class="resource-image-overlay" :class="{ 'resource-checker': mode === 'wipe' }" :style="{ ...stageStyle, opacity: mode === 'overlay' ? amount / 100 : 1, clipPath: mode === 'wipe' ? `inset(0 ${100 - amount}% 0 0)` : undefined }">
