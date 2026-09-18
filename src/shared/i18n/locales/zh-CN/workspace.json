@@ -1,4 +1,6 @@
 {
+  "workspace.dialogs.tagNameAlreadyExists": "该标签已存在，请修改名称后创建。",
+  "workspace.dialogs.tagNameSuggestionHint": "可选择已有标签填入，再修改名称；最多显示 20 个匹配项。",
   "workspace.content.browserDemoModeThisUsesInteractiveLocalMockDataTauriCallsRustCommandsDemoPatsAreNeverSavedOrShown": "浏览器演示模式：当前展示可交互的本地 mock 数据；启动 Tauri 后会调用 Rust commands。示例 PAT 不会保存或展示。",
   "workspace.content.cloneRepository": "Clone 仓库",
   "workspace.content.errorCode": "错误代码",

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, onBeforeUnmount, reactive, ref, watch } from "vue";
-import { NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
+import { NAlert, NAutoComplete, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText } from "naive-ui";
 import CloneRepositoryForm from "./CloneRepositoryForm.vue";
 import packageMetadata from "../../../../package.json";
 import { api } from "../../../shared/api/tauri";
@@ -40,9 +40,11 @@ import { settingsSection } from "../../../shared/settingsNavigation";
 
 export default defineComponent({
   name: "WorkspaceDialogs",
-  components: { CloneRepositoryForm, FixedVirtualList, NAlert, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
+  components: { CloneRepositoryForm, FixedVirtualList, NAlert, NAutoComplete, NButton, NCard, NCheckbox, NColorPicker, NDescriptions, NDescriptionsItem, NDivider, NDrawer, NDrawerContent, NForm, NFormItem, NInput, NModal, NScrollbar, NSelect, NSpace, NSpin, NTabPane, NTabs, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
+    const tagSuggestionsHidden = ref(false);
+    watch(workspace.tagModalShown, () => { tagSuggestionsHidden.value = false; });
     const repositoryDiscoveryRowHeight = computed(() =>
       Math.max(58, Math.ceil((46 * resolvedInterfaceFontSize.value / 14) + 18)));
     const repositoryDiscoveryVirtualKeys = computed(() =>
@@ -400,6 +402,7 @@ export default defineComponent({
     const codeFontWeightOptions = computed(() => weightOptions(systemCodeFontWeight.value));
     return {
       ...workspace,
+      tagSuggestionsHidden,
       appVersion: packageMetadata.version === "0.0.0" ? "dev" : packageMetadata.version,
       interfaceFont,
       codeFont,
@@ -1217,12 +1220,30 @@ export default defineComponent({
 
   <n-modal v-model:show="tagModalShown" preset="card" :title="t('workspace.dialogs.newTag')" class="dialog-card" :mask-closable="!mutationBusy">
     <n-form label-placement="top">
-      <n-form-item :label="t('workspace.dialogs.tagName')"><n-input v-model:value="tagForm.name" :placeholder="t('workspace.dialogs.placeholderTagName')" /></n-form-item>
+      <n-form-item
+        :label="t('workspace.dialogs.tagName')"
+        :validation-status="tagNameExists ? 'error' : undefined"
+        :feedback="tagNameExists ? t('workspace.dialogs.tagNameAlreadyExists') : t('workspace.dialogs.tagNameSuggestionHint')"
+      >
+        <n-auto-complete
+          v-model:value="tagForm.name"
+          :options="tagNameOptions"
+          :get-show="() => !tagSuggestionsHidden"
+          :placeholder="t('workspace.dialogs.placeholderTagName')"
+          :disabled="mutationBusy"
+          :blur-after-select="false"
+          :clear-after-select="false"
+          :input-props="{ autocomplete: 'off' }"
+          @focus="tagSuggestionsHidden = false"
+          @update:value="tagSuggestionsHidden = false"
+          @keydown.esc.stop="tagSuggestionsHidden = true"
+        />
+      </n-form-item>
       <n-form-item :label="t('workspace.dialogs.targetReference')"><n-select v-model:value="tagForm.target" :options="tagTargetOptions" /></n-form-item>
       <n-form-item :label="t('workspace.dialogs.annotationOptional')"><n-input v-model:value="tagForm.message" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" :placeholder="t('workspace.dialogs.leaveEmptyToCreateALightweightTag')" /></n-form-item>
     </n-form>
     <n-alert type="info" :bordered="false">{{ t('workspace.dialogs.tagsAreCreatedLocallyOnlyPushThemWithYourUsualPushWorkflowOrGitCommand') }}</n-alert>
-    <template #action><n-space justify="end"><n-button @click="tagModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" @click="createTag">{{ t('workspace.dialogs.createTag') }}</n-button></n-space></template>
+    <template #action><n-space justify="end"><n-button @click="tagModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="mutationBusy || !tagForm.name.trim() || tagNameExists" @click="createTag">{{ t('workspace.dialogs.createTag') }}</n-button></n-space></template>
   </n-modal>
 
   <n-modal v-model:show="remoteModalShown" preset="card" :title="editedRemoteName ? t('workspace.dialogs.editRemote') : t('workspace.dialogs.addRemote')" class="dialog-card" :mask-closable="!mutationBusy">

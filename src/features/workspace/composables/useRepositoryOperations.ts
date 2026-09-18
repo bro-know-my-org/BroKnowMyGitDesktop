@@ -1,4 +1,4 @@
-import { computed, h, reactive, ref, type ComputedRef, type Ref } from "vue";
+import { computed, h, reactive, ref, watch, type ComputedRef, type Ref } from "vue";
 import { NButton, type DialogApi, type MessageApi } from "naive-ui";
 import { api, isAppError } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
@@ -76,6 +76,29 @@ export function useRepositoryOperations({
   const tagForm = reactive({ name: "", target: "", message: "" });
   const tagRepositoryPath = ref<string | null>(null);
   const tagRepositorySelectionGeneration = ref<number | null>(null);
+  const existingTagNames = computed(() => {
+    if (snapshot.value?.repository.path !== activeRepositoryPath.value) return [];
+    return (snapshot.value?.tags ?? []).map((tag) => tag.name)
+      .sort(new Intl.Collator("en", { numeric: true }).compare);
+  });
+  const tagNameExists = computed(() => existingTagNames.value.includes(tagForm.name.trim()));
+  const tagNameOptions = computed(() => {
+    const query = tagForm.name.trim().toLowerCase();
+    const prefixes: string[] = [];
+    const matches: string[] = [];
+    for (const name of existingTagNames.value) {
+      const normalized = name.toLowerCase();
+      if (normalized.startsWith(query)) prefixes.push(name);
+      else if (normalized.includes(query)) matches.push(name);
+    }
+    return [...prefixes, ...matches].slice(0, 20).map((name) => ({ label: name, value: name }));
+  });
+  watch(activeRepositoryPath, () => {
+    tagModalShown.value = false;
+    tagRepositoryPath.value = null;
+    tagRepositorySelectionGeneration.value = null;
+    tagForm.name = "";
+  }, { flush: "sync" });
 
   const rebaseBaseOptions = computed(() => snapshot.value?.branches
     .filter((branch) => !branch.isCurrent)
@@ -793,6 +816,10 @@ export function useRepositoryOperations({
       message.warning(t("workspace.controller.theRepositoryChangedSelectTheTagTargetAgain"));
       return;
     }
+    if (tagNameExists.value) {
+      message.warning(t("workspace.dialogs.tagNameAlreadyExists"));
+      return;
+    }
     const finishMutation = beginRepositoryMutation(repositoryPath);
     if (!finishMutation) return;
     try {
@@ -881,6 +908,8 @@ export function useRepositoryOperations({
     tagRepositoryPath,
     rebaseBaseOptions,
     tagTargetOptions,
+    tagNameOptions,
+    tagNameExists,
     checkoutBranch,
     checkoutRemoteBranch,
     createBranch,

@@ -1,4 +1,6 @@
 {
+  "workspace.dialogs.tagNameAlreadyExists": "This tag already exists. Change the name before creating it.",
+  "workspace.dialogs.tagNameSuggestionHint": "Select an existing tag and edit its name. Up to 20 matches are shown.",
   "workspace.content.browserDemoModeThisUsesInteractiveLocalMockDataTauriCallsRustCommandsDemoPatsAreNeverSavedOrShown": "Browser demo mode: this uses interactive local mock data. Tauri calls Rust commands. Demo PATs are never saved or shown.",
   "workspace.content.cloneRepository": "Clone repository",
   "workspace.content.errorCode": "Error code",
