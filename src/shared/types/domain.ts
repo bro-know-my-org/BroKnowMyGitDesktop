@@ -365,9 +365,21 @@ export interface CreatePullRequestInput {
 export interface CloneRepositoryInput {
   url: string;
   destinationPath: string;
+  options?: CloneOptions;
   /** Optional explicit identity for a private clone. Omit to use normal Git behavior. */
   endpointId?: string;
   accountProfileId?: string;
+}
+
+export interface CloneOptions {
+  depth?: number;
+  branch?: string;
+  singleBranch?: boolean;
+  noTags?: boolean;
+  recurseSubmodules?: boolean;
+  shallowSubmodules?: boolean;
+  filter?: "blob:none";
+  noCheckout?: boolean;
 }
 
 export interface InitRepositoryInput {

@@ -947,8 +947,10 @@ export default defineComponent({
   </n-modal>
 
   <n-modal v-model:show="cloneModalShown" preset="card" :title="t('workspace.dialogs.cloneRepository')" class="dialog-card" :mask-closable="!mutationBusy" :closable="!mutationBusy" :close-on-esc="!mutationBusy">
-    <CloneRepositoryForm v-if="cloneModalShown" />
+    <n-scrollbar style="max-height: calc(100vh - 220px)">
+      <CloneRepositoryForm v-if="cloneModalShown" />
       <n-alert type="info" :bordered="false">{{ t('workspace.dialogs.withoutAnAppAccountCloneUsesSystemGitAndKeepsSshLfsHooksAndYourExistingCredentialHelperCompatibl') }}</n-alert>
+    </n-scrollbar>
     <template #action><n-space justify="end"><n-button :disabled="mutationBusy" @click="cloneModalShown = false">{{ t('workspace.dialogs.cancel') }}</n-button><n-button type="primary" :loading="mutationBusy" :disabled="mutationBusy || !cloneForm.url.trim() || !cloneForm.destinationPath.trim()" @click="cloneRepository">{{ t('workspace.dialogs.clone') }}</n-button></n-space></template>
   </n-modal>
 

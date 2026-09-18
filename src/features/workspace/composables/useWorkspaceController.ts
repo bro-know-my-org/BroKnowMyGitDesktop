@@ -1,3 +1,4 @@
+import { buildCloneOptions, defaultCloneOptionsForm, validCloneDepth } from "./cloneOptions";
 import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { NButton, NScrollbar, NSpace, useDialog, useMessage, useNotification, type NotificationReactive } from "naive-ui";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -341,7 +342,7 @@ const bindingDrawerShown = ref(false);
 const bindingRemote = ref<RemoteProfile | null>(null);
 const settingsModalShown = ref(false);
 
-const cloneForm = reactive({ url: "", destinationPath: "", parentPath: "", endpointId: "", accountId: "none", repositoryDerivedRouting: false });
+const cloneForm = reactive({ url: "", destinationPath: "", parentPath: "", endpointId: "", accountId: "none", repositoryDerivedRouting: false, ...defaultCloneOptionsForm() });
 const initForm = reactive({ destinationPath: "", initialBranch: "main" });
 const remoteForm = reactive({ name: "", fetchUrl: "", pushUrl: "" });
 const editedRemoteName = ref<string | null>(null);
@@ -1815,6 +1816,10 @@ async function reconcileSnapshotAfterMutationError(repositoryPath: string): Prom
 
 async function cloneRepository(): Promise<void> {
   if (mutationBusy.value) return;
+  if (!validCloneDepth(cloneForm)) {
+    message.warning(t("workspace.dialogs.cloneDepthInvalid"));
+    return;
+  }
   if (!cloneForm.url.trim() || !cloneForm.destinationPath.trim()) {
     message.warning(t("workspace.controller.enterARemoteUrlAndDestinationFolder"));
     return;
@@ -1836,6 +1841,7 @@ async function cloneRepository(): Promise<void> {
     const repository = await api.cloneRepository({
       url: cloneForm.url.trim(),
       destinationPath: cloneForm.destinationPath.trim(),
+      options: buildCloneOptions(cloneForm),
       ...(usesPinnedCloneAccount || usesAutomaticCloneAccount ? { endpointId: cloneForm.endpointId } : {}),
       ...(usesPinnedCloneAccount ? { accountProfileId: cloneForm.accountId } : {}),
     });
@@ -1853,6 +1859,7 @@ async function cloneRepository(): Promise<void> {
     cloneForm.repositoryDerivedRouting = false;
     cloneForm.endpointId = "";
     cloneForm.accountId = "none";
+    Object.assign(cloneForm, defaultCloneOptionsForm());
     message.success(t("workspace.controller.repositoryClonedOpeningItNow"));
     await selectRepository(repository.path);
   } catch (error) {

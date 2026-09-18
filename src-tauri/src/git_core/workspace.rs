@@ -157,6 +157,29 @@ impl GitCore {
         Ok(())
     }
 
+    /// Initialize only a freshly cloned repository in its private, owned staging
+    /// directory. Unlike published repositories, Git must be allowed to write
+    /// submodule URLs into config here; run_network's config lock prevents that.
+    pub(super) fn initialize_cloned_submodules(
+        &self,
+        staging: &Path,
+        shallow: bool,
+    ) -> Result<(), AppError> {
+        self.ensure_network_configuration_is_safe(staging)?;
+        self.ensure_initialized_submodule_network_configurations_are_safe(staging, true)?;
+        let mut arguments = os_arguments(&["submodule", "update", "--init", "--recursive"]);
+        if shallow {
+            arguments.extend(os_arguments(&["--depth", "1"]));
+        }
+        // Do not forward the parent clone's account/askpass capability.
+        let environment = self.unbound_network_environment()?;
+        let output = self.execute_network_with_timeout(Some(staging), &arguments, &environment)?;
+        if !output.status.success() {
+            return Err(git_command_error("初始化克隆仓库的子模块", &output));
+        }
+        Ok(())
+    }
+
     /// Returns the repository roots that an update can mutate, including the
     /// parent worktree and every initialized configured submodule reachable at
     /// the requested depth. Command handlers use these canonical paths for a

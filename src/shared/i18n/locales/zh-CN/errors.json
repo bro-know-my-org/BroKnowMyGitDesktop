@@ -137,7 +137,7 @@
   "errors.invalid_account_login": "账号登录名不能为空且不能包含空格。",
   "errors.invalid_askpass_configuration": "无法安全配置该账号的 askpass 认证。",
   "errors.invalid_cherry_pick": "请选择 1 到 100 个要拣选的提交",
-  "errors.invalid_clone_depth": "克隆深度必须大于 0",
+  "errors.invalid_clone_depth": "克隆深度必须在 1 到 2147483647 之间。",
   "errors.invalid_clone_destination": "克隆目标必须是父目录下的一个文件夹。",
   "errors.invalid_commit_message": "提交信息不能为空或包含无效字符",
   "errors.invalid_diff_limit": "提交文件差异读取范围无效。",

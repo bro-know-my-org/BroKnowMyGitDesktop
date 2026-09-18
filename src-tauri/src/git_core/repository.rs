@@ -225,8 +225,14 @@ impl GitCore {
     ) -> Result<RepositoryRecord, AppError> {
         let remote_url = validate_git_remote_url(remote_url)?;
         let mut clone_destination = prepare_clone_destination(destination)?;
-        if options.depth == Some(0) {
-            return Err(AppError::new("invalid_clone_depth", "克隆深度必须大于 0"));
+        if options
+            .depth
+            .is_some_and(|depth| depth == 0 || depth > i32::MAX as u32)
+        {
+            return Err(AppError::new(
+                "invalid_clone_depth",
+                "克隆深度必须在 1 到 2147483647 之间",
+            ));
         }
 
         // Never let a selected credential continue into a submodule. A
@@ -246,13 +252,34 @@ impl GitCore {
             arguments.push(OsString::from("--branch"));
             arguments.push(OsString::from(branch));
         }
+        if let Some(single_branch) = options.single_branch {
+            arguments.push(OsString::from(if single_branch {
+                "--single-branch"
+            } else {
+                "--no-single-branch"
+            }));
+        }
+        if options.no_tags {
+            arguments.push(OsString::from("--no-tags"));
+        }
+        if let Some(filter) = &options.filter {
+            arguments.push(OsString::from(match filter {
+                CloneFilter::BlobNone => "--filter=blob:none",
+            }));
+        }
+        if options.no_checkout {
+            arguments.push(OsString::from("--no-checkout"));
+        }
         arguments.push(OsString::from("--"));
         arguments.push(OsString::from(remote_url));
         arguments.push(clone_destination.staging_path().as_os_str().to_os_string());
         self.run_network(None, &arguments, environment, "克隆仓库")?;
 
-        if options.recursive {
-            self.update_submodules(clone_destination.staging_path(), true, true)?;
+        if options.recursive && !options.no_checkout {
+            self.initialize_cloned_submodules(
+                clone_destination.staging_path(),
+                options.shallow_submodules,
+            )?;
         }
 
         // Moving a sibling directory into place is atomic on the same

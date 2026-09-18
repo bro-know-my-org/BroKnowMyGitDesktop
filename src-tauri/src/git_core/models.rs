@@ -2,11 +2,23 @@ use super::*;
 
 /// Options for cloning a worktree repository.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct CloneOptions {
     pub branch: Option<String>,
     pub depth: Option<u32>,
+    #[serde(rename = "recurseSubmodules", alias = "recursive")]
     pub recursive: bool,
+    pub single_branch: Option<bool>,
+    pub no_tags: bool,
+    pub shallow_submodules: bool,
+    pub filter: Option<CloneFilter>,
+    pub no_checkout: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CloneFilter {
+    #[serde(rename = "blob:none")]
+    BlobNone,
 }
 
 /// Selection for an unstaged or staged diff.

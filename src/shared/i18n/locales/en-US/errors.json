@@ -137,7 +137,7 @@
   "errors.invalid_account_login": "The account login is required and cannot contain spaces.",
   "errors.invalid_askpass_configuration": "The internal Git askpass configuration is invalid.",
   "errors.invalid_cherry_pick": "Select between 1 and 100 commits to cherry-pick.",
-  "errors.invalid_clone_depth": "Clone depth must be greater than zero.",
+  "errors.invalid_clone_depth": "Clone depth must be between 1 and 2147483647.",
   "errors.invalid_clone_destination": "The clone destination is invalid.",
   "errors.invalid_commit_message": "Enter a commit message.",
   "errors.invalid_diff_limit": "The requested diff range is invalid.",

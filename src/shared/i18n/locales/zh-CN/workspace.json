@@ -759,5 +759,20 @@
   "workspace.pathPicker.nativeHintMac": "选择框内：⌘⇧G 前往路径",
   "workspace.pathPicker.nativeHintWindows": "选择框内：点击地址栏输入路径",
   "workspace.pathPicker.browse": "浏览系统文件…",
-  "workspace.pathPicker.usePath": "使用此路径"
+  "workspace.pathPicker.usePath": "使用此路径",
+  "workspace.dialogs.cloneAdvanced": "高级设置",
+  "workspace.dialogs.cloneBranch": "指定分支或标签（--branch）",
+  "workspace.dialogs.cloneBranchHint": "留空使用远程默认分支；选择标签会进入分离 HEAD 状态。",
+  "workspace.dialogs.cloneShallow": "浅克隆（--depth）",
+  "workspace.dialogs.cloneDepth": "历史深度",
+  "workspace.dialogs.cloneDepthHint": "仅获取指定层数的提交历史。取消“仅克隆单分支”可获取各分支的浅历史。",
+  "workspace.dialogs.cloneDepthInvalid": "浅克隆深度必须是 1 到 2147483647 之间的整数。",
+  "workspace.dialogs.cloneSingleBranch": "仅克隆单分支（--single-branch）",
+  "workspace.dialogs.cloneNoTags": "不下载标签（--no-tags）",
+  "workspace.dialogs.cloneRecurseSubmodules": "递归克隆子模块（--recurse-submodules）",
+  "workspace.dialogs.cloneShallowSubmodules": "子模块仅获取一层历史（--shallow-submodules）",
+  "workspace.dialogs.clonePartial": "按需下载文件内容（--filter=blob:none）",
+  "workspace.dialogs.clonePartialHint": "需要服务器支持；检出文件时仍会下载对应内容，后续操作可能需要联网。",
+  "workspace.dialogs.cloneNoCheckout": "暂不检出文件（--no-checkout）",
+  "workspace.dialogs.cloneNoCheckoutHint": "克隆后工作目录不含项目文件，且不会初始化子模块。"
 }

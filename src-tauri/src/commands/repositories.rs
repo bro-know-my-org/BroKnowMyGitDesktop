@@ -269,6 +269,7 @@ pub async fn clone_repository(
     destination_path: String,
     endpoint_id: Option<String>,
     account_profile_id: Option<String>,
+    options: Option<CloneOptions>,
     state: State<'_, AppState>,
 ) -> Result<RepositoryRecord, AppError> {
     let state = state.inner().clone();
@@ -338,7 +339,7 @@ pub async fn clone_repository(
         let repository = match GitCore::new().clone_repository_with_environment(
             &url,
             &destination,
-            &CloneOptions::default(),
+            &options.unwrap_or_default(),
             environment.as_ref().unwrap_or(&GitEnvironment::default()),
         ) {
             Ok(repository) => repository,

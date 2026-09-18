@@ -1,4 +1,215 @@
 #[test]
+fn clone_advanced_options_control_history_refs_and_checkout() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    fs::create_dir(&source).unwrap();
+    let git = |repository: &Path, arguments: &[&str]| {
+        let output = test_git_command()
+            .arg("-C")
+            .arg(repository)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    git(&source, &["init", "-q", "-b", "main"]);
+    git(&source, &["config", "user.email", "clone@example.invalid"]);
+    git(&source, &["config", "user.name", "Clone Test"]);
+    for content in ["first", "second"] {
+        fs::write(source.join("tracked.txt"), content).unwrap();
+        git(&source, &["add", "."]);
+        git(&source, &["commit", "-qm", content]);
+    }
+    git(&source, &["branch", "feature"]);
+    git(&source, &["tag", "v1"]);
+    git(&source, &["config", "uploadpack.allowFilter", "true"]);
+    // file:// uses the upload-pack transport, so Git honors shallow options.
+    let url = url::Url::from_file_path(&source).unwrap().to_string();
+    let destination = root.path().join("shallow");
+    GitCore::new()
+        .clone_repository(
+            &url,
+            &destination,
+            &CloneOptions {
+                branch: Some("feature".into()),
+                depth: Some(1),
+                single_branch: Some(true),
+                no_tags: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(git(&destination, &["branch", "--show-current"]), "feature");
+    assert_eq!(git(&destination, &["rev-list", "--count", "HEAD"]), "1");
+    assert_eq!(
+        git(&destination, &["rev-parse", "--is-shallow-repository"]),
+        "true"
+    );
+    assert_eq!(git(&destination, &["tag", "--list"]), "");
+    assert_eq!(
+        git(&destination, &["config", "--get", "remote.origin.fetch"]),
+        "+refs/heads/feature:refs/remotes/origin/feature"
+    );
+    assert!(destination.join("tracked.txt").is_file());
+
+    let destination = root.path().join("partial");
+    GitCore::new()
+        .clone_repository(
+            &url,
+            &destination,
+            &CloneOptions {
+                depth: Some(1),
+                single_branch: Some(false),
+                no_checkout: true,
+                recursive: true,
+                shallow_submodules: true,
+                filter: Some(CloneFilter::BlobNone),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(!destination.join("tracked.txt").exists());
+    assert_eq!(
+        git(
+            &destination,
+            &["config", "--get", "remote.origin.partialclonefilter"]
+        ),
+        "blob:none"
+    );
+    assert_eq!(
+        git(&destination, &["config", "--get", "remote.origin.fetch"]),
+        "+refs/heads/*:refs/remotes/origin/*"
+    );
+    let destination = root.path().join("invalid");
+    for depth in [0, u32::MAX] {
+        assert_eq!(
+            GitCore::new()
+                .clone_repository(
+                    &url,
+                    &destination,
+                    &CloneOptions {
+                        depth: Some(depth),
+                        ..Default::default()
+                    }
+                )
+                .unwrap_err()
+                .code(),
+            "invalid_clone_depth"
+        );
+        assert!(!destination.exists());
+    }
+}
+
+#[test]
+fn clone_initializes_shallow_submodules_and_cleans_up_failed_updates() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let module = root.path().join("module");
+    let git = |repository: &Path, arguments: &[&str]| {
+        let output = test_git_command()
+            .arg("-C")
+            .arg(repository)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    for repository in [&source, &module] {
+        fs::create_dir(repository).unwrap();
+        git(repository, &["init", "-q", "-b", "main"]);
+        git(repository, &["config", "user.name", "Submodule Test"]);
+        git(
+            repository,
+            &["config", "user.email", "submodule@example.invalid"],
+        );
+        for content in ["first", "second"] {
+            fs::write(repository.join("tracked.txt"), content).unwrap();
+            git(repository, &["add", "."]);
+            git(repository, &["commit", "-qm", content]);
+        }
+    }
+    let module_url = url::Url::from_file_path(&module).unwrap().to_string();
+    git(
+        &source,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            &module_url,
+            "nested",
+        ],
+    );
+    git(&source, &["commit", "-qam", "add submodule"]);
+    let options = CloneOptions {
+        recursive: true,
+        shallow_submodules: true,
+        ..Default::default()
+    };
+    let destination = root.path().join("destination");
+    GitCore::new()
+        .clone_repository(source.to_str().unwrap(), &destination, &options)
+        .unwrap();
+    let nested = destination.join("nested");
+    assert_eq!(
+        fs::read_to_string(nested.join("tracked.txt")).unwrap(),
+        "second"
+    );
+    assert_eq!(
+        git(&nested, &["rev-parse", "--is-shallow-repository"]),
+        "true"
+    );
+    assert_eq!(git(&nested, &["rev-list", "--count", "HEAD"]), "1");
+
+    let missing_url = url::Url::from_file_path(root.path().join("missing"))
+        .unwrap()
+        .to_string();
+    git(
+        &source,
+        &[
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.nested.url",
+            &missing_url,
+        ],
+    );
+    git(&source, &["commit", "-qam", "unavailable submodule"]);
+    let failed_destination = root.path().join("failed");
+    assert!(GitCore::new()
+        .clone_repository(source.to_str().unwrap(), &failed_destination, &options)
+        .is_err());
+    assert!(!failed_destination.exists());
+    assert!(fs::read_dir(root.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".bkm-clone-")));
+}
+
+#[test]
+fn clone_options_accept_defaults_and_reject_unsupported_filters() {
+    assert_eq!(
+        serde_json::from_str::<CloneOptions>("{}").unwrap(),
+        CloneOptions::default()
+    );
+    let options: CloneOptions = serde_json::from_str(r#"{"recurseSubmodules":true,"shallowSubmodules":true,"singleBranch":false,"filter":"blob:none"}"#).unwrap();
+    assert!(options.recursive && options.shallow_submodules);
+    assert_eq!(options.single_branch, Some(false));
+    assert!(serde_json::from_str::<CloneOptions>(r#"{"filter":"arbitrary"}"#).is_err());
+}
+
+#[test]
 fn builds_repository_command_arguments_without_a_shell() {
     let arguments = command_arguments(
         Some(Path::new("/workspace/repository with spaces")),

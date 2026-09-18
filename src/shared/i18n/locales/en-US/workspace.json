@@ -759,5 +759,20 @@
   "workspace.pathPicker.nativeHintMac": "In the picker: ⌘⇧G to go to a path",
   "workspace.pathPicker.nativeHintWindows": "In the picker: click the address bar to enter a path",
   "workspace.pathPicker.browse": "Browse system files…",
-  "workspace.pathPicker.usePath": "Use this path"
+  "workspace.pathPicker.usePath": "Use this path",
+  "workspace.dialogs.cloneAdvanced": "Advanced settings",
+  "workspace.dialogs.cloneBranch": "Branch or tag (--branch)",
+  "workspace.dialogs.cloneBranchHint": "Leave empty for the remote default branch. Selecting a tag creates a detached HEAD.",
+  "workspace.dialogs.cloneShallow": "Shallow clone (--depth)",
+  "workspace.dialogs.cloneDepth": "History depth",
+  "workspace.dialogs.cloneDepthHint": "Fetch only this many commits of history. Disable “Single branch only” to fetch shallow history for all branches.",
+  "workspace.dialogs.cloneDepthInvalid": "Shallow clone depth must be an integer from 1 to 2147483647.",
+  "workspace.dialogs.cloneSingleBranch": "Single branch only (--single-branch)",
+  "workspace.dialogs.cloneNoTags": "Skip tags (--no-tags)",
+  "workspace.dialogs.cloneRecurseSubmodules": "Clone submodules recursively (--recurse-submodules)",
+  "workspace.dialogs.cloneShallowSubmodules": "Clone submodules with depth 1 (--shallow-submodules)",
+  "workspace.dialogs.clonePartial": "Download file contents on demand (--filter=blob:none)",
+  "workspace.dialogs.clonePartialHint": "Requires server support. Checkout still downloads the required contents; later operations may need a network connection.",
+  "workspace.dialogs.cloneNoCheckout": "Do not check out files (--no-checkout)",
+  "workspace.dialogs.cloneNoCheckoutHint": "The project files will not be checked out, and submodules will not be initialized."
 }

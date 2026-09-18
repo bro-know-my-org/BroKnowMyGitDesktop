@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, ref, toRef, watch } from "vue";
-import { NAlert, NButton, NForm, NFormItem, NInput, NSelect, NSpace, NTabPane, NTabs, NText, type SelectRenderLabel } from "naive-ui";
+import { NAlert, NButton, NCheckbox, NCollapse, NCollapseItem, NForm, NFormItem, NInput, NInputNumber, NSelect, NSpace, NTabPane, NTabs, NText, type SelectRenderLabel } from "naive-ui";
 import { selectPath } from "../../../shared/pathPicker";
 import { t } from "../../../shared/i18n";
 import { cloneDestination } from "../composables/cloneDestination";
 import { useCloneRepositoryList } from "../composables/useCloneRepositoryList";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 
-const { accounts, endpoints, cloneForm, cloneAccountOptions, mutationBusy, reportError, detectCliAccounts, capabilityForEndpoint } = useWorkspaceControllerContext();
+const { accounts, endpoints, cloneForm, cloneAccountOptions, mutationBusy, reportError, detectCliAccounts, capabilityForEndpoint, browserDemo } = useWorkspaceControllerContext();
 const githubEndpoints = computed(() => endpoints.value.filter((endpoint) => endpoint.kind === "gitHub" && capabilityForEndpoint(endpoint.id).accountImport));
 const accountOptions = computed(() => accounts.value.filter((account) => account.authMethod === "ghCli"
   && (account.status === "valid" || account.status === "available")
@@ -144,6 +144,37 @@ async function chooseParent(): Promise<void> {
     </n-form-item>
     <n-form-item :label="t('workspace.dialogs.gitServiceEndpointOptionalForPrivateRepositories')"><n-select v-model:value="cloneForm.endpointId" clearable :options="endpoints.map((endpoint) => ({ label: endpoint.displayName, value: endpoint.id }))" :placeholder="t('workspace.dialogs.leaveEmptyToUseNormalSystemGitBehavior')" @update:value="repositoryDerivedRouting = false" /></n-form-item>
     <n-form-item :label="t('workspace.dialogs.accountUsedForClone')"><n-select v-model:value="cloneForm.accountId" :options="cloneAccountOptions" @update:value="repositoryDerivedRouting = false" /></n-form-item>
+    <n-collapse v-if="!browserDemo">
+      <n-collapse-item name="advanced" :title="t('workspace.dialogs.cloneAdvanced')">
+        <div class="clone-form-stack">
+          <n-form-item :label="t('workspace.dialogs.cloneBranch')">
+            <n-space vertical style="width: 100%">
+              <n-input v-model:value="cloneForm.branch" placeholder="main / v1.0.0" />
+              <n-text depth="3">{{ t('workspace.dialogs.cloneBranchHint') }}</n-text>
+            </n-space>
+          </n-form-item>
+          <n-checkbox v-model:checked="cloneForm.shallow">{{ t('workspace.dialogs.cloneShallow') }}</n-checkbox>
+          <n-form-item v-if="cloneForm.shallow" :label="t('workspace.dialogs.cloneDepth')">
+            <n-space vertical style="width: 100%">
+              <n-input-number v-model:value="cloneForm.depth" :min="1" :max="2147483647" :precision="0" />
+              <n-text depth="3">{{ t('workspace.dialogs.cloneDepthHint') }}</n-text>
+            </n-space>
+          </n-form-item>
+          <n-checkbox v-model:checked="cloneForm.singleBranch">{{ t('workspace.dialogs.cloneSingleBranch') }}</n-checkbox>
+          <n-checkbox v-model:checked="cloneForm.noTags">{{ t('workspace.dialogs.cloneNoTags') }}</n-checkbox>
+          <n-checkbox v-model:checked="cloneForm.recurseSubmodules" :disabled="mutationBusy || cloneForm.noCheckout">{{ t('workspace.dialogs.cloneRecurseSubmodules') }}</n-checkbox>
+          <n-checkbox v-model:checked="cloneForm.shallowSubmodules" :disabled="mutationBusy || !cloneForm.recurseSubmodules || cloneForm.noCheckout">{{ t('workspace.dialogs.cloneShallowSubmodules') }}</n-checkbox>
+          <n-space vertical>
+            <n-checkbox v-model:checked="cloneForm.partial">{{ t('workspace.dialogs.clonePartial') }}</n-checkbox>
+            <n-text depth="3">{{ t('workspace.dialogs.clonePartialHint') }}</n-text>
+          </n-space>
+          <n-space vertical>
+            <n-checkbox v-model:checked="cloneForm.noCheckout">{{ t('workspace.dialogs.cloneNoCheckout') }}</n-checkbox>
+            <n-text depth="3">{{ t('workspace.dialogs.cloneNoCheckoutHint') }}</n-text>
+          </n-space>
+        </div>
+      </n-collapse-item>
+    </n-collapse>
   </n-form>
 </template>
 
