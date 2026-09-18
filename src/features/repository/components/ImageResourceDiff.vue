@@ -5,6 +5,8 @@ import { t } from "../../../shared/i18n";
 import { pixelDifference } from "../utils/resourcePreview";
 const props = defineProps<{ urls: (string | null)[]; sideIndices?: number[] }>();
 type Mode = "sideBySide" | "wipe" | "overlay" | "difference";
+const zoomSteps = [25, 50, 75, 100, 125, 150, 200, 300, 400, 600, 800, 1200, 1600, 2400, 3200, 4800, 6400];
+const maxZoom = 6400;
 const mode = ref<Mode>("sideBySide"), zoom = ref<number | null>(null), amount = ref(50);
 const images = shallowRef<(HTMLImageElement | null)[]>([null, null]);
 const failures = ref([false, false]), differenceFailed = ref(false);
@@ -17,7 +19,12 @@ const options = computed(() => (["sideBySide", "wipe", "overlay", "difference"] 
 const visibleIndices = computed(() => props.sideIndices ?? props.urls.flatMap((url, index) => url ? [index] : []));
 const width = computed(() => Math.max(1, ...images.value.map((image) => image?.naturalWidth ?? 0)));
 const height = computed(() => Math.max(1, ...images.value.map((image) => image?.naturalHeight ?? 0)));
-const fitScale = computed(() => Math.max(0.01, Math.min(1, (availableWidth.value / (mode.value === "sideBySide" ? Math.max(1, visibleIndices.value.length) : 1) - 24) / width.value, 460 / height.value)));
+const fitScale = computed(() => {
+  const columns = mode.value === "sideBySide" ? Math.max(1, visibleIndices.value.length) : 1;
+  const fitted = Math.max(0.01, Math.min(maxZoom / 100, (availableWidth.value / columns - 24) / width.value, 460 / height.value));
+  // Integer enlargement keeps each source pixel the same size on screen.
+  return fitted >= 1 ? Math.floor(fitted) : fitted;
+});
 const scale = computed(() => zoom.value === null ? fitScale.value : zoom.value / 100);
 const zoomPercent = computed(() => Math.round(scale.value * 100));
 const stageStyle = computed(() => ({ width: `${width.value * scale.value}px`, height: `${height.value * scale.value}px` }));
@@ -89,6 +96,11 @@ function syncScroll(event: Event) {
   });
   requestAnimationFrame(() => { syncing = false; });
 }
+function stepZoom(direction: -1 | 1) {
+  const steps = direction === 1 ? zoomSteps : [...zoomSteps].reverse();
+  zoom.value = steps.find((step) => direction === 1 ? step > zoomPercent.value : step < zoomPercent.value)
+    ?? (direction === 1 ? maxZoom : 25);
+}
 async function wheelZoom(event: WheelEvent) {
   if (!event.deltaY || !images.value.some(Boolean)) return;
   event.preventDefault();
@@ -100,7 +112,7 @@ async function wheelZoom(event: WheelEvent) {
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pane.clientHeight : 1;
   const delta = Math.max(-100, Math.min(100, event.deltaY * unit));
   // Allow returning to a very small fit scale without a backwards jump.
-  const after = Math.max(Math.min(0.25, fitScale.value), Math.min(8, before * Math.exp(-delta / 500)));
+  const after = Math.max(Math.min(0.25, fitScale.value), Math.min(maxZoom / 100, before * Math.exp(-delta / 500)));
   zoom.value = after * 100;
   await nextTick();
   if (!pane.isConnected) return;
@@ -122,9 +134,9 @@ onBeforeUnmount(() => { generation++; differenceGeneration++; observer?.disconne
   <div ref="host" class="resource-image-diff">
     <div class="resource-toolbar">
       <n-select v-if="visibleIndices.length === 2" v-model:value="mode" :options="options" :aria-label="t('repository.resource.compareMode')" class="resource-mode" size="small" />
-      <n-button size="small" :disabled="zoomPercent <= 25" :aria-label="t('repository.resource.zoomOut')" @click="zoom = Math.max(25, (Math.ceil(zoomPercent / 25) - 1) * 25)">−</n-button>
+      <n-button size="small" :disabled="zoomPercent <= 25" :aria-label="t('repository.resource.zoomOut')" @click="stepZoom(-1)">−</n-button>
       <span>{{ zoomPercent }}%</span>
-      <n-button size="small" :disabled="zoomPercent >= 800" :aria-label="t('repository.resource.zoomIn')" @click="zoom = Math.min(800, (Math.floor(zoomPercent / 25) + 1) * 25)">+</n-button>
+      <n-button size="small" :disabled="zoomPercent >= maxZoom" :aria-label="t('repository.resource.zoomIn')" @click="stepZoom(1)">+</n-button>
       <n-button size="small" @click="zoom = null">{{ t('repository.resource.fit') }}</n-button>
       <n-button size="small" @click="zoom = 100">1:1</n-button>
       <span class="resource-pixel-label">{{ t('repository.resource.nearest') }}</span>
