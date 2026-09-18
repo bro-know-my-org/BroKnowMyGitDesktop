@@ -26,6 +26,7 @@
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "highlight.js": "^11.11.1",
     "naive-ui": "^2.44.1",
+    "pdfjs-dist": "5.4.624",
     "vue": "^3.5.13"
   },
   "devDependencies": {

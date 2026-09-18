@@ -270,5 +270,6 @@
   "errors.working_tree_not_clean": "Commit, stash, or discard current changes before this operation.",
   "errors.worktree_not_found": "The selected worktree could not be found.",
   "errors.git_lock_changed": "The Git lock file changed. Inspect it again.",
-  "errors.git_lock_detected": "Another Git operation left a lock file. Inspect it before retrying."
+  "errors.git_lock_detected": "Another Git operation left a lock file. Inspect it before retrying.",
+  "errors.resource_unavailable": "Could not read this resource version. Refresh and try again."
 }
