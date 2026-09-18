@@ -748,6 +748,9 @@
   "workspace.pathPicker.absolutePath": "请输入绝对路径，例如 /home/me/projects 或 C:\\Projects。",
   "workspace.pathPicker.placeholder": "粘贴或输入完整路径",
   "workspace.pathPicker.hint": "可以直接输入路径，也可以浏览选择。浏览后会回到这里确认所选路径。",
+  "workspace.pathPicker.nativeHintLinux": "选择框内：Ctrl+L 输入路径",
+  "workspace.pathPicker.nativeHintMac": "选择框内：⌘⇧G 前往路径",
+  "workspace.pathPicker.nativeHintWindows": "选择框内：点击地址栏输入路径",
   "workspace.pathPicker.browse": "浏览系统文件…",
   "workspace.pathPicker.usePath": "使用此路径"
 }

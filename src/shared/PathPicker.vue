@@ -4,6 +4,7 @@ import { NAlert, NButton, NFormItem, NInput, NModal, NSpace, NText } from "naive
 import { api, isAbsoluteExecutablePath } from "./api/tauri";
 import { localizedErrorMessage, t } from "./i18n";
 import { finishPathSelection, normalizePickerPath, pathPickerRequest } from "./pathPicker";
+import { nativePathInputHint } from "./nativePathInputHint";
 
 const path = ref("");
 const browsing = ref(false);
@@ -52,12 +53,15 @@ async function browse(): Promise<void> {
     <n-text depth="3">{{ t('workspace.pathPicker.hint') }}</n-text>
     <n-alert v-if="error" type="error" :bordered="false">{{ error }}</n-alert>
     <template #action>
-      <n-space justify="space-between">
-        <n-button :loading="browsing" :disabled="browsing" @click="browse">{{ t('workspace.pathPicker.browse') }}</n-button>
-        <n-space>
-          <n-button :disabled="browsing" @click="finish(null)">{{ t('workspace.dialogs.cancel') }}</n-button>
-          <n-button type="primary" :disabled="!valid || browsing" @click="confirm">{{ t('workspace.pathPicker.usePath') }}</n-button>
+      <n-space vertical :size="8">
+        <n-space justify="space-between">
+          <n-button :loading="browsing" :disabled="browsing" @click="browse">{{ t('workspace.pathPicker.browse') }}</n-button>
+          <n-space>
+            <n-button :disabled="browsing" @click="finish(null)">{{ t('workspace.dialogs.cancel') }}</n-button>
+            <n-button type="primary" :disabled="!valid || browsing" @click="confirm">{{ t('workspace.pathPicker.usePath') }}</n-button>
+          </n-space>
         </n-space>
+        <n-text tag="p" depth="3" class="path-picker-native-hint">{{ nativePathInputHint() }}</n-text>
       </n-space>
     </template>
   </n-modal>
@@ -66,5 +70,11 @@ async function browse(): Promise<void> {
 <style>
 .path-picker-dialog {
   width: min(640px, calc(100vw - 32px));
+}
+
+.path-picker-native-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

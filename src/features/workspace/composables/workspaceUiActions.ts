@@ -1,7 +1,9 @@
-import { computed } from "vue";
+import { computed, h } from "vue";
+import { NText } from "naive-ui";
 import { toggleDevtools } from "../../../shared/api/tauri";
 import { setAppLocale, t, type AppLocale } from "../../../shared/i18n";
 import { setColorMode, setThemeColor, type ColorMode } from "../../../shared/theme";
+import { nativePathInputHint } from "../../../shared/nativePathInputHint";
 
 export const localeOptions = [
   { label: "简体中文", value: "zh-CN" },
@@ -18,6 +20,16 @@ export function useWorkspaceUiOptions() {
     { label: t("workspace.controller.scanFolder"), key: "discover" },
     { label: t("workspace.controller.newLocalRepository"), key: "init" },
     { label: t("workspace.controller.cloneRepository"), key: "clone" },
+    { type: "divider" as const, key: "path-hint-divider" },
+    {
+      type: "render" as const,
+      key: "path-hint",
+      render: () => h(NText, {
+        depth: 3,
+        tag: "div",
+        class: "repository-path-input-hint",
+      }, { default: nativePathInputHint }),
+    },
   ]);
   return { colorModeOptions, repositoryActionOptions };
 }

@@ -748,6 +748,9 @@
   "workspace.pathPicker.absolutePath": "Enter an absolute path, such as /home/me/projects or C:\\Projects.",
   "workspace.pathPicker.placeholder": "Paste or type a full path",
   "workspace.pathPicker.hint": "Enter a path directly or browse for one. Review the selected path here before confirming.",
+  "workspace.pathPicker.nativeHintLinux": "In the picker: Ctrl+L to enter a path",
+  "workspace.pathPicker.nativeHintMac": "In the picker: ⌘⇧G to go to a path",
+  "workspace.pathPicker.nativeHintWindows": "In the picker: click the address bar to enter a path",
   "workspace.pathPicker.browse": "Browse system files…",
   "workspace.pathPicker.usePath": "Use this path"
 }

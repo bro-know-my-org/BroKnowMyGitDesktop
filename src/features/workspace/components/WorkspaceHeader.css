@@ -657,6 +657,14 @@
   max-width: calc(100vw - 24px);
 }
 
+.repository-path-input-hint {
+  max-width: 280px;
+  padding: 4px 12px 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: normal;
+}
+
 .branch-select-menu .n-base-select-option {
   height: auto;
   min-height: 34px;

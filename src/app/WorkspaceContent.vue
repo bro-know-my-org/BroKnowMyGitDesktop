@@ -1,15 +1,16 @@
 <script lang="ts">
 import { defineComponent } from "vue";
-import { NAlert, NButton, NEmpty, NLayoutContent, NSpace, NSpin } from "naive-ui";
+import { NAlert, NButton, NEmpty, NLayoutContent, NSpace, NSpin, NText } from "naive-ui";
 import AccountsPage from "../pages/accounts/index.vue";
 import RepositoriesPage from "../pages/repositories/index.vue";
 import { useWorkspaceControllerContext } from "../features/workspace/composables/workspaceContext";
+import { nativePathInputHint } from "../shared/nativePathInputHint";
 
 export default defineComponent({
   name: "WorkspaceContent",
-  components: { NAlert, NButton, NEmpty, NLayoutContent, NSpace, NSpin, AccountsPage, RepositoriesPage },
+  components: { NAlert, NButton, NEmpty, NLayoutContent, NSpace, NSpin, NText, AccountsPage, RepositoriesPage },
   setup() {
-    return useWorkspaceControllerContext();
+    return { ...useWorkspaceControllerContext(), nativePathInputHint };
   },
 });
 </script>
@@ -39,6 +40,7 @@ export default defineComponent({
                   <n-button @click="initModalShown = true">{{ t('workspace.content.newLocalRepository') }}</n-button>
                   <n-button type="primary" @click="cloneModalShown = true">{{ t('workspace.content.cloneRepository') }}</n-button>
                 </n-space>
+                <n-text tag="p" depth="3" class="repository-picker-path-hint">{{ nativePathInputHint() }}</n-text>
               </template>
             </n-empty>
           </section>
