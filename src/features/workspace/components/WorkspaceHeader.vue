@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, h, nextTick, ref, watch } from "vue";
-import { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin, NText, type SelectRenderLabel } from "naive-ui";
+import { NButton, NButtonGroup, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin, NText, type SelectRenderLabel } from "naive-ui";
 import { useWorkspaceControllerContext } from "../composables/workspaceContext";
 import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
@@ -28,7 +28,7 @@ function renderMiddleEllipsisLabel(label: string) {
 
 export default defineComponent({
   name: "WorkspaceHeader",
-  components: { NButton, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin, NText },
+  components: { NButton, NButtonGroup, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const repositoryFilter = ref("");
@@ -634,20 +634,38 @@ export default defineComponent({
                 <span class="topbar-action-label">{{ t('workspace.header.pull') }}</span>
                 <span v-if="pullCount > 0" class="topbar-action-count">{{ pullCount }}</span>
               </n-button>
-              <n-button
-                v-if="activeRemote"
-                size="small"
-                :type="pushNeedsAttention ? 'primary' : 'default'"
-                :loading="networkBusy === 'push'"
-                :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)"
-                :aria-label="pushButtonTitle"
-                :title="pushButtonTitle"
-                @click="runNetworkAction('push')"
-              >
-                <svg class="topbar-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 17v4h14v-4" /></svg>
-                <span class="topbar-action-label">{{ snapshot?.hasHead && snapshot.status.branch && !snapshot.status.upstream ? t('workspace.header.pushFirst') : t('workspace.header.push') }}</span>
-                <span v-if="pushCount > 0" class="topbar-action-count">{{ pushCount }}</span>
-              </n-button>
+              <n-button-group v-if="activeRemote">
+                <n-button
+                  size="small"
+                  :type="pushNeedsAttention ? 'primary' : 'default'"
+                  :loading="networkBusy === 'push'"
+                  :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)"
+                  :aria-label="pushButtonTitle"
+                  :title="pushButtonTitle"
+                  @click="runNetworkAction('push')"
+                >
+                  <svg class="topbar-action-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m-5 5 5-5 5 5M5 17v4h14v-4" /></svg>
+                  <span class="topbar-action-label">{{ snapshot?.hasHead && snapshot.status.branch && !snapshot.status.upstream ? t('workspace.header.pushFirst') : t('workspace.header.push') }}</span>
+                  <span v-if="pushCount > 0" class="topbar-action-count">{{ pushCount }}</span>
+                </n-button>
+                <n-dropdown
+                  trigger="click"
+                  placement="bottom-end"
+                  :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)"
+                  :options="[{ label: t('workspace.header.pushWithAllTags'), key: 'push-with-tags' }]"
+                  @select="runNetworkAction('push', false, undefined, true)"
+                >
+                  <n-button
+                    size="small"
+                    :type="pushNeedsAttention ? 'primary' : 'default'"
+                    :disabled="mutationBusy || !snapshot?.hasHead || !snapshot.status.branch || Boolean(networkBusy)"
+                    :aria-label="t('workspace.header.pushOptions')"
+                    :title="t('workspace.header.pushOptions')"
+                  >
+                    <span aria-hidden="true">▾</span>
+                  </n-button>
+                </n-dropdown>
+              </n-button-group>
             </div>
             <div v-if="snapshot" class="topbar-utility-group">
               <n-dropdown

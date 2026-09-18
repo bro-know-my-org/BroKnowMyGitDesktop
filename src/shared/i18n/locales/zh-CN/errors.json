@@ -1,4 +1,7 @@
 {
+  "errors.browser_demo_tag_push_unsupported": "浏览器演示模式不模拟标签推送，请在桌面应用中执行。",
+  "errors.push_tags_with_force_unsupported": "推送全部标签不能与强制推送同时使用。",
+  "errors.push_tags_with_force_unsupported.details": "请分别执行普通的标签推送和分支强制推送。",
   "errors.account_already_exists": "该 Endpoint 已存在相同登录名和认证方式的账号。",
   "errors.account_import_in_progress": "该 Endpoint 正在导入 CLI 账号，请等待当前操作完成。",
   "errors.account_not_found": "找不到要移除的账号。",

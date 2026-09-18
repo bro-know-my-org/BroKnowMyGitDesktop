@@ -84,6 +84,7 @@ pub async fn push_remote(
     repository_path: String,
     remote_name: String,
     force_with_lease: Option<bool>,
+    include_tags: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<NetworkOperationResult, AppError> {
     let state = state.inner().clone();
@@ -102,6 +103,7 @@ pub async fn push_remote(
                 set_upstream,
                 force_with_lease: force_with_lease.unwrap_or(false),
                 follow_tags: false,
+                include_tags: include_tags.unwrap_or(false),
             },
             &target.urls,
             &target.environment,

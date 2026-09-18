@@ -1099,6 +1099,7 @@ async function approveNetworkConfigurationAndRetry(
   target: NetworkActionTarget,
   operationGeneration: number,
   notificationOwner: symbol,
+  includeTags: boolean,
 ): Promise<void> {
   if (networkTrustActionBusyOwners.has(notificationOwner)) return;
   if (!networkActionPromptIsCurrent(target, operationGeneration, notificationOwner)) {
@@ -1115,7 +1116,7 @@ async function approveNetworkConfigurationAndRetry(
     if (!status.currentFingerprint) {
       destroyOwnedErrorNotification(notificationOwner);
       message.info(t("workspace.controller.dangerousGitConfigurationNoLongerPresentRetrying"));
-      await runNetworkAction(action, forceWithLease, target);
+      await runNetworkAction(action, forceWithLease, target, includeTags);
       return;
     }
     await api.approveRepositoryNetworkConfiguration(
@@ -1129,7 +1130,7 @@ async function approveNetworkConfigurationAndRetry(
     }
     destroyOwnedErrorNotification(notificationOwner);
     message.success(t("workspace.controller.currentDangerousGitConfigurationAuthorized"));
-    await runNetworkAction(action, forceWithLease, target);
+    await runNetworkAction(action, forceWithLease, target, includeTags);
   } catch (error) {
     if (!networkActionAttemptIsCurrent(target, operationGeneration)) {
       destroyOwnedErrorNotification(notificationOwner);
@@ -1154,6 +1155,7 @@ function reportUnsafeNetworkConfiguration(
   forceWithLease: boolean,
   target: NetworkActionTarget,
   operationGeneration: number,
+  includeTags: boolean,
 ): void {
   const appError = normalizedAppError(error);
   const notificationOwner = Symbol("unsafe-network-configuration");
@@ -1186,6 +1188,7 @@ function reportUnsafeNetworkConfiguration(
             target,
             operationGeneration,
             notificationOwner,
+            includeTags,
           ),
         }, { default: () => t("workspace.controller.allowAndRetry") }),
       ],
@@ -2007,6 +2010,7 @@ async function runNetworkAction(
   action: NetworkAction,
   forceWithLease = false,
   capturedTarget?: NetworkActionTarget,
+  includeTags = false,
 ): Promise<void> {
   const repositoryPath = capturedTarget?.repositoryPath ?? activeRepositoryPath.value;
   const currentRemote = activeRemote.value;
@@ -2045,16 +2049,18 @@ async function runNetworkAction(
       ? api.fetchRemote(repositoryPath, remoteName)
       : action === "pull"
         ? api.pullRemote(repositoryPath, remoteName)
-        : api.pushRemote(repositoryPath, remoteName, forceWithLease));
+        : api.pushRemote(repositoryPath, remoteName, forceWithLease, includeTags));
     let actionLabel: string;
     if (action === "fetch") {
       actionLabel = t("workspace.controller.fetch");
     } else if (action === "pull") {
       actionLabel = t("workspace.controller.pull");
+    } else if (forceWithLease) {
+      actionLabel = t("workspace.controller.forcePushWithLease");
+    } else if (includeTags) {
+      actionLabel = t("workspace.header.pushWithAllTags");
     } else {
-      actionLabel = forceWithLease
-        ? t("workspace.controller.forcePushWithLease")
-        : t("workspace.controller.push");
+      actionLabel = t("workspace.controller.push");
     }
     if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && activeRemoteMatchesTarget()) {
       message.success(t("workspace.controller.actionCompleted", { action: actionLabel }));
@@ -2071,6 +2077,7 @@ async function runNetworkAction(
         failureAction = t("workspace.controller.pushFailed");
       }
       const canOfferFork = action === "push"
+        && !includeTags
         && isAppError(error)
         && error.code === "git_push_permission_denied"
         && activeCapabilities.value.repositoryFork
@@ -2087,6 +2094,7 @@ async function runNetworkAction(
           forceWithLease,
           target,
           operationGeneration,
+          includeTags,
         );
       } else if (!canOfferFork) {
         reportError(error, failureAction, { repositoryPath, selectionGeneration });

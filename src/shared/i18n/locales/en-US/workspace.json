@@ -1,4 +1,6 @@
 {
+  "workspace.header.pushOptions": "Push options",
+  "workspace.header.pushWithAllTags": "Push with all tags",
   "workspace.dialogs.tagNameAlreadyExists": "This tag already exists. Change the name before creating it.",
   "workspace.dialogs.tagNameSuggestionHint": "Select an existing tag and edit its name. Up to 20 matches are shown.",
   "workspace.content.browserDemoModeThisUsesInteractiveLocalMockDataTauriCallsRustCommandsDemoPatsAreNeverSavedOrShown": "Browser demo mode: this uses interactive local mock data. Tauri calls Rust commands. Demo PATs are never saved or shown.",
@@ -541,7 +543,7 @@
   "workspace.dialogs.systemDefaultAndPreferredTerminalsAreSeparateTheRepositoryMenuProvidesBothActions": "The system default and app preferred terminals are separate. The repository menu provides both actions.",
   "workspace.dialogs.terminals": "Terminals",
   "workspace.dialogs.tagName": "Tag name",
-  "workspace.dialogs.tagsAreCreatedLocallyOnlyPushThemWithYourUsualPushWorkflowOrGitCommand": "Tags are created locally only. Push them with your usual Push workflow or Git command.",
+  "workspace.dialogs.tagsAreCreatedLocallyOnlyPushThemWithYourUsualPushWorkflowOrGitCommand": "Tags are created locally only. Choose “Push with all tags” from the dropdown beside the top Push button.",
   "workspace.dialogs.targetReference": "Target reference",
   "workspace.dialogs.theAliasHasItsOwnMarkerAndIsShownAlongsideTheRealRepositoryNameItIsStoredOnlyByThisAppAndNeverRe": "The alias has its own marker and is shown alongside the real repository name. It is stored only by this app and never renames the folder or changes Git; save an empty value to remove it.",
   "workspace.dialogs.themeColor": "Theme color",

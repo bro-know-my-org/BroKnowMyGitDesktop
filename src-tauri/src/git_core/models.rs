@@ -53,6 +53,9 @@ pub struct PushOptions {
     pub set_upstream: bool,
     pub force_with_lease: bool,
     pub follow_tags: bool,
+    /// Push every local tag atomically with the requested branch updates.
+    #[serde(default)]
+    pub include_tags: bool,
 }
 
 /// Selects which local remote URL setting is updated.

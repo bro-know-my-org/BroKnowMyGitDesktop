@@ -1,4 +1,7 @@
 {
+  "errors.browser_demo_tag_push_unsupported": "Tag pushes are not simulated in the browser demo. Use the desktop app.",
+  "errors.push_tags_with_force_unsupported": "Pushing all tags cannot be combined with force push.",
+  "errors.push_tags_with_force_unsupported.details": "Push tags normally and force-push the branch as separate operations.",
   "errors.account_already_exists": "An account with the same login and authentication method already exists for this endpoint.",
   "errors.account_import_in_progress": "This endpoint is already importing a CLI account. Wait for it to finish.",
   "errors.account_not_found": "The selected account could not be found.",

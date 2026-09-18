@@ -91,4 +91,5 @@ impl Drop for TemporaryTestDirectory {
 include!("tests/repository.rs");
 include!("tests/changes.rs");
 include!("tests/history_network.rs");
+include!("tests/push_tags.rs");
 include!("tests/safety.rs");

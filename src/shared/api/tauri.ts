@@ -1998,10 +1998,13 @@ export const api = {
     });
   },
 
-  pushRemote(repositoryPath: string, remoteName: string, forceWithLease = false): Promise<NetworkOperationResult> {
-    return request("push_remote", { repositoryPath, remoteName, forceWithLease }, () => {
+  pushRemote(repositoryPath: string, remoteName: string, forceWithLease = false, includeTags = false): Promise<NetworkOperationResult> {
+    return request("push_remote", { repositoryPath, remoteName, forceWithLease, includeTags }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);
       requireBrowserRemote(snapshot, remoteName);
+      if (includeTags && forceWithLease) throw browserError("push_tags_with_force_unsupported");
+      // The demo has no remote tag store, so it cannot simulate an atomic tag push.
+      if (includeTags) throw browserError("browser_demo_tag_push_unsupported");
       updateMockSnapshot((snapshot) => {
         if (!snapshot.hasHead) {
           throw browserError("no_commit_to_push");

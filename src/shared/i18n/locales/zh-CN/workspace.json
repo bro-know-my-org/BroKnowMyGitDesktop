@@ -1,4 +1,6 @@
 {
+  "workspace.header.pushOptions": "推送选项",
+  "workspace.header.pushWithAllTags": "推送并包含所有标签",
   "workspace.dialogs.tagNameAlreadyExists": "该标签已存在，请修改名称后创建。",
   "workspace.dialogs.tagNameSuggestionHint": "可选择已有标签填入，再修改名称；最多显示 20 个匹配项。",
   "workspace.content.browserDemoModeThisUsesInteractiveLocalMockDataTauriCallsRustCommandsDemoPatsAreNeverSavedOrShown": "浏览器演示模式：当前展示可交互的本地 mock 数据；启动 Tauri 后会调用 Rust commands。示例 PAT 不会保存或展示。",
@@ -541,7 +543,7 @@
   "workspace.dialogs.systemDefaultAndPreferredTerminalsAreSeparateTheRepositoryMenuProvidesBothActions": "系统默认终端与应用首选终端相互独立；仓库右键菜单会同时提供两种打开方式。",
   "workspace.dialogs.terminals": "终端",
   "workspace.dialogs.tagName": "标签名称",
-  "workspace.dialogs.tagsAreCreatedLocallyOnlyPushThemWithYourUsualPushWorkflowOrGitCommand": "标签只在本地创建；推送请使用常规 Push 或 Git 命令。",
+  "workspace.dialogs.tagsAreCreatedLocallyOnlyPushThemWithYourUsualPushWorkflowOrGitCommand": "标签只在本地创建；可通过顶部推送按钮旁的下拉菜单选择“推送并包含所有标签”。",
   "workspace.dialogs.targetReference": "目标引用",
   "workspace.dialogs.theAliasHasItsOwnMarkerAndIsShownAlongsideTheRealRepositoryNameItIsStoredOnlyByThisAppAndNeverRe": "别名会带有专属标记，并和真实仓库名同时显示。它仅保存在本应用，不会重命名目录或修改 Git 仓库；留空保存可移除别名。",
   "workspace.dialogs.themeColor": "主题色",

@@ -1236,6 +1236,7 @@ fn push_with_url_preserves_push_default_upstream_behavior() {
             set_upstream: false,
             force_with_lease: false,
             follow_tags: false,
+            include_tags: false,
         },
     )
     .expect("URL push must retain the configured upstream destination");
@@ -1264,6 +1265,7 @@ fn push_with_url_preserves_push_default_upstream_behavior() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("implicit matching push cannot be synchronized safely");
@@ -1336,6 +1338,7 @@ fn push_updates_existing_remote_tracking_state() {
             set_upstream,
             force_with_lease: false,
             follow_tags: false,
+            include_tags: false,
         },
     )
     .expect("push succeeds");
@@ -1377,6 +1380,7 @@ fn push_updates_existing_remote_tracking_state() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("unsupported reference storage is rejected before push");
@@ -1445,6 +1449,7 @@ fn short_push_destination_preserves_remote_ref_resolution() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect("Git resolves the short destination to the existing remote tag");
@@ -1551,6 +1556,7 @@ fn push_updates_a_custom_remote_tracking_reference() {
             set_upstream: false,
             force_with_lease: true,
             follow_tags: false,
+            include_tags: false,
         },
     )
     .expect("force-with-lease uses the peeled tracking commit");
@@ -1562,6 +1568,7 @@ fn push_updates_a_custom_remote_tracking_reference() {
             set_upstream: false,
             force_with_lease: false,
             follow_tags: false,
+            include_tags: false,
         },
     )
     .expect("second tracked branch push succeeds");
@@ -1654,6 +1661,7 @@ fn multi_ref_push_does_not_require_atomic_server_support() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("the non-fast-forward branch rejects the atomic push");
@@ -1949,6 +1957,7 @@ fn push_reports_partial_success_when_a_later_push_url_fails() {
                 set_upstream,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("the second push URL is unavailable");
@@ -1997,6 +2006,7 @@ fn push_reports_partial_success_when_a_later_push_url_fails() {
                 set_upstream,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("all push URLs are validated before the first push");
@@ -2056,6 +2066,7 @@ fn detached_head_can_push_a_tag_without_tracking_finalization() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect("tag push succeeds from detached HEAD");
@@ -2144,6 +2155,7 @@ fn push_does_not_update_a_tracking_reference_outside_refs_remotes() {
                 set_upstream: false,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect("push succeeds without rewriting a local branch");
@@ -2166,6 +2178,7 @@ fn push_does_not_update_a_tracking_reference_outside_refs_remotes() {
                 set_upstream: true,
                 force_with_lease: false,
                 follow_tags: false,
+                include_tags: false,
             },
         )
         .expect_err("unsafe tracking mapping is rejected before a first push");
@@ -2243,6 +2256,7 @@ fn push_with_url_sets_an_official_upstream_for_a_single_branch_remote() {
             set_upstream: true,
             force_with_lease: false,
             follow_tags: false,
+            include_tags: false,
         },
     )
     .expect("the locked network push can configure its named upstream afterward");

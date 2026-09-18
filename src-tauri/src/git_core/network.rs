@@ -1948,6 +1948,12 @@ impl GitCore {
         for refspec in &options.refspecs {
             validate_refspec(refspec)?;
         }
+        if options.include_tags && options.force_with_lease {
+            return Err(AppError::new(
+                "push_tags_with_force_unsupported",
+                "推送全部标签不能与强制推送同时使用。",
+            ));
+        }
         let (mut refspecs, upstream) = self.push_refspecs_for_url(repository, options)?;
         let tracking_updates = if upstream.is_none()
             && !push_may_update_multiple_refs(&refspecs, options.follow_tags)
@@ -2008,6 +2014,12 @@ impl GitCore {
                 OsString::from("push"),
                 OsString::from("--recurse-submodules=no"),
             ];
+            if options.include_tags {
+                // A rejected tag must not leave the branch pushed but its local
+                // upstream/tracking state unfinalized.
+                arguments.push(OsString::from("--atomic"));
+                arguments.push(OsString::from("--tags"));
+            }
             if options.force_with_lease {
                 arguments.push(OsString::from("--force-with-lease"));
                 arguments.extend(force_with_leases.iter().map(OsString::from));
