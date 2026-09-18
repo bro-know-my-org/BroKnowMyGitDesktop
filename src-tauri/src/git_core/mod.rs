@@ -67,6 +67,7 @@ mod network;
 mod parser;
 mod remotes;
 mod repository;
+pub(crate) mod resources;
 mod runtime;
 mod stashes;
 pub(crate) mod validation;

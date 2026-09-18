@@ -368,7 +368,7 @@ impl GitCore {
         Ok(commit)
     }
 
-    fn commit_and_first_parent(
+    pub(super) fn commit_and_first_parent(
         &self,
         repository: &Path,
         revision: &str,
