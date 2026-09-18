@@ -1,0 +1,118 @@
+.resource-file-diff {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.resource-viewer {
+  flex: 1;
+  min-height: 0;
+  padding: 12px;
+  overflow: auto;
+}
+
+.resource-toolbar,
+.resource-side-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.resource-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.resource-side {
+  min-width: 0;
+}
+
+.resource-side-header {
+  font-size: 12px;
+}
+
+.resource-side-header strong {
+  flex: 1;
+}
+
+.resource-path {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-summary,
+.resource-notice,
+.resource-dimensions {
+  margin: 8px 0 12px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.resource-loading {
+  display: flex;
+  justify-content: center;
+  padding: 40px;
+}
+
+.resource-side video,
+.resource-side audio,
+.resource-side img,
+.resource-pdf canvas {
+  max-width: 100%;
+}
+
+.resource-side video {
+  max-height: 460px;
+}
+
+.resource-mode {
+  width: 160px;
+}
+
+.resource-slider {
+  width: min(280px, 60%);
+}
+
+.resource-image-scroll {
+  max-height: 520px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.resource-checker {
+  background-color: #fff;
+  background-image: conic-gradient(#ddd 25%, transparent 0 50%, #ddd 0 75%, transparent 0);
+  background-size: 16px 16px;
+}
+
+.resource-side img {
+  image-rendering: pixelated;
+}
+
+.resource-image-scroll img,
+.resource-image-scroll canvas {
+  display: block;
+  max-width: none;
+  image-rendering: pixelated;
+}
+
+.resource-image-stage {
+  position: relative;
+}
+
+.resource-image-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.resource-pdf {
+  margin-top: 12px;
+}
