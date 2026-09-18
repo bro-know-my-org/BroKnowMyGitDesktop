@@ -288,6 +288,9 @@ impl GitCore {
 
         let path = &options.paths[0];
         if self.is_untracked_path(repository, path)? {
+            if self.is_binary_resource(repository, path)? {
+                return Ok("Binary files /dev/null and working tree differ\n".into());
+            }
             return self.untracked_file_diff(repository, path, options.context_lines);
         }
         Ok(diff)

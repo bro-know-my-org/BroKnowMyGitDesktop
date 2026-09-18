@@ -19,11 +19,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let previews = commands::ResourcePreviews::new()?;
+            app.asset_protocol_scope()
+                .allow_directory(previews.path(), true)?;
+            app.manage(previews);
             let app_data_dir = app.path().app_data_dir()?;
             app.manage(AppState::load(&app_data_dir)?);
             Ok(())
         })
         .on_page_load(|webview, payload| {
+            if payload.event() == PageLoadEvent::Started {
+                if let Some(previews) = webview.try_state::<commands::ResourcePreviews>() {
+                    previews.clear();
+                }
+            }
             if payload.event() != PageLoadEvent::Finished {
                 return;
             }
@@ -48,6 +57,9 @@ pub fn run() {
             commands::set_repository_group,
             commands::set_repository_alias,
             commands::get_file_diff,
+            commands::get_resource_preview,
+            commands::release_resource_preview,
+            commands::export_resource_preview,
             commands::get_file_blame,
             commands::list_reflog,
             commands::preview_clean_untracked,

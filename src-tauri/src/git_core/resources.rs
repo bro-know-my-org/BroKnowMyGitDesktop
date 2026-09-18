@@ -85,6 +85,29 @@ fn copy_and_hash(
 }
 
 impl GitCore {
+    pub(super) fn is_binary_resource(
+        &self,
+        repository: &Path,
+        path: &str,
+    ) -> Result<bool, AppError> {
+        let file = open_worktree(repository, path).map_err(|_| resource_error())?;
+        let metadata = file.metadata().map_err(|_| resource_error())?;
+        if !metadata.is_file() {
+            return Err(resource_error());
+        }
+        // Files beyond the text diff budget still get metadata/export, even if
+        // their binary signature is after this cheap prefix probe.
+        if metadata.len() > 4 * 1024 * 1024 {
+            return Ok(true);
+        }
+        let mut bytes = Vec::new();
+        file.take(8192)
+            .read_to_end(&mut bytes)
+            .map_err(|_| resource_error())?;
+        Ok(bytes.contains(&0)
+            || std::str::from_utf8(&bytes).is_err_and(|error| error.error_len().is_some()))
+    }
+
     pub(crate) fn resource_sides(
         &self,
         repository: &Path,
