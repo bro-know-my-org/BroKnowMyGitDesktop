@@ -89,6 +89,26 @@ function syncScroll(event: Event) {
   });
   requestAnimationFrame(() => { syncing = false; });
 }
+async function wheelZoom(event: WheelEvent) {
+  if (!event.deltaY || !images.value.some(Boolean)) return;
+  event.preventDefault();
+  const pane = event.currentTarget as HTMLElement;
+  const bounds = pane.getBoundingClientRect();
+  const x = event.clientX - bounds.left, y = event.clientY - bounds.top;
+  const before = scale.value;
+  const anchorX = (pane.scrollLeft + x) / before, anchorY = (pane.scrollTop + y) / before;
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? pane.clientHeight : 1;
+  const delta = Math.max(-100, Math.min(100, event.deltaY * unit));
+  // Allow returning to a very small fit scale without a backwards jump.
+  const after = Math.max(Math.min(0.25, fitScale.value), Math.min(8, before * Math.exp(-delta / 500)));
+  zoom.value = after * 100;
+  await nextTick();
+  if (!pane.isConnected) return;
+  host.value?.querySelectorAll<HTMLElement>(".resource-image-scroll").forEach((target) => {
+    target.scrollLeft = anchorX * after - x;
+    target.scrollTop = anchorY * after - y;
+  });
+}
 watch(() => props.urls, load, { immediate: true });
 watch([mode, images], drawDifference);
 onMounted(() => {
@@ -117,13 +137,13 @@ onBeforeUnmount(() => { generation++; differenceGeneration++; observer?.disconne
       <span v-for="index in visibleIndices" :key="index">{{ images[index] ? `${images[index]!.naturalWidth} × ${images[index]!.naturalHeight} px` : failures[index] ? t('repository.resource.decodeFailed') : '—' }}</span>
     </div>
     <div v-if="mode === 'sideBySide'" class="resource-columns" :class="{ 'resource-columns-single': visibleIndices.length === 1 }">
-      <div v-for="index in visibleIndices" :key="index" class="resource-image-scroll resource-checker" tabindex="0" @scroll="syncScroll">
+      <div v-for="index in visibleIndices" :key="index" class="resource-image-scroll resource-checker" tabindex="0" @scroll="syncScroll" @wheel="wheelZoom">
         <div :style="stageStyle">
           <img v-if="urls[index] && images[index]" :src="urls[index]!" :style="imageStyle(index)" :alt="t(index === 0 ? 'repository.resource.before' : 'repository.resource.after')" />
         </div>
       </div>
     </div>
-    <div v-else class="resource-image-scroll resource-checker" tabindex="0">
+    <div v-else class="resource-image-scroll resource-checker" tabindex="0" @wheel="wheelZoom">
       <div class="resource-image-stage" :style="stageStyle">
         <template v-if="mode !== 'difference'">
           <img :src="urls[0]!" :style="imageStyle(0)" :alt="t('repository.resource.before')" />
