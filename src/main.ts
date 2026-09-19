@@ -3,9 +3,12 @@ import "./styles/app.css";
 import Root from "./Root.vue";
 import { markPerformance, measurePerformance, performanceProfilingEnabled } from "./shared/performance";
 import { installPressActivation } from "./shared/pressActivation";
+import { installWheelScroll } from "./shared/wheelScroll";
 
 markPerformance("main:execute");
 installPressActivation();
+const removeWheelScroll = installWheelScroll();
+if (import.meta.hot) import.meta.hot.dispose(removeWheelScroll);
 measurePerformance("Bootstrap to main module execution", "bootstrap", "main:execute");
 markPerformance("vue:create:start");
 const app = createApp(Root);
