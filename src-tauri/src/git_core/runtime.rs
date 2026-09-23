@@ -349,7 +349,7 @@ impl GitCore {
         }
     }
 
-    fn git_command_error_for_repository(
+    pub(super) fn git_command_error_for_repository(
         &self,
         repository: Option<&Path>,
         operation: &'static str,

@@ -179,6 +179,41 @@ impl GitCore {
             "读取仓库状态",
         )?;
         let mut status = parse_status_porcelain_v2(&output.stdout)?;
+        if status.upstream.is_none() {
+            if let (Some(branch), Some(head)) = (status.branch.as_deref(), status.head_commit.as_deref()) {
+                if let Some((remote, remote_branch, tracking_ref)) =
+                    self.uncovered_branch_upstream(repository, branch)?
+                {
+                    let upstream = self.execute(
+                        Some(repository),
+                        &os_arguments(&["rev-parse", "--verify", "--quiet", &format!("{tracking_ref}^{{commit}}")]),
+                        &GitEnvironment::default(),
+                    )?;
+                    if upstream.status.code() == Some(1) {
+                        return Ok(status);
+                    }
+                    if !upstream.status.success() {
+                        return Err(git_command_error("读取远程分支提交", &upstream));
+                    }
+                    let upstream_oid = output_text(&upstream.stdout).trim().to_owned();
+                    let counts = self.run(
+                        Some(repository),
+                        &os_arguments(&["rev-list", "--left-right", "--count", &format!("{head}...{upstream_oid}")]),
+                        &GitEnvironment::default(),
+                        "读取分支领先落后数量",
+                    )?;
+                    let counts = output_text(&counts.stdout);
+                    let mut counts = counts.split_whitespace();
+                    status.ahead = counts.next().and_then(|value| value.parse().ok())
+                        .ok_or_else(|| AppError::new("git_parse_error", "无法读取分支领先数量。"))?;
+                    status.behind = counts.next().and_then(|value| value.parse().ok())
+                        .ok_or_else(|| AppError::new("git_parse_error", "无法读取分支落后数量。"))?;
+                    status.upstream = Some(format!("{remote}/{remote_branch}"));
+                    status.upstream_commit = Some(upstream_oid);
+                    return Ok(status);
+                }
+            }
+        }
         if let (Some(head_commit), Some(upstream)) =
             (status.head_commit.as_deref(), status.upstream.as_deref())
         {

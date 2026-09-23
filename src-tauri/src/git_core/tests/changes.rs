@@ -350,6 +350,357 @@ fn switching_existing_tracking_branch_does_not_expand_fetch_refspec() {
 }
 
 #[test]
+fn switching_remote_branch_outside_fetch_refspec_tracks_manually() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-uncovered-remote-branch-test-{}-{suffix}",
+        std::process::id()
+    ));
+    let source = root.join("source");
+    let remote = root.join("remote.git");
+    let clone = root.join("clone");
+    fs::create_dir_all(&source).unwrap();
+    let run_git = |repository: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    };
+
+    let remote_initialized = test_git_command()
+        .args(["init", "--bare", "-q", remote.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(remote_initialized.success());
+    run_git(&source, &["init", "-q"]);
+    run_git(&source, &["switch", "-c", "main"]);
+    run_git(
+        &source,
+        &["config", "user.email", "remote-test@example.invalid"],
+    );
+    run_git(&source, &["config", "user.name", "Remote Branch Test"]);
+    fs::write(source.join("file.txt"), "main\n").unwrap();
+    run_git(&source, &["add", "file.txt"]);
+    run_git(&source, &["commit", "-qm", "main"]);
+    run_git(
+        &source,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    run_git(&source, &["push", "-u", "origin", "main"]);
+    run_git(&source, &["switch", "-c", "1.20.1"]);
+    fs::write(source.join("file.txt"), "release\n").unwrap();
+    run_git(&source, &["commit", "-am", "release"]);
+    run_git(&source, &["push", "-u", "origin", "1.20.1"]);
+
+    // A single-branch clone persists `+refs/heads/main:refs/remotes/origin/main`
+    // as the only fetch refspec, so `git switch --track` cannot wire up the
+    // later-fetched `origin/1.20.1` ref.
+    let cloned = test_git_command()
+        .args([
+            "clone",
+            "--no-local",
+            "--single-branch",
+            "--branch",
+            "main",
+            remote.to_str().unwrap(),
+            clone.to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    assert!(cloned.success());
+
+    let git = GitCore::new();
+    git.fetch(
+        &clone,
+        &FetchOptions {
+            remote: "origin".into(),
+            refspecs: Vec::new(),
+            prune: false,
+        },
+    )
+    .unwrap();
+    assert!(git
+        .remote_branches(&clone)
+        .unwrap()
+        .iter()
+        .any(|branch| { branch.remote_name == "origin" && branch.name == "1.20.1" }));
+
+    // The persisted fetch refspec must stay untouched: silently adding a
+    // covering refspec would fix tracking by mutating the user's remote
+    // configuration instead of exercising the manual fallback.
+    let configured_refspecs_before = test_git_command()
+        .args([
+            "-C",
+            clone.to_str().unwrap(),
+            "config",
+            "--local",
+            "--get-all",
+            "remote.origin.fetch",
+        ])
+        .output()
+        .unwrap();
+    assert!(configured_refspecs_before.status.success());
+
+    // A failed checkout must restore even pre-existing multi-valued config.
+    for (key, values) in [
+        ("branch.1.20.1.remote", ["old-remote", "older-remote"]),
+        (
+            "branch.1.20.1.merge",
+            ["refs/heads/old", "refs/heads/older"],
+        ),
+    ] {
+        for value in values {
+            run_git(&clone, &["config", "--local", "--add", key, value]);
+        }
+    }
+    let read_config = |key: &str| {
+        test_git_command()
+            .args(["-C", clone.to_str().unwrap(), "config", "--local", "--get-all", key])
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let old_remote = read_config("branch.1.20.1.remote");
+    let old_merge = read_config("branch.1.20.1.merge");
+    fs::write(clone.join("file.txt"), "uncommitted change\n").unwrap();
+    assert!(git.switch_remote_branch(&clone, "origin", "1.20.1").is_err());
+    assert_eq!(read_config("branch.1.20.1.remote"), old_remote);
+    assert_eq!(read_config("branch.1.20.1.merge"), old_merge);
+    assert!(!git.branches(&clone).unwrap().iter().any(|branch| branch.name == "1.20.1"));
+    fs::write(clone.join("file.txt"), "main\n").unwrap();
+    run_git(&clone, &["config", "--local", "--unset-all", "branch.1.20.1.remote"]);
+    run_git(&clone, &["config", "--local", "--unset-all", "branch.1.20.1.merge"]);
+    run_git(&clone, &["config", "--local", "branch.autoSetupMerge", "always"]);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let hooks = root.join("hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("post-checkout");
+        fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        run_git(&clone, &["config", "--local", "core.hooksPath", hooks.to_str().unwrap()]);
+        assert!(git.switch_remote_branch(&clone, "origin", "1.20.1").is_err());
+        assert!(git
+            .branches(&clone)
+            .unwrap()
+            .iter()
+            .any(|branch| branch.name == "1.20.1" && branch.is_current));
+        assert_eq!(read_config("branch.1.20.1.remote"), b"origin\n");
+        assert_eq!(read_config("branch.1.20.1.merge"), b"refs/heads/1.20.1\n");
+        fs::remove_file(&hook).unwrap();
+        run_git(&clone, &["switch", "main"]);
+        run_git(&clone, &["branch", "-D", "1.20.1"]);
+        assert!(!git.branches(&clone).unwrap().iter().any(|branch| branch.name == "1.20.1"));
+    }
+
+    let unconditional_include = root.join("unconditional-include.conf");
+    fs::write(&unconditional_include, "[branch \"1.20.1\"]\n\tmerge = refs/heads/other\n").unwrap();
+    run_git(&clone, &["config", "--local", "include.path", unconditional_include.to_str().unwrap()]);
+    assert!(git.switch_remote_branch(&clone, "origin", "1.20.1").is_err());
+    assert_eq!(git.current_branch_name(&clone).unwrap(), "main");
+    assert!(!git.branches(&clone).unwrap().iter().any(|branch| branch.name == "1.20.1"));
+    assert!(read_config("branch.1.20.1.remote").is_empty());
+    run_git(&clone, &["config", "--local", "--unset", "include.path"]);
+
+    let main_include = root.join("main-branch-include.conf");
+    fs::write(&main_include, "[branch \"1.20.1\"]\n\tmerge = refs/heads/other\n").unwrap();
+    run_git(
+        &clone,
+        &["config", "--local", "includeIf.onbranch:main.path", main_include.to_str().unwrap()],
+    );
+    git.switch_remote_branch(&clone, "origin", "1.20.1")
+        .expect("a remote ref outside the fetch refspec still creates a tracking branch");
+    run_git(&clone, &["config", "--local", "--unset", "includeIf.onbranch:main.path"]);
+
+    let configured_refspecs = test_git_command()
+        .args([
+            "-C",
+            clone.to_str().unwrap(),
+            "config",
+            "--local",
+            "--get-all",
+            "remote.origin.fetch",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        configured_refspecs.stdout,
+        configured_refspecs_before.stdout
+    );
+    let local = git
+        .branches(&clone)
+        .unwrap()
+        .into_iter()
+        .find(|branch| branch.name == "1.20.1")
+        .expect("a local branch is created for the uncovered remote ref");
+    assert!(local.is_current);
+    // `@{upstream}` cannot resolve without a covering fetch refspec, so the
+    // durable `branch.<name>.{remote,merge}` configuration is what both the
+    // CLI (`git pull`/`git push`) and `branch_tracks_remote` rely on here.
+    for (key, expected) in [
+        ("branch.1.20.1.remote", "origin"),
+        ("branch.1.20.1.merge", "refs/heads/1.20.1"),
+    ] {
+        let configured = test_git_command()
+            .args([
+                "-C",
+                clone.to_str().unwrap(),
+                "config",
+                "--local",
+                "--get",
+                key,
+            ])
+            .output()
+            .unwrap();
+        assert!(configured.status.success(), "missing config key {key}");
+        assert_eq!(String::from_utf8_lossy(&configured.stdout).trim(), expected);
+    }
+
+    // The manually wired upstream lets a repeated switch recognize the
+    // already-checked-out branch instead of reporting a conflict.
+    assert!(git
+        .is_current_remote_branch_target(&clone, "origin", "1.20.1")
+        .unwrap());
+
+    let status = git.status(&clone).unwrap();
+    assert_eq!(status.upstream.as_deref(), Some("origin/1.20.1"));
+    assert_eq!((status.ahead, status.behind), (0, 0));
+    fs::write(source.join("file.txt"), "new release\n").unwrap();
+    run_git(&source, &["commit", "-am", "new release"]);
+    run_git(&source, &["push", "origin", "1.20.1"]);
+    git.fetch(
+        &clone,
+        &FetchOptions {
+            remote: "origin".into(),
+            refspecs: Vec::new(),
+            prune: false,
+        },
+    )
+    .unwrap();
+    assert_eq!(git.status(&clone).unwrap().behind, 1);
+    git.pull(
+        &clone,
+        &PullOptions {
+            remote: "origin".into(),
+            refspec: None,
+        },
+    )
+    .expect("manual upstream supports the next pull");
+    assert_eq!(git.status(&clone).unwrap().behind, 0);
+
+    run_git(&source, &["switch", "-c", "2.0"]);
+    fs::write(source.join("file.txt"), "second release\n").unwrap();
+    run_git(&source, &["commit", "-am", "second release"]);
+    run_git(&source, &["push", "origin", "2.0"]);
+    git.fetch(
+        &clone,
+        &FetchOptions {
+            remote: "origin".into(),
+            refspecs: Vec::new(),
+            prune: false,
+        },
+    )
+    .unwrap();
+    let conditional_config = root.join("branch-include.conf");
+    fs::write(&conditional_config, "[branch \"2.0\"]\n\tmerge = refs/heads/other\n").unwrap();
+    run_git(
+        &clone,
+        &["config", "--local", "includeIf.onbranch:2.0.path", conditional_config.to_str().unwrap()],
+    );
+    assert!(git.switch_remote_branch(&clone, "origin", "2.0").is_err());
+    assert!(git.branches(&clone).unwrap().iter().any(|branch| branch.name == "2.0" && branch.is_current));
+    git.switch_branch(&clone, "1.20.1").unwrap();
+
+    run_git(&clone, &["config", "--local", "extensions.worktreeConfig", "true"]);
+    run_git(
+        &clone,
+        &["config", "--worktree", "branch.1.20.1.remote", "missing-remote"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+    run_git(
+        &clone,
+        &["config", "--worktree", "--unset", "branch.1.20.1.remote"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("origin/1.20.1"));
+
+    run_git(
+        &clone,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/1.20.1",
+        ],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+    run_git(
+        &clone,
+        &[
+            "config", "--local", "--replace-all", "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("origin/1.20.1"));
+    run_git(&clone, &["remote", "add", "other", remote.to_str().unwrap()]);
+    run_git(
+        &clone,
+        &[
+            "config", "--local", "--replace-all", "remote.other.fetch",
+            "+refs/heads/1.20.1:refs/remotes/origin/1.20.1",
+        ],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+    run_git(&clone, &["config", "--local", "--add", "remote.other.fetch", "^refs/heads/1.20.1"]);
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("origin/1.20.1"));
+    run_git(&clone, &["config", "--local", "--remove-section", "remote.other"]);
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("origin/1.20.1"));
+    run_git(
+        &clone,
+        &["config", "--local", "--add", "remote.origin.fetch", "^refs/heads/1.20.1"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+    run_git(
+        &clone,
+        &["config", "--local", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("origin/1.20.1"));
+    run_git(
+        &clone,
+        &["config", "--local", "--add", "remote.origin.fetch", "+refs/heads/1.20.1:refs/remotes/custom/1.20.1"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream.as_deref(), Some("custom/1.20.1"));
+    run_git(
+        &clone,
+        &["config", "--local", "--replace-all", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"],
+    );
+    run_git(
+        &clone,
+        &["config", "--worktree", "--add", "branch.1.20.1.merge", "refs/heads/other"],
+    );
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+    run_git(&clone, &["config", "--worktree", "--unset-all", "branch.1.20.1.merge"]);
+    run_git(&clone, &["config", "--worktree", "branch.1.20.1.remote", "."]);
+    run_git(&clone, &["config", "--worktree", "branch.1.20.1.merge", "refs/heads/deleted"]);
+    assert!(git.status(&clone).is_ok());
+    run_git(&clone, &["config", "--worktree", "--unset", "branch.1.20.1.remote"]);
+    run_git(&clone, &["config", "--worktree", "--unset", "branch.1.20.1.merge"]);
+    run_git(&clone, &["show-ref", "--verify", "refs/remotes/origin/1.20.1"]);
+    run_git(&clone, &["config", "--local", "--remove-section", "remote.origin"]);
+    assert_eq!(git.status(&clone).unwrap().upstream, None);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn parses_worktree_porcelain_with_linked_state() {
     let raw = concat!(
         "worktree /workspace/main\0",
@@ -1287,4 +1638,3 @@ fn confirmed_discard_removes_a_staged_file_from_an_unborn_repository() {
 
     let _ = fs::remove_dir_all(repository);
 }
-

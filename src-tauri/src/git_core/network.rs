@@ -46,6 +46,7 @@ struct BranchUpstream {
     remote: String,
     remote_reference: String,
     tracking_reference: Option<String>,
+    manual_mapping: bool,
 }
 
 #[cfg(unix)]
@@ -1680,12 +1681,16 @@ impl GitCore {
         let tracking_reference = upstream
             .tracking_reference
             .ok_or_else(pull_upstream_fetch_mapping_unavailable_error)?;
-        let force = self.fetch_mapping_is_forced(
-            repository,
-            remote_name,
-            &upstream_reference,
-            &tracking_reference,
-        )?;
+        let force = if upstream.manual_mapping {
+            false
+        } else {
+            self.fetch_mapping_is_forced(
+                repository,
+                remote_name,
+                &upstream_reference,
+                &tracking_reference,
+            )?
+        };
         let refspec = format!(
             "{}{upstream_reference}:{tracking_reference}",
             if force { "+" } else { "" }
@@ -1876,7 +1881,20 @@ impl GitCore {
             .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
         let tracking_reference = std::str::from_utf8(fields[2])
             .map_err(|_| AppError::new("git_parse_error", "无法读取当前分支上游。"))?;
-        if configured_remote.is_empty() || remote_reference.is_empty() {
+        if configured_remote.is_empty()
+            || remote_reference.is_empty()
+            || tracking_reference.is_empty()
+        {
+            if let Some((remote, remote_branch, tracking_reference)) =
+                self.uncovered_branch_upstream(repository, branch)?
+            {
+                return Ok(Some(BranchUpstream {
+                    remote,
+                    remote_reference: format!("refs/heads/{remote_branch}"),
+                    tracking_reference: Some(tracking_reference),
+                    manual_mapping: true,
+                }));
+            }
             return Ok(None);
         }
         validate_remote_name(configured_remote)?;
@@ -1889,6 +1907,7 @@ impl GitCore {
             remote_reference: remote_reference.to_owned(),
             tracking_reference: (!tracking_reference.is_empty())
                 .then(|| tracking_reference.to_owned()),
+            manual_mapping: false,
         }))
     }
 
@@ -3500,7 +3519,7 @@ pub(super) fn parse_repository_config_values(output: &[u8]) -> Result<Vec<String
         .collect()
 }
 
-fn refspec_source_capture(pattern: &str, reference: &str) -> Option<Option<String>> {
+pub(super) fn refspec_source_capture(pattern: &str, reference: &str) -> Option<Option<String>> {
     let Some(wildcard_index) = pattern.find('*') else {
         return (pattern == reference).then_some(None);
     };
@@ -3520,7 +3539,7 @@ fn refspec_source_capture(pattern: &str, reference: &str) -> Option<Option<Strin
     ))
 }
 
-fn expand_refspec_destination(pattern: &str, capture: Option<&str>) -> Option<String> {
+pub(super) fn expand_refspec_destination(pattern: &str, capture: Option<&str>) -> Option<String> {
     match (pattern.find('*'), capture) {
         (None, None) => Some(pattern.to_owned()),
         (Some(wildcard_index), Some(capture)) if !pattern[wildcard_index + 1..].contains('*') => {

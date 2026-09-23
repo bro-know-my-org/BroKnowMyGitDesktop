@@ -52,6 +52,11 @@ impl AppError {
         self
     }
 
+    pub(crate) fn with_cleanup_failure(mut self) -> Self {
+        self.details = Some("原操作失败，且未能恢复分支上游配置；请检查仓库配置。".into());
+        self
+    }
+
     pub fn io(_action: &str, error: impl Display) -> Self {
         Self::new("io_error", "本地操作未能完成。").with_diagnostic(&error.to_string())
     }

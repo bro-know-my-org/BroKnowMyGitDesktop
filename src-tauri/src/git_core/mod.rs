@@ -89,7 +89,8 @@ pub(crate) use editor::{
 pub use environment::GitEnvironment;
 pub use models::{
     CloneFilter, CloneOptions, CommitResult, DiffOptions, FetchOptions, PullOptions, PushOptions,
-    RemoteUrlKind, RepositoryLockInfo, RepositoryLockKind, RepositoryLocksResult, RepositorySnapshot,
+    RemoteUrlKind, RepositoryLockInfo, RepositoryLockKind, RepositoryLocksResult,
+    RepositorySnapshot,
 };
 pub(crate) use network::PublishedRemoteState;
 pub(crate) use remotes::NetworkConfigurationAssessment;

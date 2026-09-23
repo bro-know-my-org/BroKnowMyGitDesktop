@@ -460,7 +460,7 @@ fn status_disables_optional_index_locks() {
     let fake_git = root.join("fake-git.sh");
     fs::write(
         &fake_git,
-        "#!/bin/sh\n[ \"$GIT_OPTIONAL_LOCKS\" = \"0\" ] || exit 9\nprintf '%s\\n' \"$@\" | grep -qx -- status || exit 10\nprintf '%s\\n' \"$@\" | grep -qx -- --porcelain=v2 || exit 11\nprintf '%s\\n' \"$@\" | grep -qx -- -z || exit 12\nprintf '%s\\n' \"$@\" | grep -qx -- --branch || exit 13\nprintf '# branch.oid 0123456789abcdef0123456789abcdef01234567\\n# branch.head main\\n'\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" | grep -qx -- config && exit 1\n[ \"$GIT_OPTIONAL_LOCKS\" = \"0\" ] || exit 9\nprintf '%s\\n' \"$@\" | grep -qx -- status || exit 10\nprintf '%s\\n' \"$@\" | grep -qx -- --porcelain=v2 || exit 11\nprintf '%s\\n' \"$@\" | grep -qx -- -z || exit 12\nprintf '%s\\n' \"$@\" | grep -qx -- --branch || exit 13\nprintf '# branch.oid 0123456789abcdef0123456789abcdef01234567\\n# branch.head main\\n'\n",
     )
     .unwrap();
     fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o700)).unwrap();
