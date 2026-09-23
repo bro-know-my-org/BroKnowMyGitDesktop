@@ -759,6 +759,11 @@ fn parsed_parts(
     port: Option<u16>,
     path: &str,
 ) -> ParsedRemoteUrl {
+    // Git accepts a trailing slash in remote URLs (for example
+    // `https://github.com/owner/repo/`). Dropping a single trailing slash
+    // keeps the last non-empty segment available as the repository name
+    // while `a//` still trips the empty-segment rejection below.
+    let path = path.strip_suffix('/').unwrap_or(path);
     let path = path.strip_prefix('/').unwrap_or(path);
     if path.is_empty() || path.split('/').any(str::is_empty) {
         return ParsedRemoteUrl {
@@ -1015,6 +1020,25 @@ mod tests {
             parsed.repository_slug().as_deref(),
             Some("broknowmyorg/example")
         );
+    }
+
+    #[test]
+    fn recognizes_remote_urls_with_trailing_slashes() {
+        let parsed = parse_remote_url("https://github.com/txnimc/Spice-of-Life-Apple-Pie/");
+        assert_eq!(parsed.transport, RemoteTransport::Https);
+        assert_eq!(parsed.host.as_deref(), Some("github.com"));
+        assert_eq!(parsed.namespace.as_deref(), Some("txnimc"));
+        assert_eq!(
+            parsed.repository.as_deref(),
+            Some("Spice-of-Life-Apple-Pie")
+        );
+
+        let suffixed = parse_remote_url("https://github.com/txnimc/example.git/");
+        assert_eq!(suffixed.repository.as_deref(), Some("example"));
+        assert_eq!(suffixed.namespace.as_deref(), Some("txnimc"));
+
+        let scp = parse_remote_url("git@gitee.com:team/project/");
+        assert_eq!(scp.repository_slug().as_deref(), Some("team/project"));
     }
 
     #[test]
