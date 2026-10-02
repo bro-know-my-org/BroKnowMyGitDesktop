@@ -28,6 +28,7 @@ function renderMiddleEllipsisLabel(label: string) {
 
 export default defineComponent({
   name: "WorkspaceHeader",
+  props: { customTitlebar: Boolean },
   components: { NButton, NButtonGroup, NDropdown, NLayoutHeader, NPopover, NScrollbar, NSelect, NSpin, NText },
   setup() {
     const workspace = useWorkspaceControllerContext();
@@ -152,7 +153,7 @@ export default defineComponent({
       const branch = workspace.snapshot.value?.status.branch ?? "";
       const displayUnits = [...branch].reduce((total, character) =>
         total + (character.codePointAt(0)! > 0xff ? 2 : 1), 0);
-      const width = Math.min(320, Math.max(148, 52 + displayUnits * 7.5));
+      const width = Math.min(420, Math.max(240, 52 + displayUnits * 7.5));
       return { "--branch-select-content-width": `${width}px` };
     });
     const branchSwitcherOptions = computed(() => {
@@ -421,7 +422,8 @@ export default defineComponent({
             <div class="application-menu">
               <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
                 <button class="application-menu-button" type="button" :aria-label="t('workspace.header.openApplicationMenu')" :title="t('workspace.header.openApplicationMenu')">
-                  <span v-for="line in 4" :key="line" class="application-menu-line" />
+                  <svg v-if="customTitlebar" class="application-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 7v10M18 7c0 7-12 3-12 10" /><circle cx="6" cy="5" r="2" /><circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" /></svg>
+                  <template v-else><span v-for="line in 4" :key="line" class="application-menu-line" /></template>
                 </button>
               </n-dropdown>
             </div>
@@ -691,7 +693,8 @@ export default defineComponent({
             <div class="application-menu">
               <n-dropdown trigger="click" placement="bottom-start" :options="applicationMenuOptions" @select="selectApplicationMenuItem">
                 <button class="application-menu-button" type="button" :aria-label="t('workspace.header.openApplicationMenu')" :title="t('workspace.header.openApplicationMenu')">
-                  <span v-for="line in 4" :key="line" class="application-menu-line" />
+                  <svg v-if="customTitlebar" class="application-brand-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 7v10M18 7c0 7-12 3-12 10" /><circle cx="6" cy="5" r="2" /><circle cx="6" cy="19" r="2" /><circle cx="18" cy="5" r="2" /></svg>
+                  <template v-else><span v-for="line in 4" :key="line" class="application-menu-line" /></template>
                 </button>
               </n-dropdown>
             </div>

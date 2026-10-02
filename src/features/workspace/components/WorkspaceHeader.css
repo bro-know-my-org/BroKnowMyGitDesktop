@@ -554,9 +554,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 120px;
-  max-width: 320px;
-  flex: 0 1 var(--branch-select-content-width, 148px);
+  min-width: 200px;
+  max-width: 420px;
+  flex: 0 1 var(--branch-select-content-width, 240px);
 }
 
 .branch-status-indicator {
@@ -632,7 +632,7 @@
 }
 
 .remote-select {
-  width: 104px;
+  width: 160px;
   flex: 0 0 auto;
 }
 
@@ -648,7 +648,7 @@
   }
 
   .remote-select {
-    width: 88px;
+    width: 136px;
   }
 }
 
@@ -678,4 +678,50 @@
   overflow-wrap: anywhere;
   text-overflow: clip !important;
   white-space: normal !important;
+}
+
+.window-toolbar-custom .application-menu-button {
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 1px solid var(--app-selected-border);
+  border-radius: 0;
+  background: var(--app-row-selected);
+  color: var(--app-accent);
+}
+
+.application-brand-mark {
+  width: 20px;
+  height: 20px;
+  stroke: currentcolor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.window-toolbar-custom .repository-switcher,
+.window-toolbar-custom .n-base-selection,
+.window-toolbar-custom .topbar-actions .n-button {
+  border-radius: 0;
+}
+
+.window-toolbar-custom .topbar-leading {
+  gap: 10px;
+}
+
+.window-toolbar-custom .repository-title-row {
+  gap: 10px;
+}
+
+
+.window-toolbar-inactive .application-menu-button {
+  opacity: 0.65;
+}
+
+@media (width <= 1280px) {
+  .window-toolbar-custom .topbar-content { gap: 10px; }
+
+  .window-toolbar-custom .topbar-action-label,
+  .window-toolbar-custom .branch-status-label { display: none; }
+  .window-toolbar-custom .remote-select { width: 136px; }
 }

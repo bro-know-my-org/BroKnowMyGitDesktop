@@ -1,0 +1,49 @@
+.window-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding-left: 8px;
+  border-left: 1px solid var(--app-divider);
+}
+
+.window-control {
+  display: grid;
+  width: 34px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--app-text-control);
+  cursor: pointer;
+}
+
+.window-control svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentcolor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.window-control:hover {
+  background: var(--app-row-hover);
+  color: var(--app-text-heading);
+}
+
+.window-control-close:hover {
+  background: #c42b3b;
+  color: #fff;
+}
+
+.window-control:focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: -2px;
+}
+
+.window-toolbar-inactive .window-controls {
+  opacity: 0.65;
+}
