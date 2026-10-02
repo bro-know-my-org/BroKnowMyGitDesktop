@@ -19,12 +19,6 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // GTK's Wayland headerbar differs from KDE decorations. Linux uses
-            // the application toolbar for window controls, drag and resize.
-            #[cfg(target_os = "linux")]
-            if let Some(window) = app.get_webview_window("main") {
-                window.set_decorations(false)?;
-            }
             let previews = commands::ResourcePreviews::new()?;
             app.asset_protocol_scope()
                 .allow_directory(previews.path(), true)?;

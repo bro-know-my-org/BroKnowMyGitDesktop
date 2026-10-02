@@ -7,7 +7,7 @@ import PathPicker from "../shared/PathPicker.vue";
 import WindowControls from "./WindowControls.vue";
 import { resizeDirections, useWindowChrome } from "./useWindowChrome";
 
-const { enabled, focused, maximized, fullscreen, minimize, toggleMaximize, close, startTitlebarGesture, startResize } = useWindowChrome();
+const { enabled, focused, maximized, fullscreen, resizeHandlesEnabled, minimize, toggleMaximize, close, startTitlebarGesture, startResize } = useWindowChrome();
 </script>
 
 <template>
@@ -23,7 +23,7 @@ const { enabled, focused, maximized, fullscreen, minimize, toggleMaximize, close
   </n-layout>
   <WorkspaceDialogs />
   <PathPicker />
-  <template v-if="enabled && !maximized && !fullscreen">
+  <template v-if="enabled && resizeHandlesEnabled && !maximized && !fullscreen">
     <div v-for="direction in resizeDirections" :key="direction" class="window-resize-handle" :data-direction="direction" aria-hidden="true" @mousedown.stop="startResize($event, direction)" />
   </template>
 </template>

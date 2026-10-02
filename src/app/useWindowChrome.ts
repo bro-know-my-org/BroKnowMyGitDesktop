@@ -63,8 +63,10 @@ export function windowSubscriptions(register: Array<() => Promise<UnlistenFn>>, 
 export function useWindowChrome() {
   const preview = isBrowserDemo();
   const nativeWindow = preview ? null : getCurrentWindow();
-  // Show controls during Linux startup; the native decoration state is authoritative.
-  const enabled = ref(preview || navigator.userAgent.includes("Linux"));
+  // Cocoa resizes undecorated windows natively; Tao's resize-drag API is unsupported there.
+  const resizeHandlesEnabled = preview || !navigator.userAgent.includes("Macintosh");
+  // All desktop windows start undecorated; native state remains authoritative.
+  const enabled = ref(true);
   const focused = ref(true);
   const maximized = ref(false);
   const fullscreen = ref(false);
@@ -168,7 +170,7 @@ export function useWindowChrome() {
   }
 
   function startResize(event: MouseEvent, direction: ResizeDirection) {
-    if (event.button !== 0 || !enabled.value || maximized.value || fullscreen.value || !nativeWindow) return;
+    if (event.button !== 0 || !enabled.value || !resizeHandlesEnabled || maximized.value || fullscreen.value || !nativeWindow) return;
     event.preventDefault();
     void perform(() => nativeWindow.startResizeDragging(direction));
   }
@@ -188,7 +190,7 @@ export function useWindowChrome() {
   });
 
   return {
-    enabled, focused, maximized, fullscreen, toggleMaximize, startTitlebarGesture, startResize,
+    enabled, focused, maximized, fullscreen, resizeHandlesEnabled, toggleMaximize, startTitlebarGesture, startResize,
     minimize: () => nativeWindow && perform(() => nativeWindow.minimize()),
     close: () => nativeWindow && perform(() => nativeWindow.close()),
   };
