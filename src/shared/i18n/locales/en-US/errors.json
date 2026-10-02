@@ -1,4 +1,5 @@
 {
+  "errors.branch_upstream_config_conflict": "The branch upstream configuration does not match the selected remote branch.",
   "errors.browser_demo_tag_push_unsupported": "Tag pushes are not simulated in the browser demo. Use the desktop app.",
   "errors.push_tags_with_force_unsupported": "Pushing all tags cannot be combined with force push.",
   "errors.push_tags_with_force_unsupported.details": "Push tags normally and force-push the branch as separate operations.",

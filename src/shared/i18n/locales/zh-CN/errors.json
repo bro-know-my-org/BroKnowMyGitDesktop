@@ -1,4 +1,5 @@
 {
+  "errors.branch_upstream_config_conflict": "分支上游配置与所选远程分支不一致。",
   "errors.browser_demo_tag_push_unsupported": "浏览器演示模式不模拟标签推送，请在桌面应用中执行。",
   "errors.push_tags_with_force_unsupported": "推送全部标签不能与强制推送同时使用。",
   "errors.push_tags_with_force_unsupported.details": "请分别执行普通的标签推送和分支强制推送。",
