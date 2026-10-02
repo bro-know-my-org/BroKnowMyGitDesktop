@@ -1,4 +1,9 @@
 {
+  "workspace.header.minimizeWindow": "Minimize",
+  "workspace.header.maximizeWindow": "Maximize",
+  "workspace.header.restoreWindow": "Restore window",
+  "workspace.header.closeWindow": "Close window",
+  "workspace.header.windowOperationFailed": "Window operation failed. Please try again.",
   "workspace.header.pushOptions": "Push options",
   "workspace.header.pushWithAllTags": "Push with all tags",
   "workspace.dialogs.tagNameAlreadyExists": "This tag already exists. Change the name before creating it.",

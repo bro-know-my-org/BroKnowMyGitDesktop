@@ -1,4 +1,9 @@
 {
+  "workspace.header.minimizeWindow": "最小化",
+  "workspace.header.maximizeWindow": "最大化",
+  "workspace.header.restoreWindow": "还原窗口",
+  "workspace.header.closeWindow": "关闭窗口",
+  "workspace.header.windowOperationFailed": "窗口操作失败，请重试",
   "workspace.header.pushOptions": "推送选项",
   "workspace.header.pushWithAllTags": "推送并包含所有标签",
   "workspace.dialogs.tagNameAlreadyExists": "该标签已存在，请修改名称后创建。",
