@@ -10,7 +10,30 @@ import {
 import { naiveUiDateLocale, naiveUiLocale } from "./shared/i18n";
 import { isDarkTheme, themePalette } from "./shared/theme";
 
-// Keep in sync with --app-surface / --app-divider / --app-shadow-card in src/styles/tokens.css.
+// Keep in sync with --app-* tokens in src/styles/tokens.css.
+const lightCommonOverrides: GlobalThemeOverrides["common"] = {
+  popoverColor: "#ffffff",
+  modalColor: "#ffffff",
+  cardColor: "#ffffff",
+};
+
+const darkCommonOverrides: GlobalThemeOverrides["common"] = {
+  // Deepest layer, semi-transparent so CSS backdrop-filter can blur through.
+  popoverColor: "rgba(28, 28, 30, 0.88)",
+  modalColor: "#2c2c2e",
+  cardColor: "#2c2c2e",
+  tableColor: "#2c2c2e",
+  inputColor: "#1c1c1e",
+  actionColor: "#2c2c2e",
+  hoverColor: "rgba(255, 255, 255, 0.08)",
+  dividerColor: "rgba(255, 255, 255, 0.08)",
+  borderColor: "rgba(255, 255, 255, 0.12)",
+  bodyColor: "#1c1c1e",
+  boxShadow1: "0 1px 2px rgba(0, 0, 0, 0.3)",
+  boxShadow2: "0 2px 8px rgba(0, 0, 0, 0.3)",
+  boxShadow3: "0 2px 8px rgba(0, 0, 0, 0.3)",
+};
+
 const lightCardOverrides: GlobalThemeOverrides["Card"] = {
   color: "#ffffff",
   borderColor: "#e6eaf0",
@@ -18,9 +41,19 @@ const lightCardOverrides: GlobalThemeOverrides["Card"] = {
 };
 
 const darkCardOverrides: GlobalThemeOverrides["Card"] = {
-  color: "#1c2128",
-  borderColor: "#30363d",
-  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.22)",
+  color: "#2c2c2e",
+  borderColor: "rgba(255, 255, 255, 0.08)",
+  borderRadius: "12px",
+  boxShadow: "0 1px 2px rgba(0, 0, 0, 0.3)",
+};
+
+const lightPopoverOverrides: GlobalThemeOverrides["Popover"] = {
+  borderRadius: "12px",
+};
+
+const darkPopoverOverrides: GlobalThemeOverrides["Popover"] = {
+  borderRadius: "12px",
+  boxShadow: "0 2px 8px rgba(0, 0, 0, 0.3)",
 };
 
 const themeOverrides = computed<GlobalThemeOverrides>(() => ({
@@ -29,14 +62,25 @@ const themeOverrides = computed<GlobalThemeOverrides>(() => ({
     primaryColorHover: themePalette.value.hover,
     primaryColorPressed: themePalette.value.pressed,
     primaryColorSuppl: themePalette.value.hover,
-    borderRadius: "0px",
+    borderRadius: "8px",
+    borderRadiusSmall: "6px",
     fontSize: `${resolvedInterfaceFontSize.value}px`,
     fontFamily: interfaceFontFamily.value,
     fontWeight: String(resolvedInterfaceFontWeight.value),
     fontWeightStrong: String(Math.min(900, resolvedInterfaceFontWeight.value + 200)),
+    ...(isDarkTheme.value ? darkCommonOverrides : lightCommonOverrides),
   },
   Card: {
     ...(isDarkTheme.value ? darkCardOverrides : lightCardOverrides),
+  },
+  Popover: {
+    ...(isDarkTheme.value ? darkPopoverOverrides : lightPopoverOverrides),
+  },
+  Dropdown: {
+    borderRadius: "12px",
+  },
+  InternalSelectMenu: {
+    borderRadius: "12px",
   },
   Button: {
     textColorPrimary: themePalette.value.primaryText,

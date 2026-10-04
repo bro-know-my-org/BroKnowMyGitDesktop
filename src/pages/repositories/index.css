@@ -65,7 +65,7 @@
   box-sizing: border-box;
   place-items: center;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--app-radius-lg);
   background: var(--app-row-hover);
   color: var(--app-text-control);
   font-size: calc(11px * var(--app-font-scale));

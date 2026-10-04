@@ -24,6 +24,7 @@
   gap: 3px;
   padding: 6px;
   border: 0;
+  border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--app-text-control);
   cursor: pointer;
@@ -78,7 +79,13 @@
   overflow: hidden;
   padding: 0 !important;
   border: 1px solid var(--app-divider);
+  border-radius: var(--app-radius-lg);
   background: var(--app-surface) !important;
+}
+
+:root[data-theme="dark"] .repository-picker-popover {
+  background: rgb(28 28 30 / 80%) !important;
+  backdrop-filter: blur(20px);
 }
 
 .repository-picker-command-header {
@@ -94,6 +101,7 @@
   gap: 8px;
   padding: 0 10px;
   border: 1px solid var(--app-divider);
+  border-radius: var(--app-radius-md);
   background: var(--app-bg);
 }
 
@@ -157,10 +165,8 @@
 
 .sidebar-heading {
   color: var(--app-text-muted);
-  font-size: calc(10px * var(--app-font-scale));
-  font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: calc(11px * var(--app-font-scale));
+  font-weight: clamp(100, calc(600 + var(--app-font-weight-offset)), 900);
 }
 
 .repository-grouping-select {
@@ -236,11 +242,9 @@
   gap: 8px;
   padding: 0 5px;
   color: var(--app-text-control);
-  font-size: calc(10px * var(--app-font-scale));
-  font-weight: clamp(100, calc(700 + var(--app-font-weight-offset)), 900);
-  letter-spacing: 0.045em;
+  font-size: calc(11px * var(--app-font-scale));
+  font-weight: clamp(100, calc(600 + var(--app-font-weight-offset)), 900);
   line-height: 1.35;
-  text-transform: uppercase;
 }
 
 .sidebar-group-heading-owner {
@@ -280,7 +284,7 @@
   overflow: hidden;
   padding: 6px 7px;
   border: 0;
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--app-text-heading);
   cursor: pointer;
@@ -294,7 +298,6 @@
 
 .sidebar-repository.active {
   background: var(--app-row-selected);
-  box-shadow: inset 2px 0 0 var(--app-accent-bright);
   color: var(--app-text-heading);
   font-weight: clamp(100, calc(650 + var(--app-font-weight-offset)), 900);
 }
@@ -328,7 +331,7 @@
   flex: 0 0 auto;
   width: 3px;
   height: 24px;
-  border-radius: 0;
+  border-radius: var(--app-radius-lg);
   background: var(--app-accent-strong);
   opacity: 0.55;
 }
@@ -390,6 +393,7 @@
   height: 44px;
   flex: 0 0 44px;
   background: var(--app-topbar);
+  backdrop-filter: blur(20px);
 }
 
 .topbar-content {
@@ -454,7 +458,7 @@
 
   height: 32px;
   min-height: 32px;
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
 }
 
 .topbar-actions .n-button {
@@ -462,7 +466,7 @@
 
   height: 32px;
   min-height: 32px;
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
 }
 
 .topbar-action-icon {
@@ -488,7 +492,6 @@
   overflow: hidden;
   color: var(--app-text-muted);
   font-size: calc(12px * var(--app-font-scale));
-  letter-spacing: 0.015em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -497,6 +500,7 @@
   min-width: 0;
   overflow: hidden;
   color: var(--app-text-heading);
+  font-family: var(--app-font-family-heading);
   font-size: calc(16px * var(--app-font-scale));
   font-weight: clamp(100, calc(720 + var(--app-font-weight-offset)), 900);
   letter-spacing: -0.015em;
@@ -531,6 +535,7 @@
   gap: 7px;
   padding: 0 9px;
   border: 1px solid var(--app-divider);
+  border-radius: var(--app-radius-sm);
   background: var(--app-surface);
   color: inherit;
   cursor: pointer;
@@ -573,7 +578,7 @@
   width: 6px;
   height: 6px;
   flex: 0 0 auto;
-  border-radius: 50%;
+  border-radius: var(--app-radius-lg);
   background: var(--app-accent-strong);
 }
 
@@ -685,7 +690,7 @@
   height: 32px;
   padding: 6px;
   border: 1px solid var(--app-selected-border);
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
   background: var(--app-row-selected);
   color: var(--app-accent);
 }
@@ -702,7 +707,7 @@
 .window-toolbar-custom .repository-switcher,
 .window-toolbar-custom .n-base-selection,
 .window-toolbar-custom .topbar-actions .n-button {
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
 }
 
 .window-toolbar-custom .topbar-leading {
@@ -724,4 +729,10 @@
   .window-toolbar-custom .topbar-action-label,
   .window-toolbar-custom .branch-status-label { display: none; }
   .window-toolbar-custom .remote-select { width: 136px; }
+}
+
+:root[data-theme="dark"] .repository-picker-popover .repository-picker,
+:root[data-theme="dark"] .repository-picker-popover .repository-picker-command-header,
+:root[data-theme="dark"] .repository-picker-popover .repository-picker-repositories {
+  background: transparent;
 }

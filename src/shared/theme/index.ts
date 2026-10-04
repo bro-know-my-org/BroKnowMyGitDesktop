@@ -5,7 +5,7 @@ export type ColorMode = "system" | "light" | "dark";
 
 const colorModeStorageKey = "broknowmygitdesktop.color-mode";
 const themeColorStorageKey = "broknowmygitdesktop.theme-color";
-export const defaultThemeColor = "#4B0082FF";
+export const defaultThemeColor = "#0A84FFFF";
 
 interface RgbaColor {
   red: number;
@@ -128,7 +128,7 @@ export const themeColor = ref(initialThemeColor());
 export const themePalette = computed(() => {
   const selected = parseHexColor(themeColor.value) ?? parseHexColor(defaultThemeColor)!;
   const surface: RgbaColor = isDarkTheme.value
-    ? { red: 28, green: 33, blue: 40, alpha: 1 }
+    ? { red: 44, green: 44, blue: 46, alpha: 1 }
     : { red: 255, green: 255, blue: 255, alpha: 1 };
   const contrastTarget = isDarkTheme.value ? 255 : 0;
   const softAlpha = selected.alpha;

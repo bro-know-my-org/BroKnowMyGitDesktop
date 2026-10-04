@@ -24,6 +24,19 @@ button {
   font: inherit;
 }
 
+:root[data-theme="dark"] .n-popover {
+  backdrop-filter: blur(20px);
+}
+
+h1,
+h2,
+h3,
+.n-card-header__main,
+.n-dialog__title,
+.n-drawer-header__main {
+  font-family: var(--app-font-family-heading);
+}
+
 .n-button.n-button--loading > .n-button__icon {
   position: absolute;
   top: 50%;
@@ -34,6 +47,10 @@ button {
 
 .n-button.n-button--loading > .n-button__content {
   visibility: hidden;
+}
+
+:root[data-theme="dark"] .n-base-select-option::before {
+  border-radius: var(--app-radius-sm);
 }
 
 @media (width <= 1120px) {

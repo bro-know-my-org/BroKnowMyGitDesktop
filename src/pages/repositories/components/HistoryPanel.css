@@ -61,7 +61,7 @@
   height: 17px;
   place-items: center;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--app-radius-lg);
   background: var(--app-row-hover);
   color: var(--app-text-muted);
   font-size: calc(10px * var(--app-font-scale));
@@ -120,7 +120,7 @@
   gap: 4px;
   padding: 9px 10px;
   border: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--app-text-body);
   content-visibility: auto;
@@ -141,7 +141,7 @@
 
 .history-commit-row:focus-visible {
   border-color: var(--app-focus);
-  box-shadow: 0 0 0 3px var(--app-focus-ring);
+  box-shadow: 0 0 0 2px var(--app-focus-ring);
 }
 
 .history-commit-primary,
@@ -245,7 +245,7 @@
 .history-pane-count {
   min-width: 20px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--app-radius-lg);
   background: var(--app-row-hover);
   color: var(--app-text-muted);
   font-size: calc(10px * var(--app-font-scale));
@@ -268,7 +268,7 @@
   gap: 7px;
   padding: 0 6px;
   border: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--app-text-body);
   content-visibility: auto;
@@ -289,7 +289,7 @@
 
 .history-file-row:focus-visible {
   border-color: var(--app-focus);
-  box-shadow: 0 0 0 3px var(--app-focus-ring);
+  box-shadow: 0 0 0 2px var(--app-focus-ring);
 }
 
 .history-file-copy {
@@ -414,12 +414,13 @@
     box-shadow: none;
   }
 
-  .history-commit-card,
-  .history-detail-card {
-    border: 1px solid var(--app-divider) !important;
-    background: var(--app-surface) !important;
-    box-shadow: var(--app-shadow-card) !important;
-  }
+    .history-commit-card,
+    .history-detail-card {
+      border: 1px solid var(--app-divider) !important;
+      border-radius: var(--app-radius-lg) !important;
+      background: var(--app-surface) !important;
+      box-shadow: var(--app-shadow-card) !important;
+    }
 
   .history-commit-card {
     max-height: min(430px, 48vh);

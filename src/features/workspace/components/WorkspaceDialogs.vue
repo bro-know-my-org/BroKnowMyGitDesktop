@@ -486,7 +486,7 @@ export default defineComponent({
                   :value="themeColor"
                   :modes="['hex']"
                   show-alpha
-                  :swatches="['#4B0082FF', '#6D28D9FF', '#2563EBFF', '#C026D3FF', '#DC2626FF', '#EA580CFF']"
+                  :swatches="['#0A84FFFF', '#4B0082FF', '#6D28D9FF', '#2563EBFF', '#C026D3FF', '#DC2626FF']"
                   @update:value="updateThemeColor"
                 />
                 <div class="theme-color-description">

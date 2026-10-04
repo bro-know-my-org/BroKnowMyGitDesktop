@@ -25,6 +25,7 @@
 .page-heading h1 {
   margin: 3px 0 6px;
   color: var(--app-text-strong);
+  font-family: var(--app-font-family-heading);
   font-size: calc(22px * var(--app-font-scale));
   letter-spacing: -0.02em;
   line-height: 1.18;
