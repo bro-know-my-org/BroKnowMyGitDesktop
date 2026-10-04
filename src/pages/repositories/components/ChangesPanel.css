@@ -144,19 +144,19 @@
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: #98a3b3;
+  background: var(--app-status-neutral);
 }
 
 .change-file-status.is-success {
-  background: #20a36e;
+  background: var(--app-status-added);
 }
 
 .change-file-status.is-warning {
-  background: #d58a23;
+  background: var(--app-status-modified);
 }
 
 .change-file-status.is-error {
-  background: #d04e4e;
+  background: var(--app-status-deleted);
 }
 
 .changes-commit-card {
@@ -271,7 +271,7 @@
     border: 1px solid var(--app-divider) !important;
     border-radius: 0 !important;
     background: var(--app-surface) !important;
-    box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%) !important;
+    box-shadow: var(--app-shadow-card) !important;
   }
   
   .changes-file-card {

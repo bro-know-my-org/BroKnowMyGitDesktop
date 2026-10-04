@@ -35,8 +35,8 @@
 }
 
 .window-control-close:hover {
-  background: #c42b3b;
-  color: #fff;
+  background: var(--app-danger);
+  color: var(--app-danger-text);
 }
 
 .window-control:focus-visible {

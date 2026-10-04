@@ -310,12 +310,12 @@
   height: 52px;
   margin-bottom: 16px;
   place-items: center;
-  background: linear-gradient(135deg, #24a878, #2976d2);
-  color: white;
+  background: var(--app-accent);
+  color: var(--app-on-accent);
   font-size: calc(18px * var(--app-font-scale));
   font-weight: clamp(100, calc(760 + var(--app-font-weight-offset)), 900);
   letter-spacing: -0.04em;
-  box-shadow: 0 5px 16px rgb(24 124 91 / 20%);
+  box-shadow: var(--app-shadow-card);
 }
 
 .settings-about-heading {

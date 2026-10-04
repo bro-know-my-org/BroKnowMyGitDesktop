@@ -186,6 +186,7 @@ watch(themePalette, (palette) => {
   root.setProperty("--app-accent", palette.primary);
   root.setProperty("--app-accent-strong", palette.primary);
   root.setProperty("--app-accent-bright", palette.hover);
+  root.setProperty("--app-on-accent", palette.primaryText);
   root.setProperty("--app-row-selected", palette.selectedBackground);
   root.setProperty("--app-selected-border", palette.selectedBorder);
   root.setProperty("--app-focus", palette.primary);

@@ -335,17 +335,17 @@
 
 .history-file-row.is-added .history-file-status,
 .history-file-row.is-copied .history-file-status {
-  color: #16845a;
+  color: var(--app-status-added);
 }
 
 .history-file-row.is-deleted .history-file-status,
 .history-file-row.is-unmerged .history-file-status {
-  color: #c53e3e;
+  color: var(--app-status-deleted);
 }
 
 .history-file-row.is-renamed .history-file-status,
 .history-file-row.is-type-changed .history-file-status {
-  color: #b36f13;
+  color: var(--app-status-modified);
 }
 
 .history-diff-header {
@@ -418,7 +418,7 @@
   .history-detail-card {
     border: 1px solid var(--app-divider) !important;
     background: var(--app-surface) !important;
-    box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%) !important;
+    box-shadow: var(--app-shadow-card) !important;
   }
 
   .history-commit-card {

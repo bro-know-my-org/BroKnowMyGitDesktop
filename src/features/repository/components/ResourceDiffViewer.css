@@ -92,8 +92,8 @@
 }
 
 .resource-checker {
-  background-color: #fff;
-  background-image: conic-gradient(#ddd 25%, transparent 0 50%, #ddd 0 75%, transparent 0);
+  background-color: var(--app-checker-light);
+  background-image: conic-gradient(var(--app-checker-dark) 25%, transparent 0 50%, var(--app-checker-dark) 0 75%, transparent 0);
   background-size: 16px 16px;
 }
 

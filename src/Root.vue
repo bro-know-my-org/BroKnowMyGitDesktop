@@ -10,12 +10,15 @@ import {
 import { naiveUiDateLocale, naiveUiLocale } from "./shared/i18n";
 import { isDarkTheme, themePalette } from "./shared/theme";
 
+// Keep in sync with --app-surface / --app-divider / --app-shadow-card in src/styles/tokens.css.
 const lightCardOverrides: GlobalThemeOverrides["Card"] = {
+  color: "#ffffff",
   borderColor: "#e6eaf0",
-  boxShadow: "0 1px 2px rgba(23, 35, 55, 0.025)",
+  boxShadow: "0 1px 2px rgba(23, 35, 55, 0.04)",
 };
 
 const darkCardOverrides: GlobalThemeOverrides["Card"] = {
+  color: "#1c2128",
   borderColor: "#30363d",
   boxShadow: "0 1px 2px rgba(0, 0, 0, 0.22)",
 };
