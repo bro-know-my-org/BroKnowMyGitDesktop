@@ -1364,13 +1364,51 @@ fn push_updates_existing_remote_tracking_state() {
         .unwrap();
     assert!(!remote_tag.status.success());
 
-    let remote_before_reftable_rejection = git.head_commit_id(&repository).unwrap();
-    fs::write(repository.join("history.txt"), "third\n").unwrap();
-    run_git(&repository, &["commit", "-qam", "third"]);
-    run_git(
-        &repository,
-        &["config", "extensions.refStorage", "reftable"],
+}
+
+#[test]
+fn reftable_push_tracking_is_rejected_without_remote_changes() {
+    let root = TemporaryTestDirectory::create(
+        std::env::temp_dir().join("broknowmygitdesktop-reftable-push-tracking-test"),
     );
+    let remote = root.join("remote.git");
+    let repository = root.join("repository");
+    let initialized = test_git_command()
+        .env("LC_ALL", "C")
+        .args(["init", "--ref-format=reftable", "-q", "-b", "main"])
+        .arg(&repository)
+        .output()
+        .expect("test Git command runs");
+    if !initialized.status.success() {
+        let diagnostic = output_text(&initialized.stderr);
+        // Older Git releases cannot construct a real reftable repository.
+        if diagnostic.contains("unknown option") && diagnostic.contains("ref-format") {
+            eprintln!("reftable fixture unavailable with this Git version");
+            return;
+        }
+        panic!("reftable repository initialization failed: {diagnostic}");
+    }
+    let run_git = |directory: &Path, arguments: &[&str]| {
+        let status = test_git_command()
+            .args(["-C", directory.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .expect("test Git command runs");
+        assert!(status.success(), "test Git command succeeds: {arguments:?}");
+    };
+    run_git(&root, &["init", "--bare", "-q", remote.to_str().unwrap()]);
+    run_git(&repository, &["config", "user.name", "Push Test"]);
+    run_git(&repository, &["config", "user.email", "push@example.invalid"]);
+    fs::write(repository.join("history.txt"), "initial\n").unwrap();
+    run_git(&repository, &["add", "history.txt"]);
+    run_git(&repository, &["commit", "-qm", "initial"]);
+    run_git(&repository, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    run_git(&repository, &["push", "-qu", "origin", "main"]);
+
+    let git = GitCore::new();
+    let remote_before_reftable_rejection = git.head_commit_id(&repository).unwrap();
+    fs::write(repository.join("history.txt"), "second\n").unwrap();
+    run_git(&repository, &["commit", "-qam", "second"]);
     let error = git
         .push(
             &repository,
@@ -1384,7 +1422,7 @@ fn push_updates_existing_remote_tracking_state() {
             },
         )
         .expect_err("unsupported reference storage is rejected before push");
-    assert_eq!(error.code(), "push_tracking_preflight_failed");
+    assert_eq!(error.code(), "push_tracking_preflight_failed", "{error:?}");
     let remote_main = test_git_command()
         .args(["--git-dir", remote.to_str().unwrap()])
         .args(["rev-parse", "refs/heads/main"])
