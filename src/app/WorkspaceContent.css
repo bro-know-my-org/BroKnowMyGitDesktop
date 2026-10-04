@@ -26,6 +26,17 @@
   margin-bottom: 0;
 }
 
+.demo-alert .n-alert-body {
+  padding: 6px 12px 6px 40px;
+  font-size: calc(12px * var(--app-font-scale));
+}
+
+.demo-alert .n-alert__icon {
+  top: 50%;
+  margin: 0 !important;
+  transform: translateY(-50%) scale(0.85);
+}
+
 .repository-empty-state,
 .loading-state {
   display: grid;

@@ -6,7 +6,7 @@
   align-items: stretch;
   overflow: hidden;
   border: 0;
-  background: transparent;
+  background: var(--app-surface);
   box-shadow: none;
 }
 

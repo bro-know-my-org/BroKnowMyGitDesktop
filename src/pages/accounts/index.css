@@ -1,6 +1,8 @@
 .accounts-page {
-  max-width: 1120px;
+  box-sizing: border-box;
+  max-width: var(--app-page-max-width);
   margin: 0 auto;
+  padding: 24px 24px 32px;
 }
 
 .accounts-page .eyebrow {
@@ -21,10 +23,10 @@
 }
 
 .page-heading h1 {
-  margin: 3px 0 7px;
+  margin: 3px 0 6px;
   color: var(--app-text-strong);
-  font-size: calc(28px * var(--app-font-scale));
-  letter-spacing: -0.035em;
+  font-size: calc(22px * var(--app-font-scale));
+  letter-spacing: -0.02em;
   line-height: 1.18;
 }
 
@@ -35,5 +37,6 @@
 }
 
 .security-card {
-  margin-top: 16px;
+  margin-bottom: var(--app-page-gap);
+  background: var(--app-surface-muted);
 }

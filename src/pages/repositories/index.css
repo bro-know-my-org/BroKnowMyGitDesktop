@@ -25,33 +25,72 @@
 
 .repository-tabs > .n-tabs-nav {
   box-sizing: border-box;
-  min-height: 32px;
-  border: 1px solid var(--app-divider);
-  border-bottom: 0;
+  min-height: 38px;
+  border-bottom: 1px solid var(--app-divider);
   background: var(--app-surface);
 }
 
 .repository-tabs .n-tabs-nav-scroll-content {
-  min-height: 30px;
+  min-height: 37px;
+  border-bottom: 0 !important;
 }
 
 .repository-tabs > .n-tabs-pane-wrapper {
   box-sizing: border-box;
   min-height: 0;
-  border: 1px solid var(--app-divider);
-  border-top: 0;
-  background: var(--app-surface);
-  box-shadow: 0 1px 2px rgb(23 35 55 / 2.5%);
+  background: var(--app-bg);
 }
 
 .repository-tabs .n-tabs-tab {
-  padding: 4px 10px !important;
+  padding: 8px 4px !important;
+  color: var(--app-text-secondary);
+  font-weight: clamp(100, calc(560 + var(--app-font-weight-offset)), 900);
+}
+
+.repository-tabs .n-tabs-tab:hover,
+.repository-tabs .n-tabs-tab--active {
+  color: var(--app-text-heading);
+}
+
+.repository-tabs .n-tabs-tab__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.repository-tab-count {
+  display: inline-grid;
+  min-width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--app-row-hover);
+  color: var(--app-text-control);
+  font-size: calc(11px * var(--app-font-scale));
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.n-tabs-tab--active .repository-tab-count {
+  background: var(--app-row-selected);
+  color: var(--app-accent);
+}
+
+.repository-tab-page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--app-page-max-width);
+  margin: 0 auto;
+  padding: 20px 24px 32px;
 }
 
 .repository-tab-loading {
   box-sizing: border-box;
   display: grid;
   min-height: 160px;
+  background: var(--app-surface);
   flex: 1 1 auto;
   place-items: center;
 }
@@ -94,15 +133,7 @@
 }
 
 @media (width <= 1120px) {
-  .repository-tabs > .n-tabs-pane-wrapper {
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-
   .repository-tab-loading {
-    border: 1px solid var(--app-divider);
-    border-top: 0;
     background: var(--app-surface);
   }
 }

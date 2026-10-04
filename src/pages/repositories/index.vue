@@ -39,14 +39,20 @@ export default defineComponent({
             </n-alert>
             </n-scrollbar>
 
-            <n-tabs v-model:value="activeTab" type="line" :tabs-padding="8" :pane-style="{ padding: '0' }" class="repository-tabs">
-              <n-tab-pane name="changes" :tab="t('repository.page.changes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('changes', event) }" display-directive="show:lazy"><RepositoryChangesPanel /></n-tab-pane>
+            <n-tabs v-model:value="activeTab" type="line" :tabs-padding="12" :pane-style="{ padding: '0' }" class="repository-tabs">
+              <n-tab-pane name="changes" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('changes', event) }" display-directive="show:lazy">
+                <template #tab>
+                  <span class="repository-tab-label">{{ t('repository.page.changes') }}</span>
+                  <span v-if="snapshot.status.entries.length" class="repository-tab-count">{{ snapshot.status.entries.length }}</span>
+                </template>
+                <RepositoryChangesPanel />
+              </n-tab-pane>
               <n-tab-pane name="history" :tab="t('repository.page.history')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('history', event) }" display-directive="show:lazy">
                 <RepositoryHistoryPanel v-if="repositoryTabContentReady.history" />
                 <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
               </n-tab-pane>
               <n-tab-pane name="branches" :tab="t('repository.page.branchesRemotes')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('branches', event) }" display-directive="show:lazy">
-                <template v-if="repositoryTabContentReady.branches">
+                <div v-if="repositoryTabContentReady.branches" class="repository-tab-page">
                 <n-card v-if="activeRemote" size="small" class="remote-summary-card">
                   <n-grid :cols="4" x-gap="18" y-gap="12" responsive="screen" item-responsive>
                     <n-grid-item span="4 m:1">
@@ -77,11 +83,11 @@ export default defineComponent({
                   </template>
                 </n-card>
                 <RepositoryBranchesPanel />
-                </template>
+                </div>
                 <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
               </n-tab-pane>
               <n-tab-pane name="overview" :tab="t('repository.page.details')" :tab-props="{ onPointerdown: (event: PointerEvent) => activateRepositoryTabOnPointerDown('overview', event) }" display-directive="show:lazy">
-                <RepositoryOverviewPanel v-if="repositoryTabContentReady.overview" />
+                <div v-if="repositoryTabContentReady.overview" class="repository-tab-page"><RepositoryOverviewPanel /></div>
                 <div v-else class="repository-tab-loading"><n-spin size="medium" /></div>
               </n-tab-pane>
             </n-tabs>

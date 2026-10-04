@@ -41,7 +41,7 @@
   flex-basis: 52px;
   padding-right: 8px;
   border-bottom: 1px solid var(--app-divider);
-  background: linear-gradient(110deg, var(--app-row-selected), transparent 38%), var(--app-topbar);
+  background: var(--app-topbar);
   user-select: none;
 }
 
