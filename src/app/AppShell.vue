@@ -11,7 +11,7 @@ const { enabled, focused, maximized, fullscreen, resizeHandlesEnabled, minimize,
 </script>
 
 <template>
-  <n-layout class="application-shell">
+  <n-layout class="application-shell" :class="{ 'application-shell-framed': enabled && !maximized && !fullscreen, 'application-shell-inactive': !focused }">
     <n-layout class="application-main">
       <div class="window-toolbar" :class="{ 'window-toolbar-custom': enabled, 'window-toolbar-inactive': enabled && !focused }" @mousedown="startTitlebarGesture">
         <WorkspaceHeader :custom-titlebar="enabled" />

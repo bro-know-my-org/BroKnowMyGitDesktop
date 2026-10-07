@@ -21,6 +21,7 @@
   --app-focus: #4b0082;
   --app-focus-ring: rgb(75 0 130 / 20%);
   --app-divider: #edf0f4;
+  --app-window-border: rgb(23 35 55 / 16%);
   --app-surface-muted: #f9fafc;
   --app-shadow-card: 0 1px 2px rgb(23 35 55 / 4%);
   --app-status-neutral: #98a3b3;
@@ -101,6 +102,7 @@
   --app-focus: #0a84ff;
   --app-focus-ring: rgb(10 132 255 / 30%);
   --app-divider: rgb(255 255 255 / 8%);
+  --app-window-border: rgb(255 255 255 / 16%);
   --app-surface-muted: #1c1c1e;
   --app-shadow-card: 0 1px 2px rgb(0 0 0 / 30%);
   --app-status-neutral: #8e8e93;

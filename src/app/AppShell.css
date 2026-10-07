@@ -3,6 +3,21 @@
   min-height: 0;
 }
 
+/* Overlay the frame so content layout and native edge gestures stay unchanged. */
+.application-shell-framed::after {
+  position: fixed;
+  z-index: 2200;
+  box-sizing: border-box;
+  border: 1px solid var(--app-window-border);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+}
+
+.application-shell-framed.application-shell-inactive::after {
+  opacity: 0.6;
+}
+
 .application-shell > .n-layout-scroll-container {
   height: 100%;
   min-height: 0;
