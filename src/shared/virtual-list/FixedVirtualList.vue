@@ -240,14 +240,15 @@ defineExpose({ scrollToIndex });
 </template>
 
 <style scoped>
-.fixed-virtual-list {
+/* NScrollbar's rendered root does not carry this component's scope attribute. */
+:global(.fixed-virtual-list) {
   box-sizing: border-box;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
-.fixed-virtual-list :deep(.n-scrollbar-container) {
+:global(.fixed-virtual-list > .n-scrollbar-container) {
   overscroll-behavior: contain;
 }
 
