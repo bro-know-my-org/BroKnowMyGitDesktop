@@ -2,6 +2,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Configure GIO before GTK/WebKit or worker threads start. VPN route bursts
+    // can overflow the netlink monitor and permanently remove its event source.
+    // The base monitor lets actual requests determine connectivity instead.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("GIO_USE_NETWORK_MONITOR").is_none() {
+        std::env::set_var("GIO_USE_NETWORK_MONITOR", "base");
+    }
+
     // Git invokes this same trusted executable as a fixed no-op editor while
     // continuing a rebase, cherry-pick, or revert. Handle that mode before
     // constructing Tauri so no GUI process is opened for Git's message file.

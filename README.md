@@ -28,6 +28,14 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
+Linux 启动时默认使用 GIO 的 `base` 网络监控，避免 WARP 等 VPN 批量切换路由时
+netlink 缓冲区溢出并停止网络状态监控。该模式假定网络可用，连接是否成功仍由实际请求
+判断；WebKit 的在线状态事件和 GIO 的计费网络检测不再准确。该变量也可能被应用启动的
+子进程继承，但不会修改系统网络配置。VPN 断连期间的请求仍可能失败，需要网络恢复后
+重试；此绕过不保证所有连接都能自动恢复。显式设置的
+`GIO_USE_NETWORK_MONITOR` 会被保留，例如可用
+`GIO_USE_NETWORK_MONITOR=netlink pnpm tauri dev` 恢复 netlink 监控。
+
 ## 发布
 
 仓库中的 `package.json`、`src-tauri/Cargo.toml` 和
