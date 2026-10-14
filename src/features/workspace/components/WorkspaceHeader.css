@@ -510,6 +510,7 @@
 
 .repository-switcher-caret {
   flex: 0 0 auto;
+  margin-inline-start: auto;
   color: var(--app-text-muted);
   font-size: calc(12px * var(--app-font-scale));
   line-height: 1;
