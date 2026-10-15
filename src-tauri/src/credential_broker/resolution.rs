@@ -1,4 +1,15 @@
 impl CredentialBroker {
+    /// Structural compatibility shared by binding writes and runtime resolution.
+    /// An expired credential may still be bound; execution checks status again.
+    pub(crate) fn supports_account_transport(
+        account: &AccountProfile,
+        endpoint: &CodeHostEndpoint,
+        transport: &RemoteTransport,
+    ) -> bool {
+        account.endpoint_id == endpoint.id
+            && strategy_for_account(account, endpoint, transport).is_some()
+    }
+
     /// Resolve the one credential strategy that may be used for a Git network
     /// operation.  This never falls through from an invalid explicit binding
     /// to a default account: doing so could authenticate as the wrong user.
@@ -262,7 +273,7 @@ fn is_usable_with_transport(
     matches!(
         &account.status,
         AuthenticationStatus::Available | AuthenticationStatus::Valid
-    ) && strategy_for_account(account, endpoint, transport).is_some()
+    ) && CredentialBroker::supports_account_transport(account, endpoint, transport)
 }
 
 fn strategy_for_account(
@@ -283,14 +294,22 @@ fn strategy_for_account(
         // account profile. It must remain an unscoped fallback instead of
         // becoming a per-profile remote binding.
         (AuthenticationMethod::SystemGitCredentialHelper, RemoteTransport::Https) => None,
-        // gh/glab expose one process-global active account and their token
-        // commands do not provide a safe, supported per-account selector.
-        // Never turn a CLI profile into Git HTTPS credentials: doing so could
-        // either fail outright or authenticate a bound remote as the wrong
-        // account after another process changes the active CLI identity.
-        (AuthenticationMethod::GhCli | AuthenticationMethod::GlabCli, RemoteTransport::Https) => {
-            None
+        // gh supports a per-user token lookup. The short-lived askpass helper
+        // pins that login instead of consulting the mutable active identity.
+        (AuthenticationMethod::GhCli, RemoteTransport::Https)
+            if endpoint.kind == CodeHostKind::GitHub
+                && !git_authority_has_explicit_port(&endpoint.git_host)
+                && github_endpoint_has_gh_compatible_api(endpoint)
+                && is_safe_username(&account.login) =>
+        {
+            Some(CredentialStrategy::GhCliAskPass {
+                account_profile_id: account.id.clone(),
+                authority: normalize_git_authority(&endpoint.git_host)?,
+                username: account.login.clone(),
+            })
         }
+        // glab has no supported per-account token selector.
+        (AuthenticationMethod::GlabCli, RemoteTransport::Https) => None,
         (AuthenticationMethod::PersonalAccessToken, RemoteTransport::Https) => {
             let keychain_ref = personal_access_token_reference(account)?;
             if !is_safe_username(&account.login) {
@@ -445,4 +464,3 @@ pub struct CredentialEnvironment {
     variables: Vec<(OsString, OsString)>,
     askpass: Option<AskPassConfig>,
 }
-

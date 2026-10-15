@@ -338,6 +338,49 @@ impl CliAuthenticationStatus {
     }
 }
 
+/// Called only inside the one-shot askpass process after host/user validation.
+/// Never consult the active gh user or expose gh diagnostics containing secrets.
+fn read_gh_account_token(hostname: &str, username: &str) -> Result<String, AppError> {
+    let output =
+        run_platform_cli_command_instance(gh_account_token_command(hostname, username), &[])
+            .map_err(|_| gh_account_token_unavailable())?;
+    gh_account_token_from_output(output)
+}
+
+fn gh_account_token_command(hostname: &str, username: &str) -> Command {
+    let mut command = Command::new("gh");
+    configure_platform_cli_auth_environment(PlatformCli::Gh, &mut command);
+    command.args(["auth", "token", "--hostname", hostname, "--user", username]);
+    command.env("GH_PROMPT_DISABLED", "1");
+    command
+}
+
+fn gh_account_token_from_output(output: Output) -> Result<String, AppError> {
+    if !output.status.success() {
+        return Err(gh_account_token_unavailable());
+    }
+    let token = zeroize::Zeroizing::new(
+        String::from_utf8(output.stdout).map_err(|_| gh_account_token_unavailable())?,
+    );
+    let token = token.trim();
+    if token.is_empty()
+        || token.len() > 16 * 1024
+        || token
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return Err(gh_account_token_unavailable());
+    }
+    Ok(token.to_owned())
+}
+
+fn gh_account_token_unavailable() -> AppError {
+    AppError::new(
+        "cli_token_unavailable",
+        "无法读取所选 gh 账号的认证信息，请重新登录该账号。",
+    )
+}
+
 /// Check the current `gh` authentication state without changing it.
 pub fn gh_auth_status(hostname: &str) -> CliAuthenticationStatus {
     cli_auth_status(PlatformCli::Gh, hostname)

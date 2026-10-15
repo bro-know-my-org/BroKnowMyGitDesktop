@@ -372,6 +372,11 @@ pub struct RemoteBinding {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum CredentialStrategy {
+    GhCliAskPass {
+        account_profile_id: String,
+        authority: String,
+        username: String,
+    },
     KeychainPatAskPass {
         account_profile_id: String,
         keychain_ref: KeychainReference,

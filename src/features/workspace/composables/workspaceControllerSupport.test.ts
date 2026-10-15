@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RepositoryRecord } from "../../../shared/types/domain";
-import { filterRepositoryGroups, repositoryRemoteLabel, repositoryStarAriaLabel, type RepositorySidebarGroup } from "./workspaceControllerSupport";
+import type { AccountProfile, AuthenticationMethod, RepositoryRecord } from "../../../shared/types/domain";
+import { filterRepositoryGroups, repositoryRemoteLabel, repositoryStarAriaLabel, supportsCloneCredentials, supportsGitRemoteCredentials, type RepositorySidebarGroup } from "./workspaceControllerSupport";
+
+test("GitHub CLI accounts remain selectable for published remote bindings and pinned clones", () => {
+  const profile = (authMethod: AuthenticationMethod): AccountProfile => ({
+    id: "github-work", endpointId: "github.com", login: "work-login", displayName: null,
+    authMethod, secretRef: null, status: "valid", isDefaultCandidate: false,
+  });
+  for (const method of ["ghCli", "personalAccessToken"] as const) {
+    assert.equal(supportsGitRemoteCredentials(profile(method)), true);
+    assert.equal(supportsCloneCredentials(profile(method)), true);
+  }
+  assert.equal(supportsGitRemoteCredentials(profile("sshAgent")), false);
+  assert.equal(supportsCloneCredentials(profile("sshAgent")), true);
+  for (const method of ["glabCli", "systemGitCredentialHelper"] as const) {
+    assert.equal(supportsGitRemoteCredentials(profile(method)), false);
+    assert.equal(supportsCloneCredentials(profile(method)), false);
+  }
+});
 
 function repository(path: string, alias: string | null = null): RepositoryRecord {
   return {

@@ -2132,7 +2132,8 @@ export const api = {
       }
       if (binding.accountSelection.mode === "profile") {
         const account = requireBrowserAccountForEndpoint(binding.accountSelection.accountProfileId, endpoint.id);
-        if (account.authMethod !== "personalAccessToken") {
+        if (account.authMethod !== "personalAccessToken"
+          && !(account.authMethod === "ghCli" && endpoint.kind === "gitHub")) {
           throw browserError("authentication_method_mismatch");
         }
       }

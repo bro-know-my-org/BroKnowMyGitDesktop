@@ -24,6 +24,15 @@ impl CredentialEnvironment {
 
     fn from_strategy_with_account(strategy: &CredentialStrategy) -> Result<Self, AppError> {
         let askpass = match strategy {
+            CredentialStrategy::GhCliAskPass {
+                account_profile_id,
+                authority,
+                username,
+            } => Some(AskPassConfig::for_gh_account(
+                account_profile_id.clone(),
+                authority.clone(),
+                username.clone(),
+            )?),
             CredentialStrategy::KeychainPatAskPass {
                 account_profile_id,
                 keychain_ref,
@@ -128,7 +137,10 @@ fn remove_inherited_git_credential_environment(command: &mut Command) {
 
 fn strategy_account_profile_id(strategy: &CredentialStrategy) -> &str {
     match strategy {
-        CredentialStrategy::KeychainPatAskPass {
+        CredentialStrategy::GhCliAskPass {
+            account_profile_id, ..
+        }
+        | CredentialStrategy::KeychainPatAskPass {
             account_profile_id, ..
         } => account_profile_id,
     }
@@ -142,4 +154,3 @@ pub struct AskPassConfig {
     source: AskPassSecretSource,
     username: String,
 }
-

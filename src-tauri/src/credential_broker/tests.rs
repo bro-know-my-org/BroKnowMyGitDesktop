@@ -402,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn cli_profiles_are_not_repurposed_as_git_https_credentials() {
+    fn published_gh_profile_resolves_to_account_scoped_askpass() {
         let endpoint = CodeHostEndpoint {
             id: "github.com".into(),
             kind: CodeHostKind::GitHub,
@@ -423,7 +423,236 @@ mod tests {
             is_default_candidate: true,
         };
 
-        assert!(strategy_for_account(&profile, &endpoint, &RemoteTransport::Https).is_none());
+        let binding = RemoteBinding {
+            repository_path: "/work/demo".into(),
+            remote_name: "origin".into(),
+            endpoint_id: endpoint.id.clone(),
+            account_selection: AccountSelection::Profile(profile.id.clone()),
+        };
+        let resolved = resolve(
+            std::slice::from_ref(&endpoint),
+            &[binding.clone()],
+            std::slice::from_ref(&profile),
+            "https://github.com/team/project.git",
+        )
+        .expect("the gh account bound by publication must support subsequent Git operations");
+        assert_eq!(resolved.account_profile_id, "octo");
+        assert!(
+            matches!(&resolved.strategy, CredentialStrategy::GhCliAskPass { authority, username, .. }
+            if authority == "github.com" && username == "octo")
+        );
+        assert!(CredentialBroker::has_explicit_account_candidate(
+            std::slice::from_ref(&profile),
+            &endpoint,
+            &RemoteTransport::Https,
+        ));
+        let configuration = CredentialEnvironment::from_resolution(&resolved, &profile).unwrap();
+        assert_eq!(
+            configuration.askpass_config().unwrap().mode(),
+            ASKPASS_MODE_GH
+        );
+
+        // An invalid explicit identity must never fall back to another account.
+        let mut expired = profile.clone();
+        expired.status = AuthenticationStatus::NeedsReauthentication;
+        assert!(
+            CredentialBroker::supports_account_transport(
+                &expired,
+                &endpoint,
+                &RemoteTransport::Https,
+            ),
+            "binding metadata may be saved before reauthentication"
+        );
+        assert!(!CredentialBroker::supports_account_transport(
+            &profile,
+            &endpoint,
+            &RemoteTransport::Ssh,
+        ));
+        let mut alternate = profile.clone();
+        alternate.id = "another".into();
+        alternate.login = "another".into();
+        assert_eq!(
+            resolve(
+                std::slice::from_ref(&endpoint),
+                &[binding],
+                &[expired, alternate],
+                "https://github.com/team/project.git",
+            )
+            .unwrap_err()
+            .code(),
+            "account_selection_required"
+        );
+
+        let mut unsupported = endpoint.clone();
+        unsupported.kind = CodeHostKind::GitLab;
+        assert!(strategy_for_account(&profile, &unsupported, &RemoteTransport::Https).is_none());
+        unsupported = endpoint.clone();
+        unsupported.git_host = "github.com:8443".into();
+        assert!(strategy_for_account(&profile, &unsupported, &RemoteTransport::Https).is_none());
+        unsupported = endpoint;
+        unsupported.api_url = "https://unrelated.test/api".into();
+        assert!(strategy_for_account(&profile, &unsupported, &RemoteTransport::Https).is_none());
+        assert!(strategy_for_account(&profile, &unsupported, &RemoteTransport::Ssh).is_none());
+        let mut glab = profile;
+        glab.auth_method = AuthenticationMethod::GlabCli;
+        assert!(strategy_for_account(&glab, &unsupported, &RemoteTransport::Https).is_none());
+    }
+
+    #[test]
+    fn gh_askpass_capability_pins_host_and_login_and_cannot_be_replayed() {
+        let configuration =
+            AskPassConfig::for_gh_account("work".into(), "github.com".into(), "work-login".into())
+                .unwrap();
+        let capability = AskPassCapability::create(&configuration).unwrap();
+        let restored = capability.load_configuration(false).unwrap();
+        assert_eq!(
+            askpass_username_for_prompt(&restored, "github.com").unwrap(),
+            "work-login"
+        );
+        assert_eq!(
+            askpass_username_for_prompt(&restored, "other.test")
+                .unwrap_err()
+                .code(),
+            "askpass_prompt_host_mismatch"
+        );
+        assert!(askpass_password_prompt_authority(
+            "Password for 'https://other-login@github.com':",
+            &restored.username,
+        )
+        .is_err());
+        let restored = capability.load_configuration(true).unwrap();
+        assert!(
+            matches!(&restored.source, AskPassSecretSource::GhAccount { account_profile_id, authority }
+            if account_profile_id == "work" && authority == "github.com")
+        );
+        assert_eq!(restored.username, "work-login");
+        assert_eq!(
+            capability.load_configuration(true).err().unwrap().code(),
+            "askpass_capability_invalid"
+        );
+        assert!(AskPassConfig::for_gh_account(
+            "work".into(),
+            "github.com:8443".into(),
+            "octo".into()
+        )
+        .is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_askpass_child_reads_only_the_bound_account() {
+        use std::os::unix::fs::PermissionsExt;
+        const CHILD: &str = "BKM_TEST_GH_ASKPASS_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let prompt = OsStr::new("Password for 'https://bound-login@github.com':");
+            assert_eq!(askpass_response(prompt).unwrap(), "fake-test-token");
+            assert_eq!(
+                askpass_response(prompt).unwrap_err().code(),
+                "askpass_capability_invalid"
+            );
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let gh = directory.path().join("gh");
+        fs::write(&gh, r#"#!/bin/sh
+[ "$*" = 'auth token --hostname github.com --user bound-login' ] || exit 1
+[ -z "${GH_TOKEN+x}${GITHUB_TOKEN+x}${GH_ENTERPRISE_TOKEN+x}${GITHUB_ENTERPRISE_TOKEN+x}" ] || exit 1
+printf 'fake-test-token\n'
+"#).unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+        let strategy = CredentialStrategy::GhCliAskPass {
+            account_profile_id: "bound".into(),
+            authority: "github.com".into(),
+            username: "bound-login".into(),
+        };
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "credential_broker::tests::gh_askpass_child_reads_only_the_bound_account",
+        ]);
+        CredentialEnvironment::from_strategy(&strategy)
+            .unwrap()
+            .apply_to_command(&mut command, Some(Path::new("/unused-askpass")))
+            .unwrap();
+        command.env(CHILD, "1").env("PATH", directory.path());
+        for name in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+        ] {
+            command.env(name, "different-active-identity");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("fake-test-token"));
+    }
+
+    #[test]
+    fn automatic_selection_never_uses_another_endpoints_account() {
+        let endpoint = endpoint();
+        let mut foreign = account(
+            "foreign",
+            AuthenticationMethod::PersonalAccessToken,
+            AuthenticationStatus::Valid,
+            true,
+        );
+        foreign.endpoint_id = "github.com".into();
+        assert!(!CredentialBroker::has_explicit_account_candidate(
+            std::slice::from_ref(&foreign),
+            &endpoint,
+            &RemoteTransport::Https,
+        ));
+        assert_eq!(
+            resolve(
+                &[endpoint],
+                &[],
+                &[foreign],
+                "https://gitee.com/team/project.git"
+            )
+            .unwrap_err()
+            .code(),
+            "account_selection_required"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gh_token_output_validation_never_exposes_diagnostics() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = |success, bytes: &[u8]| Output {
+            status: std::process::ExitStatus::from_raw(if success { 0 } else { 256 }),
+            stdout: bytes.to_vec(),
+            stderr: b"sensitive provider diagnostic".to_vec(),
+        };
+        assert_eq!(
+            gh_account_token_from_output(output(true, b"fake-test-token\n")).unwrap(),
+            "fake-test-token"
+        );
+        for bytes in [
+            b"".as_slice(),
+            b"a\nb",
+            b"a b",
+            b"\xff",
+            &vec![b'a'; 16 * 1024 + 1],
+        ] {
+            assert_eq!(
+                gh_account_token_from_output(output(true, bytes))
+                    .unwrap_err()
+                    .code(),
+                "cli_token_unavailable"
+            );
+        }
+        assert_eq!(
+            gh_account_token_from_output(output(false, b"fake-test-token"))
+                .unwrap_err()
+                .code(),
+            "cli_token_unavailable"
+        );
     }
 
     #[test]

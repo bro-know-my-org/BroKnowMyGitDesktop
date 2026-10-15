@@ -35,8 +35,8 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 支持的策略：
 
 - `SshAgent`：沿用进程环境中的 SSH agent，但实际身份由 SSH host 配置与 agent 选择。SSH 账号资料仅可显示状态，不能成为 remote 的显式 Profile binding，也不参与 Auto 的账号选择。
-- `SystemGitCredentialHelper`：不是 `CredentialStrategy`，也不能保存为“某个账号”的 remote binding；没有明确 PAT 候选时，系统 Git 只按实际 remote URL 调用用户已有 helper。
-- `GhCli` / `GlabCli`：检测、导入并重新校验当前 CLI 账号，并用于各自已实现的平台 API（GitHub 的发布也依赖 gh）；不会切换 CLI 活跃账号。普通 Git HTTPS binding 不把 CLI token 当作 askpass 来源；GitHub 发布是受限例外，会用 `gh auth token --user` 在内存中固定所选账号，并同时禁用本次初始推送的 hooks 和不受信任网络配置。其他需要显式账号绑定的 Git 网络操作应使用 PAT，SSH 则保持 Git/SSH 配置的无绑定选择。
+- `SystemGitCredentialHelper`：不是 `CredentialStrategy`，也不能保存为“某个账号”的 remote binding；没有可固定的 PAT / GitHub CLI 候选时，系统 Git 只按实际 remote URL 调用用户已有 helper。
+- `GhCliAskPass`：支持 GitHub HTTPS 的显式账号绑定，包括发布时保存的 `origin` 绑定。短时、一次性的 askpass helper 验证主机与用户名后，执行 `gh auth token --hostname <host> --user <login>`，忽略继承的 bearer token，令牌仅流向 Git 的密码管道；不会切换 CLI 活跃账号。带显式端口或非标准 API 地址的 Endpoint 不使用此策略。GitHub 发布仍在内存中固定所选账号，并禁用初次推送的 hooks 与不受信任网络配置。`GlabCli` 仅用于平台 API，不支持 Git 的显式账号绑定；SSH 保持 Git/SSH 配置的无绑定选择。
 - `KeychainPatAskPass`：应用保存的 PAT 只放进系统钥匙串。父 Git 路径为临时 askpass 子进程签发短时、随机、一次性 capability；Git 需要 HTTPS 密码时，helper 先原子消费 capability，再核对 capability 中的 account profile ID 与钥匙串引用一致后读取并直接写给 Git。令牌不经过前端、日志、JSON、SQLite、Git remote 或 Git 配置。
 
 账号与本地仓库元数据存放在应用数据目录的 JSON 中。账号部分只包含账号 ID、平台、登录名、认证方式、状态和钥匙串引用；绝不包含 PAT。仓库部分只保存规范化路径、显示名、手动分组、已解析 remote 的 host/组织路径和最近显式打开时间；它不会写入 Git 配置。本地持久化采用原子写入，避免半写入的账号绑定或仓库分组；Unix 会同步文件和父目录，macOS 不把系统对目录 `fsync` 返回的 `EINVAL` 误报成写入失败。同一仓库的工作树 / index / ref 写入、凭据化网络 Git 操作、remote / binding 修改，以及依赖 remote 身份的 GitHub 平台请求会持有同一个进程内 lease；移除 linked worktree 时会原子取得发起端与目标端两把路径锁，避免在强制删除时让目标工作树继续操作。GitHub 平台能力还要求 `api_url` 精确匹配 `gh --hostname` 对该 Git host 的标准路由，避免把 host-scoped CLI token 发到 Endpoint 配置之外的 API。
@@ -73,15 +73,15 @@ CredentialBroker 在每次网络 Git 操作前，将 remote URL、RemoteBinding 
 
 1. 读取远程 URL 并识别或关联 Endpoint。
 2. 查找该仓库路径和 remote 名称的 RemoteBinding。
-3. 如果 binding 指向具体 AccountProfile，验证它存在、属于该 Endpoint、认证可用且是可固定的 PAT；SSH agent、CLI 与系统 credential helper profile 都不能成为明确绑定。
-4. 如果 binding 为 `Auto`，只在唯一可用的 PAT 候选（或唯一有效默认候选）时选择；有多个候选、账号失效、Endpoint 不匹配或无法确认时返回 `account_selection_required`，由界面要求用户选择。没有可固定 PAT 时，HTTPS/SSH remote 回退到系统 Git 按 URL 调用的 credential helper / SSH 配置。
+3. 如果 binding 指向具体 AccountProfile，验证它存在、属于该 Endpoint、认证可用且是可固定的 PAT 或 GitHub CLI 账号；SSH agent、glab 与系统 credential helper profile 不能成为明确绑定。无效的显式绑定不回退到其他账号。
+4. 如果 binding 为 `Auto`，只在该 Endpoint 唯一可用的 PAT / GitHub CLI 候选（或唯一有效默认候选）时选择；有多个候选、账号失效、Endpoint 不匹配或无法确认时返回 `account_selection_required`，由界面要求用户选择。没有可固定候选时，HTTPS/SSH remote 回退到系统 Git 按 URL 调用的 credential helper / SSH 配置。
 5. 解析出 CredentialStrategy 后才调用 Git。显式 RemoteBinding 永远优先于默认候选账号。
 
 因此“默认账号”只是 Auto 的候选排序信息，不能覆盖某个 remote 的明确绑定，也不能在存在歧义时静默替用户选择账号。
 
 对于不携带账户身份的 `git://` 与本地路径 / `file://` remote，应用不创建 Endpoint 或 CredentialStrategy，而是直接保留系统 Git 的无凭据行为。
 
-Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL 都会在创建 recovery intent 或启动 Git 前按同一套安全规则验证。用户可为 HTTPS Clone 明确选择 Endpoint 与 PAT；后端会先解析认证策略，在 clone 成功后把该选择保存为新仓库 `origin` 的 remote binding。SSH Clone 保持 SSH 配置的无绑定身份选择。
+Clone 默认同样保留系统 Git 行为，但无论是否选择账号，URL 都会在创建 recovery intent 或启动 Git 前按同一套安全规则验证。用户可为 HTTPS Clone 明确选择 Endpoint 与 PAT / GitHub CLI 账号；后端会先解析认证策略，在 clone 成功后把该选择保存为新仓库 `origin` 的 remote binding。SSH Clone 保持 SSH 配置的无绑定身份选择。
 
 ## 凭据安全约束
 

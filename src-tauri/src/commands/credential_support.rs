@@ -312,12 +312,13 @@ pub(super) fn credential_environment_for_resolution(
     }
     // Every resolved strategy is selected explicitly. Do not let a
     // repository-provided credential helper or HTTP header run alongside it.
-    // A PAT askpass capability is a bearer authorization in Git's inherited
+    // An askpass capability is a bearer authorization in Git's inherited
     // environment, so hook-capable commands must also disable hooks before
     // the process starts. SSH has no such secret in the environment.
     if matches!(
         &resolution.strategy,
         crate::domain::CredentialStrategy::KeychainPatAskPass { .. }
+            | crate::domain::CredentialStrategy::GhCliAskPass { .. }
     ) {
         environment.isolate_network_credentials_and_disable_hooks();
     } else {

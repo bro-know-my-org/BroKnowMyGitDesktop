@@ -1,6 +1,10 @@
 /// A secret source identifier, never a secret value.
 #[derive(Clone)]
 enum AskPassSecretSource {
+    GhAccount {
+        account_profile_id: String,
+        authority: String,
+    },
     Keychain {
         account_profile_id: String,
         keychain_ref: KeychainReference,
@@ -20,6 +24,10 @@ struct AskPassCapabilityConfiguration {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum AskPassCapabilitySource {
+    GhAccount {
+        account_profile_id: String,
+        authority: String,
+    },
     Keychain {
         account_profile_id: String,
         service: String,
@@ -42,6 +50,31 @@ struct AskPassCapability {
 }
 
 impl AskPassConfig {
+    fn for_gh_account(
+        account_profile_id: String,
+        authority: String,
+        username: String,
+    ) -> Result<Self, AppError> {
+        if !is_safe_metadata_value(&account_profile_id)
+            || !is_safe_git_authority(&authority)
+            || !is_safe_hostname(&authority)
+            || git_authority_has_explicit_port(&authority)
+            || !is_safe_username(&username)
+        {
+            return Err(AppError::new(
+                "invalid_askpass_configuration",
+                "无法安全配置所选 gh 账号的 askpass 认证。",
+            ));
+        }
+        Ok(Self {
+            source: AskPassSecretSource::GhAccount {
+                account_profile_id,
+                authority,
+            },
+            username,
+        })
+    }
+
     fn for_keychain(
         account_profile_id: String,
         keychain_ref: KeychainReference,
@@ -95,12 +128,20 @@ impl AskPassConfig {
 
     fn mode(&self) -> &'static str {
         match self.source {
+            AskPassSecretSource::GhAccount { .. } => ASKPASS_MODE_GH,
             AskPassSecretSource::Keychain { .. } => ASKPASS_MODE_KEYCHAIN,
         }
     }
 
     fn capability_configuration(&self) -> AskPassCapabilityConfiguration {
         let source = match &self.source {
+            AskPassSecretSource::GhAccount {
+                account_profile_id,
+                authority,
+            } => AskPassCapabilitySource::GhAccount {
+                account_profile_id: account_profile_id.clone(),
+                authority: authority.clone(),
+            },
             AskPassSecretSource::Keychain {
                 account_profile_id,
                 keychain_ref,
@@ -122,6 +163,10 @@ impl AskPassConfig {
         configuration: AskPassCapabilityConfiguration,
     ) -> Result<Self, AppError> {
         match configuration.source {
+            AskPassCapabilitySource::GhAccount {
+                account_profile_id,
+                authority,
+            } => Self::for_gh_account(account_profile_id, authority, configuration.username),
             AskPassCapabilitySource::Keychain {
                 account_profile_id,
                 service,
@@ -471,7 +516,7 @@ pub fn askpass_invocation_requested() -> bool {
 ///
 /// The surrounding executable should invoke this function before initializing
 /// Tauri, pass Git's first argument as the prompt, and write no diagnostics to
-/// stdout. On a password prompt, the selected keychain PAT flows directly to
+/// stdout. On a password prompt, the selected keychain/CLI token flows directly to
 /// Git's askpass pipe.
 pub fn run_keychain_askpass_from_args() -> Result<(), AppError> {
     let prompt = std::env::args_os().nth(1).ok_or_else(|| {
@@ -537,6 +582,11 @@ fn askpass_response(prompt: &OsStr) -> Result<String, AppError> {
             askpass_username_for_prompt(&configuration, &prompt_authority)
         }
         AskPassPromptKind::Password => match configuration.source {
+            AskPassSecretSource::GhAccount { authority, .. }
+                if authority.eq_ignore_ascii_case(&prompt_authority) =>
+            {
+                read_gh_account_token(&authority, &configuration.username)
+            }
             AskPassSecretSource::Keychain {
                 account_profile_id,
                 keychain_ref,
@@ -576,7 +626,8 @@ fn askpass_username_for_prompt(
     prompt_authority: &str,
 ) -> Result<String, AppError> {
     let matches_prompt = match &configuration.source {
-        AskPassSecretSource::Keychain { authority, .. } => {
+        AskPassSecretSource::GhAccount { authority, .. }
+        | AskPassSecretSource::Keychain { authority, .. } => {
             authority.eq_ignore_ascii_case(prompt_authority)
         }
     };
@@ -664,4 +715,3 @@ fn askpass_prompt_username_matches(url: &Url, expected_username: &str) -> bool {
     expected_url.set_username(expected_username).is_ok()
         && url.username() == expected_url.username()
 }
-

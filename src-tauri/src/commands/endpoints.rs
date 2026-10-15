@@ -62,17 +62,14 @@ pub fn save_remote_binding(
                     "账号不属于该 remote 绑定的 Endpoint。",
                 ));
             }
-            if matches!(
-                account.auth_method,
-                AuthenticationMethod::SshAgent
-                    |
-                AuthenticationMethod::GhCli
-                    | AuthenticationMethod::GlabCli
-                    | AuthenticationMethod::SystemGitCredentialHelper
-            ) {
+            if fetch_urls.iter().chain(push_urls.iter()).any(|url| {
+                !CredentialBroker::supports_account_transport(
+                    account, &endpoint, &parse_remote_url(url).transport,
+                )
+            }) {
                 return Err(AppError::new(
                     "authentication_method_mismatch",
-                    "此认证方式无法安全固定到指定账号；Git 网络操作请绑定 PAT，SSH agent 请由 Git/SSH 配置选择。",
+                    "此账号无法用于该 remote 的账号绑定；HTTPS 请使用匹配的 PAT 或 GitHub CLI 账号，SSH 请由 Git/SSH 配置选择。",
                 ));
             }
         }

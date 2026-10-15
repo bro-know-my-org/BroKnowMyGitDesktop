@@ -1839,7 +1839,7 @@ async function cloneRepository(): Promise<void> {
     // An SSH agent chooses its key from the user's SSH configuration, so its
     // profile cannot be pinned into Clone's durable origin binding. Keep the
     // selection as a UI hint only and let normal system Git/SSH handle it.
-    const usesPinnedCloneAccount = selectedCloneAccount?.authMethod === "personalAccessToken";
+    const usesPinnedCloneAccount = !!selectedCloneAccount && supportsGitRemoteCredentials(selectedCloneAccount);
     const usesAutomaticCloneAccount = cloneForm.accountId === "auto";
     const repository = await api.cloneRepository({
       url: cloneForm.url.trim(),

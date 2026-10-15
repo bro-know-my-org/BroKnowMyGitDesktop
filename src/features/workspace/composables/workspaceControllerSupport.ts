@@ -150,15 +150,15 @@ export function rememberLastRepositoryPath(repositoryPath: string): void {
 
 export function supportsGitRemoteCredentials(account: AccountProfile): boolean {
   // A saved binding is an explicit account-selection promise. Only the
-  // app-managed PAT implementation can keep that promise; an SSH agent picks
+  // PAT and gh's per-user token lookup can keep that promise; an SSH agent picks
   // its identity from the user's SSH configuration at connection time.
-  return account.authMethod === "personalAccessToken";
+  return account.authMethod === "personalAccessToken" || account.authMethod === "ghCli";
 }
 
 export function supportsCloneCredentials(account: AccountProfile): boolean {
   // Clone has no durable remote binding yet, so an SSH-agent account remains
   // useful as a UI hint while Git/SSH selects the actual key.
-  return account.authMethod === "personalAccessToken" || account.authMethod === "sshAgent";
+  return supportsGitRemoteCredentials(account) || account.authMethod === "sshAgent";
 }
 
 export function endpointHasExplicitPort(gitHost: string): boolean {

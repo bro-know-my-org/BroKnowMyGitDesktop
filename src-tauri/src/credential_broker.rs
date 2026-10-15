@@ -3,15 +3,17 @@
 //! This module deliberately works with account metadata only.  A personal
 //! access token is accepted only by [`save_personal_access_token`], stored in
 //! the operating system credential store, and read again only by the askpass
-//! helper process.  It is never part of a domain model, a serializable type,
-//! a command-line argument, or an environment variable.
+//! helper process. GitHub CLI tokens are likewise read only by that helper,
+//! selecting the bound login with `gh auth token --user`. Neither secret is
+//! part of a domain model, a serializable type, an argument, or an environment.
 
 use crate::app_error::AppError;
 use crate::domain::{
     endpoint_for_host, endpoint_matches_authority, git_authority_has_explicit_port,
-    hostname_from_git_authority, normalize_git_authority, parse_remote_url, AccountProfile,
-    AccountSelection, AuthenticationMethod, AuthenticationStatus, CodeHostEndpoint, CodeHostKind,
-    CredentialResolution, CredentialStrategy, KeychainReference, RemoteBinding, RemoteTransport,
+    github_endpoint_has_gh_compatible_api, hostname_from_git_authority, normalize_git_authority,
+    parse_remote_url, AccountProfile, AccountSelection, AuthenticationMethod, AuthenticationStatus,
+    CodeHostEndpoint, CodeHostKind, CredentialResolution, CredentialStrategy, KeychainReference,
+    RemoteBinding, RemoteTransport,
 };
 #[cfg(windows)]
 use crate::process_tree::terminate_process_tree;
@@ -41,6 +43,7 @@ pub const PAT_KEYCHAIN_SERVICE: &str = "io.github.broknowmyorg.broknowmygitdeskt
 pub const ASKPASS_MODE_ENV: &str = "BKM_GIT_ASKPASS_MODE";
 const ASKPASS_CAPABILITY_ENV: &str = "BKM_GIT_ASKPASS_CAPABILITY";
 const ASKPASS_MODE_KEYCHAIN: &str = "keychain-pat";
+const ASKPASS_MODE_GH: &str = "gh-account";
 const ASKPASS_CAPABILITY_DIRECTORY: &str = "broknowmygitdesktop-askpass";
 const ASKPASS_CAPABILITY_TTL: Duration = Duration::from_secs(180);
 const PLATFORM_CLI_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
