@@ -6,7 +6,8 @@ import { api, isAppError } from "../../../shared/api/tauri";
 import type { RepositoryRecord } from "../../../shared/types/domain";
 import { writeClipboardText } from "../../../shared/clipboard";
 import { settingsSection } from "../../../shared/settingsNavigation";
-import { filterRepositoryGroups } from "../composables/workspaceControllerSupport";
+import { filterRepositoryGroups, repositoryRemoteLabel, repositoryStarAriaLabel } from "../composables/workspaceControllerSupport";
+import { useRepositoryPickerPreferences } from "../composables/useRepositoryPickerPreferences";
 
 function splitReferenceLabel(label: string): { prefix: string; tail: string } {
   const separatorIndex = label.lastIndexOf("/");
@@ -33,6 +34,7 @@ export default defineComponent({
   setup() {
     const workspace = useWorkspaceControllerContext();
     const repositoryFilter = ref("");
+    const pickerPreferences = useRepositoryPickerPreferences(workspace.repositoryGroups);
     const repositoryPickerElement = ref<HTMLElement | null>(null);
     const repositoryPickerTrigger = ref<HTMLElement | null>(null);
     const repositorySearchInput = ref<HTMLInputElement | null>(null);
@@ -42,7 +44,13 @@ export default defineComponent({
     const repositoryContextMenuX = ref(0);
     const repositoryContextMenuY = ref(0);
     const repositoryContextTarget = ref<RepositoryRecord | null>(null);
-    const repositoryContextMenuOptions = computed(() => [{
+    const repositoryContextMenuOptions = computed(() => [
+      { label: workspace.t(pickerPreferences.isStarred(repositoryContextTarget.value?.path ?? "")
+        ? "workspace.header.unstarRepository" : "workspace.header.starRepository"), key: "toggle-star" },
+      { label: workspace.t(pickerPreferences.isHidden(repositoryContextTarget.value?.path ?? "")
+        ? "workspace.header.unhideRepository" : "workspace.header.hideRepository"), key: "toggle-hidden" },
+      { type: "divider", key: "repository-preferences-divider" },
+      {
       label: workspace.t('workspace.header.openInIde'),
       key: "repository-editors",
       children: [
@@ -107,7 +115,27 @@ export default defineComponent({
       return `${workspace.t("workspace.header.switchRepository")}: ${label}`;
     });
     const displayedRepositoryGroups = computed(() =>
-      filterRepositoryGroups(workspace.repositoryGroups.value, repositoryFilter.value));
+      filterRepositoryGroups(pickerPreferences.pickerGroups.value, repositoryFilter.value));
+    const isRepositoryGroupCollapsed = (key: string) =>
+      !repositoryFilter.value.trim() && pickerPreferences.isCollapsed(key);
+    function repositoryTitle(repository: RepositoryRecord): string {
+      const remote = repositoryRemoteLabel(repository);
+      return remote ? `${repository.path}\n${workspace.t("workspace.header.remoteRepository")}: ${[repository.remoteName, repository.remoteHost, remote].filter(Boolean).join(" · ")}` : repository.path;
+    }
+    async function toggleRepositoryStar(path: string): Promise<void> {
+      const restoreFocus = repositoryPickerElement.value?.contains(document.activeElement);
+      pickerPreferences.toggleStar(path);
+      if (!restoreFocus) return;
+      await nextTick();
+      const target = [...(repositoryPickerElement.value?.querySelectorAll<HTMLButtonElement>(".repository-star-button") ?? [])]
+        .find((button) => button.dataset.repositoryPath === path && button.getClientRects().length);
+      (target ?? repositorySearchInput.value)?.focus();
+    }
+    function focusRepositoryPickerControl(): void {
+      const target = repositoryPickerOpen.value ? repositorySearchInput.value
+        : document.querySelector<HTMLButtonElement>(".repository-switcher");
+      target?.focus();
+    }
     const branchTracksActiveRemote = computed(() => {
       const upstream = workspace.snapshot.value?.status.upstream;
       const remoteName = workspace.activeRemote.value?.name;
@@ -294,7 +322,15 @@ export default defineComponent({
       repositoryContextMenuOpen.value = false;
       const repository = repositoryContextTarget.value;
       if (!repository) return;
-      if (value === "manage-repository-editors") {
+      if (value === "toggle-star") {
+        await toggleRepositoryStar(repository.path);
+        await nextTick();
+        focusRepositoryPickerControl();
+      } else if (value === "toggle-hidden") {
+        pickerPreferences.toggleHidden(repository.path);
+        await nextTick();
+        focusRepositoryPickerControl();
+      } else if (value === "manage-repository-editors") {
         repositoryPickerOpen.value = false;
         workspace.openRepositoryEditorsModal();
       } else if (typeof value === "string" && value.startsWith("open-repository-editor:")) {
@@ -370,18 +406,26 @@ export default defineComponent({
       if (open) {
         void nextTick(() => repositorySearchInput.value?.focus());
       } else {
-        const shouldRestoreFocus = repositoryPickerElement.value?.contains(document.activeElement) ?? false;
+        const shouldRestoreFocus = (repositoryPickerElement.value?.contains(document.activeElement) ?? false)
+          || document.activeElement === document.body;
         repositoryContextMenuOpen.value = false;
         repositoryFilter.value = "";
         if (shouldRestoreFocus) {
-          void nextTick(() => repositoryPickerTrigger.value?.focus());
+          void nextTick(focusRepositoryPickerControl);
         }
       }
     });
     return {
       ...workspace,
+      ...pickerPreferences,
+      toggleStar: toggleRepositoryStar,
+      isRepositoryGroupCollapsed,
+      repositoryTitle,
+      repositoryRemoteLabel,
+      repositoryStarAriaLabel,
       repositoryFilter,
       repositoryPickerElement,
+      repositoryPickerTrigger,
       repositorySearchInput,
       displayedRepositoryGroups,
       repositoryPickerOpen,
@@ -439,6 +483,7 @@ export default defineComponent({
               >
                 <template #trigger>
                   <button
+                    ref="repositoryPickerTrigger"
                     class="repository-switcher"
                     type="button"
                     :aria-label="repositorySwitcherAriaLabel"
@@ -446,7 +491,7 @@ export default defineComponent({
                     aria-haspopup="dialog"
                     aria-keyshortcuts="Shift+F10"
                     :aria-description="t('workspace.header.rightClickForRepositoryActions')"
-                    :title="snapshot?.repository.path"
+                    :title="snapshot ? repositoryTitle(snapshot.repository) : undefined"
                     @click.stop="toggleRepositoryPicker($event)"
                     @contextmenu="snapshot?.repository && openRepositoryContextMenu($event, snapshot.repository)"
                     @keydown="snapshot?.repository && openRepositoryContextMenuFromKeyboard($event, snapshot.repository)"
@@ -471,7 +516,7 @@ export default defineComponent({
                         class="repository-picker-search"
                         type="search"
                         :aria-label="t('workspace.header.localRepositories')"
-                        :placeholder="`${t('workspace.header.localRepositories')}…`"
+                        :placeholder="t('workspace.header.searchRepositories')"
                       >
                     </div>
                     <div class="repository-picker-command-tools">
@@ -494,14 +539,18 @@ export default defineComponent({
                         content-class="sidebar-repository-list-content"
                       >
                         <div v-for="group in displayedRepositoryGroups" :key="group.key" class="sidebar-repository-group">
-                          <div
+                          <button
                             class="sidebar-group-heading"
                             :class="{ 'sidebar-group-heading-owner': group.key.startsWith('owner:') }"
+                            type="button"
+                            :aria-expanded="!isRepositoryGroupCollapsed(group.key)"
+                            :disabled="Boolean(repositoryFilter.trim())"
+                            @click="toggleCollapsed(group.key)"
                           >
-                            <span>{{ group.label }}</span>
+                            <span>{{ isRepositoryGroupCollapsed(group.key) ? '▸' : '▾' }} {{ group.key === 'starred' ? t('workspace.header.starredRepositories') : group.label }}</span>
                             <span>{{ group.repositories.length }}</span>
-                          </div>
-                          <div class="sidebar-repository-group-list">
+                          </button>
+                          <div v-show="!isRepositoryGroupCollapsed(group.key)" class="sidebar-repository-group-list">
                             <div v-for="repository in group.repositories" :key="repository.path" class="sidebar-repository-item">
                               <button
                                 class="sidebar-repository"
@@ -510,32 +559,43 @@ export default defineComponent({
                                 :aria-current="repository.path === activeRepositoryPath ? 'true' : undefined"
                                 aria-keyshortcuts="Shift+F10"
                                 :aria-description="t('workspace.header.rightClickForRepositoryActions')"
-                                :title="`${repository.path} · ${t('workspace.header.rightClickForRepositoryActions')}`"
+                                :title="`${repositoryTitle(repository)}\n${t('workspace.header.rightClickForRepositoryActions')}`"
                                 @click="repositoryPickerOpen = false; selectRepository(repository.path)"
                                 @contextmenu="openRepositoryContextMenu($event, repository)"
                                 @keydown="openRepositoryContextMenuFromKeyboard($event, repository)"
                               >
-                                <template v-if="repository.alias">
-                                  <span class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
-                                  <span class="repository-alias-indicator" aria-hidden="true" />
-                                  <span class="sidebar-repository-copy">
-                                    <span class="repository-name repository-alias-name">{{ repository.alias }}</span>
-                                    <span class="repository-canonical-name">{{ repository.name }}</span>
-                                  </span>
-                                </template>
-                                <span v-else class="repository-name">{{ repository.name }}</span>
+                                <span v-if="repository.alias" class="visually-hidden">{{ t('workspace.header.alias') }}: </span>
+                                <span v-if="repository.alias" class="repository-alias-indicator" aria-hidden="true" />
+                                <span class="sidebar-repository-copy">
+                                  <span class="repository-name" :class="{ 'repository-alias-name': repository.alias }">{{ repository.alias || repository.name }}</span>
+                                  <span v-if="repository.alias" class="repository-canonical-name">{{ repository.name }}</span>
+                                  <span v-if="repository.remoteRepository && repository.remoteRepository !== repository.name" class="repository-canonical-name">{{ t('workspace.header.remoteRepository') }}: {{ repositoryRemoteLabel(repository) }}</span>
+                                </span>
+                                <span v-if="isHidden(repository.path)" class="repository-hidden-label">{{ t('workspace.header.hiddenRepository') }}</span>
                               </button>
+                              <button
+                                class="repository-star-button"
+                                type="button"
+                                :data-repository-path="repository.path"
+                                :aria-pressed="isStarred(repository.path)"
+                                :aria-label="repositoryStarAriaLabel(repository, t(isStarred(repository.path) ? 'workspace.header.unstarRepository' : 'workspace.header.starRepository'))"
+                                :title="t(isStarred(repository.path) ? 'workspace.header.unstarRepository' : 'workspace.header.starRepository')"
+                                @click="toggleStar(repository.path)"
+                              >{{ isStarred(repository.path) ? '★' : '☆' }}</button>
                             </div>
                           </div>
                         </div>
                       </n-scrollbar>
                       <n-text v-else depth="3" class="sidebar-empty">
-                        {{ repositoryFilter.trim() ? t('workspace.header.noRepositoriesMatchSearch') : t('workspace.header.noRepositoriesAdded') }}
+                        {{ repositoryFilter.trim() ? t('workspace.header.noRepositoriesMatchSearch') : repositoryGroups.length ? t('workspace.header.noVisibleRepositories') : t('workspace.header.noRepositoriesAdded') }}
                       </n-text>
                     </n-spin>
                   </div>
 
                   <div class="repository-picker-footer">
+                    <n-button size="small" text block :aria-pressed="showAllRepositories" @click="showAllRepositories = !showAllRepositories">
+                      {{ t(showAllRepositories ? 'workspace.header.showVisibleRepositories' : 'workspace.header.showAllRepositories') }}
+                    </n-button>
                     <n-dropdown trigger="click" placement="top-start" to="body" :options="repositoryActionOptions" @select="(value) => { repositoryPickerOpen = false; openRepositoryAction(value); }">
                       <n-button size="small" block class="repository-add-button">
                         <svg class="repository-add-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>

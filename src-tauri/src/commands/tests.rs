@@ -1,7 +1,9 @@
 use super::account_support::account_profile_identity_matches;
 use super::codehost::pending_publish_checkout_changed_before_remote_added;
 use super::credential_support::resolve_clone_credential_target_from_store;
-use super::repositories::{import_discovered_repositories, repository_records_for_paths};
+use super::repositories::{
+    import_discovered_repositories, repository_records, repository_records_for_paths,
+};
 use super::repository_support::{
     pending_publish_matches_requested_identity, reconcile_pending_publish,
 };
@@ -9,6 +11,37 @@ use super::support::*;
 use super::*;
 
 struct TestDirectoryCleanup(std::path::PathBuf);
+
+#[test]
+fn catalog_reads_remote_identity_without_opening_and_clears_removed_remotes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("local-name");
+    let git = GitCore::new();
+    git.init_repository(&path, None).unwrap();
+    git.add_remote(&path, "origin", "https://github.com/team/remote-name.git")
+        .unwrap();
+    let mut store = ProfileStore::default();
+    store.upsert_repository(git.repository_record(&path).unwrap());
+    let records = repository_records(&store, false).unwrap();
+    assert_eq!(records[0].name, "local-name");
+    assert_eq!(records[0].remote_repository.as_deref(), Some("remote-name"));
+    assert_eq!(records[0].last_opened_at, None);
+    git.set_remote_url(
+        &path,
+        "origin",
+        "https://github.com/team/renamed.git",
+        RemoteUrlKind::Fetch,
+    )
+    .unwrap();
+    store.upsert_repository(records[0].clone());
+    let changed = repository_records(&store, false).unwrap();
+    assert_eq!(changed[0].remote_repository.as_deref(), Some("renamed"));
+    git.remove_remote(&path, "origin").unwrap();
+    assert_eq!(
+        repository_records(&store, false).unwrap()[0].remote_repository,
+        None
+    );
+}
 
 impl Drop for TestDirectoryCleanup {
     fn drop(&mut self) {
@@ -407,6 +440,49 @@ fn repository_owner_grouping_prefers_origin() {
 
     assert_eq!(host.as_deref(), Some("gitlab.com"));
     assert_eq!(namespace.as_deref(), Some("team/platform"));
+    let mut record: RepositoryRecord =
+        serde_json::from_str(r#"{"path":"/work/local-name","name":"local-name"}"#).unwrap();
+    apply_repository_remote_metadata(&mut record, &remotes);
+    assert_eq!(record.remote_name.as_deref(), Some("origin"));
+    assert_eq!(record.remote_repository.as_deref(), Some("project"));
+    apply_repository_remote_metadata(&mut record, &[]);
+    assert_eq!(record.remote_repository, None);
+    assert_eq!(record.remote_name, None);
+    assert_eq!(record.namespace, None);
+}
+
+#[test]
+fn remote_name_metadata_supports_namespace_less_and_local_origins() {
+    let remote = |name: &str, url: &str| RemoteProfile {
+        name: name.into(),
+        fetch_url: url.into(),
+        push_url: url.into(),
+        parsed: parse_remote_url(url),
+        endpoint_id: None,
+        code_host_kind: CodeHostKind::Unknown,
+    };
+    let mut record: RepositoryRecord =
+        serde_json::from_str(r#"{"path":"/work/local-name","name":"local-name"}"#).unwrap();
+    for (url, expected) in [
+        ("ssh://git@example.com/project.git", "project"),
+        ("/work/local-remote.git", "local-remote"),
+    ] {
+        let remotes = vec![
+            remote("upstream", "https://github.com/upstream-team/other.git"),
+            remote("origin", url),
+        ];
+        apply_repository_remote_metadata(&mut record, &remotes);
+        assert_eq!(record.namespace.as_deref(), Some("upstream-team"));
+        assert_eq!(record.remote_name.as_deref(), Some("origin"));
+        assert_eq!(record.remote_repository.as_deref(), Some(expected));
+        assert_ne!(record.remote_namespace.as_deref(), Some("upstream-team"));
+        apply_repository_remote_metadata(&mut record, &remotes[..1]);
+        assert_eq!(record.remote_name.as_deref(), Some("upstream"));
+        assert_eq!(record.remote_namespace.as_deref(), Some("upstream-team"));
+    }
+    apply_repository_remote_metadata(&mut record, &[]);
+    assert_eq!(record.remote_host, None);
+    assert_eq!(record.remote_namespace, None);
 }
 
 #[test]

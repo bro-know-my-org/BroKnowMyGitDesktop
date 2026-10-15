@@ -13,9 +13,9 @@ fn repository_list_probe_pool() -> Arc<Semaphore> {
     )
 }
 
-fn repository_records(
+pub(super) fn repository_records(
     store: &ProfileStore,
-    refresh_owners: bool,
+    _refresh_owners: bool,
 ) -> Result<Vec<RepositoryRecord>, AppError> {
     if store.recent_repositories.is_empty() {
         return Ok(Vec::new());
@@ -39,16 +39,11 @@ fn repository_records(
                                 .repository_record(Path::new(&repository.path))
                                 .ok()
                                 .map(|record| store.repository_with_metadata(record))?;
-                            if refresh_owners {
-                                // This only reads local Git configuration. It makes owner
-                                // grouping useful immediately for existing repositories
-                                // without treating a list refresh as a repository open or
-                                // changing recent ordering.
-                                if let Ok(remotes) = git.remotes(Path::new(&record.path)) {
-                                    let (host, namespace) = repository_owner_from_remotes(&remotes);
-                                    record.host = host;
-                                    record.namespace = namespace;
-                                }
+                            // Read local Git configuration in every grouping mode so
+                            // remote names remain searchable without opening each repo.
+                            // This never contacts a server or changes recent ordering.
+                            if let Ok(remotes) = git.remotes(Path::new(&record.path)) {
+                                apply_repository_remote_metadata(&mut record, &remotes);
                             }
                             Some(record)
                         })

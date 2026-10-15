@@ -150,6 +150,10 @@ impl ProfileStore {
             repository.group = existing.group.clone();
             repository.host = existing.host.clone();
             repository.namespace = existing.namespace.clone();
+            repository.remote_name = existing.remote_name.clone();
+            repository.remote_repository = existing.remote_repository.clone();
+            repository.remote_host = existing.remote_host.clone();
+            repository.remote_namespace = existing.remote_namespace.clone();
             repository.last_opened_at = existing.last_opened_at;
             *existing = repository.clone();
             return repository;
@@ -208,6 +212,10 @@ impl ProfileStore {
             repository.group = existing.group.clone();
             repository.host = existing.host.clone();
             repository.namespace = existing.namespace.clone();
+            repository.remote_name = existing.remote_name.clone();
+            repository.remote_repository = existing.remote_repository.clone();
+            repository.remote_host = existing.remote_host.clone();
+            repository.remote_namespace = existing.remote_namespace.clone();
             repository.last_opened_at = existing.last_opened_at;
         }
         repository
@@ -223,6 +231,10 @@ impl ProfileStore {
         namespace: Option<String>,
         opened_at: u64,
     ) -> RepositoryRecord {
+        let remote_name = repository.remote_name.clone();
+        let remote_repository = repository.remote_repository.clone();
+        let remote_host = repository.remote_host.clone();
+        let remote_namespace = repository.remote_namespace.clone();
         let repository = self.upsert_repository(repository);
         let index = self
             .recent_repositories
@@ -232,6 +244,10 @@ impl ProfileStore {
         let mut updated = self.recent_repositories.remove(index);
         updated.host = host;
         updated.namespace = namespace;
+        updated.remote_name = remote_name;
+        updated.remote_repository = remote_repository;
+        updated.remote_host = remote_host;
+        updated.remote_namespace = remote_namespace;
         updated.last_opened_at = Some(opened_at);
         // The collection is bounded from its tail, so a repository that was
         // explicitly opened must be promoted before subsequent discoveries

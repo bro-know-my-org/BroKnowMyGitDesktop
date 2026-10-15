@@ -129,9 +129,7 @@ pub(super) fn snapshot_for(
     let mut remotes = git_snapshot.remotes;
     enrich_remote_endpoints(&mut remotes, &store, &repository_path);
     let mut repository_record = store.repository_with_metadata(git_snapshot.repository);
-    let (host, namespace) = repository_owner_from_remotes(&remotes);
-    repository_record.host = host;
-    repository_record.namespace = namespace;
+    apply_repository_remote_metadata(&mut repository_record, &remotes);
     let bindings = store
         .remote_bindings
         .iter()
@@ -630,6 +628,12 @@ pub(super) fn enrich_remote_endpoints_from_metadata(
 pub(super) fn repository_owner_from_remotes(
     remotes: &[RemoteProfile],
 ) -> (Option<String>, Option<String>) {
+    preferred_repository_remote(remotes)
+        .map(|remote| (remote.parsed.host.clone(), remote.parsed.namespace.clone()))
+        .unwrap_or((None, None))
+}
+
+fn preferred_repository_remote(remotes: &[RemoteProfile]) -> Option<&RemoteProfile> {
     remotes
         .iter()
         .find(|remote| {
@@ -642,8 +646,25 @@ pub(super) fn repository_owner_from_remotes(
                 .iter()
                 .find(|remote| remote.parsed.host.is_some() && remote.parsed.namespace.is_some())
         })
-        .map(|remote| (remote.parsed.host.clone(), remote.parsed.namespace.clone()))
-        .unwrap_or((None, None))
+}
+
+pub(super) fn apply_repository_remote_metadata(
+    record: &mut RepositoryRecord,
+    remotes: &[RemoteProfile],
+) {
+    (record.host, record.namespace) = repository_owner_from_remotes(remotes);
+    let remote = remotes
+        .iter()
+        .find(|remote| remote.name == "origin" && remote.parsed.repository.is_some())
+        .or_else(|| {
+            remotes
+                .iter()
+                .find(|remote| remote.parsed.repository.is_some())
+        });
+    record.remote_name = remote.map(|remote| remote.name.clone());
+    record.remote_repository = remote.and_then(|remote| remote.parsed.repository.clone());
+    record.remote_host = remote.and_then(|remote| remote.parsed.host.clone());
+    record.remote_namespace = remote.and_then(|remote| remote.parsed.namespace.clone());
 }
 
 pub(super) fn remember_repositories(

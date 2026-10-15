@@ -626,6 +626,15 @@ pub struct RepositoryRecord {
     /// The remote owner / organization / nested group path paired with `host`.
     #[serde(default)]
     pub namespace: Option<String>,
+    /// Safe identity of origin (or the first remote with a parsed repository).
+    #[serde(default)]
+    pub remote_name: Option<String>,
+    #[serde(default)]
+    pub remote_repository: Option<String>,
+    #[serde(default)]
+    pub remote_host: Option<String>,
+    #[serde(default)]
+    pub remote_namespace: Option<String>,
     /// Unix time in milliseconds for the last explicit repository open.
     #[serde(default)]
     pub last_opened_at: Option<u64>,

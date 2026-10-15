@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RepositoryRecord } from "../../../shared/types/domain";
-import { filterRepositoryGroups, type RepositorySidebarGroup } from "./workspaceControllerSupport";
+import { filterRepositoryGroups, repositoryRemoteLabel, repositoryStarAriaLabel, type RepositorySidebarGroup } from "./workspaceControllerSupport";
 
 function repository(path: string, alias: string | null = null): RepositoryRecord {
   return {
@@ -48,6 +48,23 @@ test("repository filtering matches alias, name, and path without locale-sensitiv
 
 test("repository filtering treats whitespace-only input as no filter", () => {
   assert.equal(filterRepositoryGroups(groups, "   "), groups);
+});
+
+test("star controls identify repositories even when display names are identical", () => {
+  const first = repository("/work/project", "Client");
+  const second = repository("/personal/project", "Client");
+  assert.equal(repositoryStarAriaLabel(first, "Star"), "Star: Client (/work/project)");
+  assert.notEqual(repositoryStarAriaLabel(first, "Star"), repositoryStarAriaLabel(second, "Star"));
+});
+
+test("remote names and nested namespaces are searchable independently of local names", () => {
+  const local = { ...repository("/projects/sdk-cache"), namespace: "upstream-team", remoteNamespace: "team/platform", remoteRepository: "payment-sdk" };
+  const remoteGroups = [{ key: "work", label: "Work", repositories: [local] }];
+  assert.equal(repositoryRemoteLabel(local), "team/platform/payment-sdk");
+  assert.deepEqual(filterRepositoryGroups(remoteGroups, " PAYMENT-SDK ")[0].repositories, [local]);
+  assert.equal(filterRepositoryGroups(remoteGroups, "team/platform").length, 1);
+  assert.equal(repositoryRemoteLabel(repository("/local")), "");
+  assert.equal(repositoryRemoteLabel({ ...local, remoteNamespace: null }), "payment-sdk");
 });
 
 test("repository filtering removes empty groups and returns no groups when nothing matches", () => {

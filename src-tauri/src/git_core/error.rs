@@ -672,6 +672,10 @@ pub(super) fn repository_record_from_root(root: &Path) -> Result<RepositoryRecor
         group: None,
         host: None,
         namespace: None,
+        remote_name: None,
+        remote_repository: None,
+        remote_host: None,
+        remote_namespace: None,
         last_opened_at: None,
     })
 }

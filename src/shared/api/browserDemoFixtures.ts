@@ -29,6 +29,10 @@ const sampleRepository: RepositoryRecord = {
   group: demoMarkers.repositoryGroup,
   host: "gitee.com",
   namespace: "broknowmyorg",
+  remoteName: "origin",
+  remoteRepository: "broknowmygitdesktop",
+  remoteHost: "gitee.com",
+  remoteNamespace: "broknowmyorg",
   lastOpenedAt: Date.now() - 1000 * 60 * 18,
 };
 

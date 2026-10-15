@@ -274,6 +274,10 @@ export interface RepositoryRecord {
   group: string | null;
   host: string | null;
   namespace: string | null;
+  remoteName?: string | null;
+  remoteRepository?: string | null;
+  remoteHost?: string | null;
+  remoteNamespace?: string | null;
   lastOpenedAt: number | null;
 }
 

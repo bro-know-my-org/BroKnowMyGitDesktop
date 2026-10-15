@@ -11,6 +11,10 @@ mod tests {
             group: None,
             host: None,
             namespace: None,
+            remote_name: None,
+            remote_repository: None,
+            remote_host: None,
+            remote_namespace: None,
             last_opened_at: None,
         }
     }
@@ -46,6 +50,10 @@ mod tests {
         assert_eq!(record.alias, None);
         assert_eq!(record.host, None);
         assert_eq!(record.namespace, None);
+        assert_eq!(record.remote_name, None);
+        assert_eq!(record.remote_repository, None);
+        assert_eq!(record.remote_host, None);
+        assert_eq!(record.remote_namespace, None);
         assert_eq!(record.last_opened_at, None);
     }
 
@@ -602,6 +610,8 @@ mod tests {
         first.group = Some("工作".into());
         first.host = Some("github.com".into());
         first.namespace = Some("example-org".into());
+        first.remote_name = Some("origin".into());
+        first.remote_repository = Some("remote-project".into());
         first.last_opened_at = Some(123);
         store.upsert_repository(first);
 
@@ -612,6 +622,10 @@ mod tests {
         assert_eq!(updated.group.as_deref(), Some("工作"));
         assert_eq!(updated.host.as_deref(), Some("github.com"));
         assert_eq!(updated.namespace.as_deref(), Some("example-org"));
+        assert_eq!(updated.remote_name.as_deref(), Some("origin"));
+        assert_eq!(updated.remote_repository.as_deref(), Some("remote-project"));
+        let restored: ProfileStore = serde_json::from_str(&serde_json::to_string(&store).unwrap()).unwrap();
+        assert_eq!(restored.repository_with_metadata(repository("/work/project", "project")).remote_repository.as_deref(), Some("remote-project"));
         assert_eq!(updated.last_opened_at, Some(123));
     }
 
@@ -722,8 +736,11 @@ mod tests {
         record.group = Some("客户端".into());
         store.upsert_repository(record);
 
+        let mut fresh = repository("/work/project", "project");
+        fresh.remote_name = Some("origin".into());
+        fresh.remote_repository = Some("renamed-remote".into());
         let touched = store.touch_repository(
-            repository("/work/project", "project"),
+            fresh,
             Some("gitlab.com".into()),
             Some("team/platform".into()),
             456,
@@ -733,7 +750,11 @@ mod tests {
         assert_eq!(touched.group.as_deref(), Some("客户端"));
         assert_eq!(touched.host.as_deref(), Some("gitlab.com"));
         assert_eq!(touched.namespace.as_deref(), Some("team/platform"));
+        assert_eq!(touched.remote_repository.as_deref(), Some("renamed-remote"));
         assert_eq!(touched.last_opened_at, Some(456));
+        let cleared = store.touch_repository(repository("/work/project", "project"), None, None, 789);
+        assert_eq!(cleared.remote_name, None);
+        assert_eq!(cleared.remote_repository, None);
     }
 
     #[test]

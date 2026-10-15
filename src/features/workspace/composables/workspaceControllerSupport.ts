@@ -30,6 +30,15 @@ export interface RepositorySidebarGroup {
   repositories: RepositoryRecord[];
 }
 
+export function repositoryRemoteLabel(repository: RepositoryRecord): string {
+  if (!repository.remoteRepository) return "";
+  return repository.remoteNamespace ? `${repository.remoteNamespace}/${repository.remoteRepository}` : repository.remoteRepository;
+}
+
+export function repositoryStarAriaLabel(repository: RepositoryRecord, action: string): string {
+  return `${action}: ${repository.alias || repository.name} (${repository.path})`;
+}
+
 export function filterRepositoryGroups(
   groups: RepositorySidebarGroup[],
   rawQuery: string,
@@ -40,7 +49,7 @@ export function filterRepositoryGroups(
     .map((group) => ({
       ...group,
       repositories: group.repositories.filter((repository) =>
-        [repository.alias, repository.name, repository.path]
+        [repository.alias, repository.name, repository.path, repositoryRemoteLabel(repository)]
           .some((value) => value?.toLowerCase().includes(query))),
     }))
     .filter((group) => group.repositories.length);
