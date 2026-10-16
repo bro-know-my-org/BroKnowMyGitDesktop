@@ -36,7 +36,9 @@ ignore = "0.4"
 zeroize = "1"
 fontdb = "0.23"
 sha2 = "0.10"
-tauri-plugin-dialog = "2"
+# Let the Linux desktop provide file dialogs through its portal implementation.
+# The default GTK3 chooser reads missing size metadata on permission-denied entries.
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tempfile = "3"
 cap-std = "3"
 

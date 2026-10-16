@@ -28,6 +28,12 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
+Linux 的文件、目录选择和另存为使用 XDG Desktop Portal。运行环境需安装
+`xdg-desktop-portal` 及匹配桌面的实现，例如 Plasma 的 `xdg-desktop-portal-kde`、
+GNOME 的 `xdg-desktop-portal-gnome`，或其他桌面支持的门户后端；AppImage 同样依赖
+宿主系统的门户服务。门户实现由桌面选择；如果它仍使用存在缺陷的 GTK 3 文件选择器，
+仍需在系统侧修复其对缺失文件大小属性的处理。
+
 Linux 启动时默认使用 GIO 的 `base` 网络监控，避免 WARP 等 VPN 批量切换路由时
 netlink 缓冲区溢出并停止网络状态监控。该模式假定网络可用，连接是否成功仍由实际请求
 判断；WebKit 的在线状态事件和 GIO 的计费网络检测不再准确。该变量也可能被应用启动的
