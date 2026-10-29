@@ -1,25 +1,78 @@
 # BroKnowMyGitDesktop
 
-轻量的多账号 Git 与代码托管桌面客户端，基于 Tauri 2、Vue 3、TypeScript、Naive UI 和 Rust 构建。内建 GitHub、GitLab、Gitee 优化，同时可为任意 Git host 添加“通用 Git 服务” Endpoint。支持简体中文与 English，并在 Linux、Windows、macOS 上使用各平台的系统能力。
+面向多账号、多代码托管平台的 Git 桌面客户端。把改动审查、暂存、提交、分支管理和远程同步放在同一个工作区中，并沿用本机的 Git 工具链。
 
-Git 操作使用系统 `git`，保留 SSH、LFS、正常系统 Git hook 与既有 credential helper 行为。任意 HTTPS Git host 可显式绑定系统钥匙串 PAT，GitHub HTTPS 也可绑定 gh 账号；SSH 身份始终由 Git/SSH 配置选择，不能假称固定到某个账号资料。系统 Git credential helper 也始终按 remote URL 自动选择，不伪装成某个已选账号。为防止 repository hook 窃取 askpass capability，使用应用管理的 PAT 或绑定 gh 账号的网络操作会禁用 hook。`git://` 与本地 `file://` remote 沿用无凭据的系统 Git 行为。GitHub、GitLab、Gitee 通过独立的 CodeHostAdapter 模型接入；PAT 仅保存在系统钥匙串中，不写入仓库配置或应用元数据。
+基于 Tauri 2、Vue 3、TypeScript、Naive UI 和 Rust 构建，支持简体中文与 English、系统深浅色主题，以及界面和代码字体设置。
 
-界面默认跟随系统深浅色与系统字体。设置中可分别选择已安装的界面字体和等宽代码字体，调整字号、字重和编程连字，也可恢复平台系统值；Diff 行高会随代码字号同步计算，并可选择是否自动换行显示过长的行。
+## 下载与安装
 
-## 当前状态
+前往 [GitHub Releases](https://github.com/bro-know-my-org/BroKnowMyGitDesktop/releases) 下载正式安装包：
 
-核心的本地 Git 工作流已可用：查看改动与带行号、语法高亮的 Diff，按文件或代码块暂存/取消暂存，创建提交，浏览 History 与 Stash，以及管理分支、remote、tag、worktree、子模块和 Git LFS。Fetch / Pull / Push 会在后端解析 remote、上游和凭据；固定凭据 URL 的 Pull 仍遵循仓库 local/worktree scope 的 fetch refspec、自定义远程跟踪命名空间和排除规则。
+| 平台 | 安装包 | 说明 |
+| --- | --- | --- |
+| Windows | NSIS 安装程序 | 当前未进行 Authenticode 代码签名，可能出现 SmartScreen 提示 |
+| Linux | DEB、RPM、AppImage | 文件选择依赖宿主系统的 XDG Desktop Portal |
+| macOS | 暂不提供正式安装包 | 源码保留平台实现；尚未完成 Apple 签名与 notarization |
 
-改动页遵循“先审查、再选择、后提交”的交互：文件勾选框表示是否纳入下一次提交，部分暂存使用三态勾选；文件列表独立滚动，提交表单固定可见，右侧始终保留当前文件的 Diff。支持 Blame、Reflog、未跟踪文件 Clean 预览和外部冲突编辑器；丢弃、Clean 与 force push 等破坏性操作均需要确认。仓库侧栏支持手动分组、按远端组织/用户和按最近使用切换，元数据不会改写 Git 配置。
+运行前需要安装系统 `git`。GitHub 平台功能还需要已登录的 GitHub CLI（`gh`）；普通 Git 操作不要求安装它。
 
-功能边界、当前验证基线、回归步骤和后续待办见 [开发状态与交接说明](docs/development-status.md)；模块和安全边界见 [架构说明](docs/architecture.md)，前端目录职责见 [前端架构](docs/frontend-architecture.md)。
+Linux 需安装 `xdg-desktop-portal` 和匹配桌面的后端，例如 KDE Plasma 的 `xdg-desktop-portal-kde` 或 GNOME 的 `xdg-desktop-portal-gnome`。AppImage 同样依赖这些宿主服务。
 
-## 开发
+## 可以做什么
+
+| 工作流 | 当前能力 |
+| --- | --- |
+| 管理仓库 | 打开、扫描、初始化和克隆仓库；按手动分组、远端组织 / 用户或最近使用浏览 |
+| 审查与提交 | 带行号和语法高亮的 Diff；按文件或代码块暂存 / 取消暂存；提交与 amend |
+| 历史与恢复 | 提交历史、Stash、Blame、Reflog，以及带预览和确认的未跟踪文件清理 |
+| 分支与同步 | 分支、remote、tag、merge、rebase、cherry-pick、revert、reset，以及 Fetch / Pull / Push |
+| 仓库工具 | Worktree、子模块和 Git LFS 状态及部分管理操作；调用外部编辑器处理冲突 |
+| GitHub 协作 | 查看仓库信息和 PR、创建 PR、Fork、发布仓库，以及从贡献分支发起 PR 的流程 |
+
+改动页以“选择要提交的内容”为主线：勾选文件决定下一次提交的范围，三态表示部分暂存；文件列表独立滚动，提交表单和当前 Diff 保持可见。丢弃改动、Clean、hard reset 和强制推送等破坏性操作需要确认。
+
+当前没有内置的可视化冲突编辑器、交互式 rebase 或完整的 LFS 管理工作流。完整能力边界与后续工作见 [开发状态与交接说明](docs/development-status.md)。
+
+## 多平台与多账号
+
+Git 操作调用系统 `git`，可连接 GitHub、GitLab、Gitee、自建 Gitea / Forgejo，以及其他 Git 服务。Git 网络访问与平台 API 的支持范围如下：
+
+| 平台 | Git 与认证 | 平台 API |
+| --- | --- | --- |
+| GitHub | SSH、系统 credential helper、PAT；HTTPS 可绑定 `gh` 账号 | 仓库信息、PR 列表与创建、Fork、发布仓库，依赖匹配的 `gh` 身份 |
+| GitLab | SSH、系统 credential helper、PAT；支持导入 / 检测 `glab` 账号 | 暂未开放 |
+| Gitee、Gitea、Forgejo | SSH、系统 credential helper、PAT | 暂未开放 |
+| 其他 Git 服务 | 添加“通用 Git 服务” Endpoint，使用 SSH、系统 credential helper 或 HTTPS PAT | 不假设平台 API 可用 |
+
+账号选择遵循以下规则：
+
+- HTTPS remote 可以明确绑定某个 PAT 或 GitHub CLI 账号。自动选择存在歧义时，会要求选择账号。
+- SSH 身份由本机 SSH 配置与 agent 决定；系统 credential helper 按 remote URL 选择凭据。
+- 应用不会自动切换 `gh` / `glab` 的活跃账号，也不会修改全局 Git 或 SSH 配置。
+- PAT 仅保存在系统钥匙串，不写入仓库配置、remote URL 或应用元数据。
+- 普通 Git 操作沿用系统 Git 的 hook 行为；使用应用管理的 PAT 或绑定 `gh` 账号的网络操作会禁用 hook，保护认证信息。
+
+账号绑定、凭据选择与安全边界详见 [架构说明](docs/architecture.md)。
+
+## 本地开发
+
+### 准备环境
+
+- Node.js `>=20.19.0` 与 pnpm。
+- Rust 工具链和系统 `git`。
+- 当前平台的 [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)。
+- 按需安装 `gh`、`glab` 或 Git LFS。
+
+在仓库根目录执行：
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
+
+### 检查与构建
+
+`pnpm check` 包含 CSS 检查、发布逻辑与虚拟列表测试、源码单元测试、国际化检查、TypeScript 类型检查和前端构建：
 
 ```bash
 pnpm check
@@ -28,38 +81,48 @@ cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
-Linux 的文件、目录选择和另存为使用 XDG Desktop Portal。运行环境需安装
-`xdg-desktop-portal` 及匹配桌面的实现，例如 Plasma 的 `xdg-desktop-portal-kde`、
-GNOME 的 `xdg-desktop-portal-gnome`，或其他桌面支持的门户后端；AppImage 同样依赖
-宿主系统的门户服务。门户实现由桌面选择；如果它仍使用存在缺陷的 GTK 3 文件选择器，
-仍需在系统侧修复其对缺失文件大小属性的处理。
+构建当前平台的桌面安装包：
 
-Linux 启动时默认使用 GIO 的 `base` 网络监控，避免 WARP 等 VPN 批量切换路由时
-netlink 缓冲区溢出并停止网络状态监控。该模式假定网络可用，连接是否成功仍由实际请求
-判断；WebKit 的在线状态事件和 GIO 的计费网络检测不再准确。该变量也可能被应用启动的
-子进程继承，但不会修改系统网络配置。VPN 断连期间的请求仍可能失败，需要网络恢复后
-重试；此绕过不保证所有连接都能自动恢复。显式设置的
-`GIO_USE_NETWORK_MONITOR` 会被保留，例如可用
-`GIO_USE_NETWORK_MONITOR=netlink pnpm tauri dev` 恢复 netlink 监控。
+```bash
+pnpm tauri build
+```
+
+本地开发的关于窗口显示 `dev`；手工构建安装包的版本元数据为 `0.0.0`，正式版本由发布流程注入。
+
+<details>
+<summary>Linux 运行注意事项</summary>
+
+文件选择由桌面门户后端提供。如果门户仍使用存在缺陷的 GTK 3 文件选择器，需要在系统侧修复其对缺失文件大小属性的处理。
+
+应用默认使用 GIO 的 `base` 网络监控，避免 WARP 等 VPN 批量切换路由时造成 netlink 缓冲区溢出。该模式假定网络可用，实际连接结果仍由请求决定；WebKit 在线状态事件和 GIO 计费网络检测不再准确。网络中断后可能需要重试，此设置不保证连接自动恢复。
+
+应用会保留显式设置的 `GIO_USE_NETWORK_MONITOR`。例如，开发时恢复 netlink 监控：
+
+```bash
+GIO_USE_NETWORK_MONITOR=netlink pnpm tauri dev
+```
+
+该环境变量可能被子进程继承，但不会修改系统网络配置。
+
+</details>
 
 ## 发布
 
-仓库中的 `package.json`、`src-tauri/Cargo.toml` 和
-`src-tauri/tauri.conf.json` 固定使用占位版本 `0.0.0`。正式版本以 `vX.Y.Z` tag
-为唯一来源。tag 指向的 commit 必须已经进入 GitHub 仓库的默认分支，GitHub
-Actions 才会在各平台构建前临时写入真实版本：
+仓库中的 `package.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 保持占位版本 `0.0.0`，正式版本以 `vX.Y.Z` tag 为唯一来源。
+
+tag 必须指向 GitHub 仓库默认分支第一父提交链（`first-parent` 主线）上的 commit，例如合并完成后的主线 HEAD。先确保该提交已推送至默认分支；下面命令假设本地 HEAD 正是该主线提交：
 
 ```bash
 git tag v0.2.0
-git push origin HEAD v0.2.0
+git push origin v0.2.0
 ```
 
-本地开发的关于窗口显示为 `dev`；未经过发布 workflow 手工生成的安装包元数据仍为
-`0.0.0`。GitHub Actions 会构建 Windows NSIS 安装包以及 Linux DEB、RPM、
-AppImage，生成 `SHA256SUMS.txt`，然后公开 GitHub Release。Release 页面会列出
-上一个稳定版本 tag 到当前 tag 之间的 commit，并提供完整版本对比链接。Windows
-安装包当前未进行 Authenticode 代码签名，安装时可能出现 SmartScreen 提示。
+GitHub Actions 会在构建前注入真实版本，生成 Windows 和 Linux 安装包及 `SHA256SUMS.txt`，随后公开 GitHub Release。发布说明包含上一个稳定版本到当前 tag 的提交记录和完整对比链接。
 
-当前不发布 macOS 安装包；源码仍保留 macOS 平台实现，但没有 Apple 签名和
-notarization 前不作为正式二进制分发平台。GitHub 仓库上线前还应为 `v*.*.*` 配置
-禁止更新和删除的 tag Ruleset，避免已发布版本的 tag 被移动。
+发布仓库应为 `v*.*.*` 配置禁止更新和删除的 tag Ruleset，防止已发布版本的 tag 被移动。
+
+## 项目文档
+
+- [开发状态与交接说明](docs/development-status.md)：当前可交付范围、交互约定、验证基线和后续优先级。
+- [架构说明](docs/architecture.md)：GitCore、账号模型、平台适配器与凭据安全边界。
+- [前端目录与职责](docs/frontend-architecture.md)：组件分层、状态编排、样式规则和性能诊断。
