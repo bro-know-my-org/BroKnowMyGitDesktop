@@ -11,7 +11,7 @@
     "build": "pnpm check:i18n && vue-tsc --noEmit && vite build",
     "check": "pnpm lint:css && pnpm check:release && pnpm check:virtual-list && pnpm test:unit && pnpm build",
     "check:i18n": "node scripts/check-i18n.mjs",
-    "check:release": "node --test scripts/release-version-utils.test.mjs",
+    "check:release": "node --test scripts/release-version-utils.test.mjs scripts/release-assets.test.mjs",
     "check:virtual-list": "node --test scripts/virtual-list-window.test.mjs",
     "test:unit": "node scripts/run-source-tests.mjs",
     "check:release-tag": "node scripts/check-release-tag.mjs",

@@ -8,11 +8,13 @@
 
 前往 [GitHub Releases](https://github.com/bro-know-my-org/BroKnowMyGitDesktop/releases) 下载正式安装包：
 
-| 平台 | 安装包 | 说明 |
-| --- | --- | --- |
-| Windows | NSIS 安装程序 | 当前未进行 Authenticode 代码签名，可能出现 SmartScreen 提示 |
-| Linux | DEB、RPM、AppImage | 文件选择依赖宿主系统的 XDG Desktop Portal |
-| macOS | 暂不提供正式安装包 | 源码保留平台实现；尚未完成 Apple 签名与 notarization |
+| 平台 | 架构 | 安装包 | 说明 |
+| --- | --- | --- | --- |
+| Windows | x64、ARM64 | NSIS 安装程序 | 当前未进行 Authenticode 代码签名，可能出现 SmartScreen 提示 |
+| Linux | x64、ARM64 | DEB、RPM、AppImage | 文件选择依赖宿主系统的 XDG Desktop Portal |
+| macOS | Intel x64、Apple Silicon ARM64 | DMG | 仅使用 ad-hoc 签名，尚未进行 Apple 开发者签名与 notarization，首次打开可能被 Gatekeeper 阻止 |
+
+安装包文件名以 Rust 目标三元组开头：`x86_64` 对应 x64，`aarch64` 对应 ARM64；`pc-windows-msvc`、`unknown-linux-gnu`、`apple-darwin` 分别对应 Windows、Linux、macOS。请选择匹配系统和处理器的安装包。
 
 运行前需要安装系统 `git`。GitHub 平台功能还需要已登录的 GitHub CLI（`gh`）；普通 Git 操作不要求安装它。
 
@@ -117,7 +119,9 @@ git tag v0.2.0
 git push origin v0.2.0
 ```
 
-GitHub Actions 会在构建前注入真实版本，生成 Windows 和 Linux 安装包及 `SHA256SUMS.txt`，随后公开 GitHub Release。发布说明包含上一个稳定版本到当前 tag 的提交记录和完整对比链接。
+GitHub Actions 会在构建前注入真实版本，在 Windows、Linux、macOS 的 x64 与 ARM64 原生运行器上分别测试并打包。六种组合全部成功且 10 个安装包齐全后，生成 `SHA256SUMS.txt` 并公开 GitHub Release。构建产物和文件名均按目标三元组区分，避免不同平台或架构相互覆盖。发布说明包含上一个稳定版本到当前 tag 的提交记录和完整对比链接。
+
+发布流程使用 GitHub 托管运行器，其中 Windows ARM64 和 Linux ARM64 运行器需仓库具备相应的访问权限（本仓库为公开仓库）。Windows 包暂未签名，macOS 包采用无需 Apple 凭据的 ad-hoc 签名；Apple 开发者签名与 notarization 尚未配置。
 
 发布仓库应为 `v*.*.*` 配置禁止更新和删除的 tag Ruleset，防止已发布版本的 tag 被移动。
 

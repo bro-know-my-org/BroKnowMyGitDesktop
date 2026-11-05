@@ -523,7 +523,7 @@ test("release workflow keeps Cargo locked through test and build", async () => {
   const workflow = await readFile(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
   const buildJob = workflow.slice(workflow.indexOf("  build:"), workflow.indexOf("  publish:"));
   const rustTest = buildJob.indexOf("cargo test --locked --manifest-path src-tauri/Cargo.toml --lib");
-  const build = buildJob.indexOf("pnpm tauri build ${{ matrix.args }} -- --locked");
+  const build = buildJob.indexOf("pnpm tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked");
   const lockGuard = buildJob.indexOf("git diff --exit-code -- src-tauri/Cargo.lock");
   assert.ok(rustTest >= 0);
   assert.ok(build > rustTest);

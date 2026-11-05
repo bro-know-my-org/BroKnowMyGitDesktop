@@ -44,8 +44,8 @@ jobs:
         shell: bash
         run: printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Test release version tooling
-        run: node --test scripts/release-version-utils.test.mjs
+      - name: Test release tooling
+        run: node --test scripts/release-version-utils.test.mjs scripts/release-assets.test.mjs
 
       - name: Ensure tagged commit belongs to default branch
         shell: bash
@@ -63,20 +63,42 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     needs: validate
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Windows NSIS
+          - name: Windows x64
             platform: windows-2025
-            args: --ci --bundles nsis
-          - name: Linux packages
+            target: x86_64-pc-windows-msvc
+            bundles: nsis
+          - name: Windows ARM64
+            platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
+          - name: Linux x64
             platform: ubuntu-22.04
-            args: --ci --bundles deb,rpm,appimage
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+          - name: Linux ARM64
+            platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+          - name: macOS Intel
+            platform: macos-15-intel
+            target: x86_64-apple-darwin
+            bundles: dmg
+          - name: macOS Apple Silicon
+            platform: macos-15
+            target: aarch64-apple-darwin
+            bundles: dmg
     runs-on: ${{ matrix.platform }}
+    env:
+      RELEASE_TARGET: ${{ matrix.target }}
+      # Run the AppImage packaging tools without requiring a FUSE mount.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -86,8 +108,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            build-essential \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
+            libssl-dev \
+            libxdo-dev \
             librsvg2-dev \
             patchelf \
             rpm
@@ -107,11 +132,13 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.96.1
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.9.1
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -121,7 +148,7 @@ jobs:
         run: pnpm check
 
       - name: Run Rust tests
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --target ${{ matrix.target }}
 
       - name: Set version from release tag
         shell: bash
@@ -136,44 +163,25 @@ jobs:
 
       - name: Remove cached release bundles
         shell: bash
-        run: rm -rf src-tauri/target/release/bundle
+        run: rm -rf "src-tauri/target/$RELEASE_TARGET/release/bundle"
 
       - name: Build release bundles
-        run: pnpm tauri build ${{ matrix.args }} -- --locked
+        env:
+          # Ad-hoc signing supports local installation without Apple credentials.
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+        run: pnpm tauri build --ci --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
       - name: Ensure Cargo.lock was not rewritten
         shell: bash
         run: git diff --exit-code -- src-tauri/Cargo.lock
 
-      - name: Collect Windows release assets
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
-          Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*.exe" |
-            Copy-Item -Destination release-assets
-          if (-not (Get-ChildItem -Path release-assets -File)) {
-            throw "No Windows NSIS installer was produced."
-          }
-
-      - name: Collect Linux release assets
-        if: runner.os == 'Linux'
-        run: |
-          mkdir -p release-assets
-          find src-tauri/target/release/bundle -maxdepth 2 -type f \
-            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
-            -exec cp '{}' release-assets/ \;
-          for pattern in '*.deb' '*.rpm' '*.AppImage'; do
-            if ! compgen -G "release-assets/$pattern" > /dev/null; then
-              printf 'Missing required Linux release asset: %s\n' "$pattern" >&2
-              exit 1
-            fi
-          done
+      - name: Collect release assets
+        run: node scripts/release-assets.mjs collect ${{ matrix.target }}
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-${{ runner.os }}
+          name: release-${{ matrix.target }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 7
@@ -202,6 +210,14 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+
+      - name: Verify all platform and architecture assets
+        run: node scripts/release-assets.mjs verify
+
       - name: Generate SHA256 checksums
         working-directory: release-assets
         run: |
@@ -209,11 +225,6 @@ jobs:
             | sort -z \
             | xargs -0 sha256sum > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24.18.0
 
       - name: Generate release notes from commits
         shell: bash
@@ -233,6 +244,7 @@ jobs:
           {
             printf '自动构建的 BroKnowMyGitDesktop 发布版本。\n\n'
             printf '> Windows 安装包当前未进行 Authenticode 代码签名，安装时可能出现 SmartScreen 提示。\n\n'
+            printf '> macOS 安装包仅使用 ad-hoc 签名，尚未进行 Apple 开发者签名与 notarization，首次打开可能被 Gatekeeper 阻止。\n\n'
             printf '## 更新记录（%s）\n\n' "$range_title"
             node scripts/release-notes.mjs "$commit_range" "$GITHUB_REPOSITORY"
             printf '\n\n[查看完整版本对比](%s)\n' "$comparison_url"
