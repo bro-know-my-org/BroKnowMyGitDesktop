@@ -41,7 +41,7 @@ test("repository switcher styles follow explicit state and preserve owner casing
 
   assert.match(
     componentSource,
-    /'sidebar-group-heading-owner': group\.key\.startsWith\('owner:'\)/u,
+    /'sidebar-group-heading-owner': item\.group\.key\.startsWith\('owner:'\)/u,
   );
   assert.match(
     stylesheetSource,

@@ -25,7 +25,7 @@ export default defineComponent({
                           <n-button size="tiny" type="primary" @click="branchModalShown = true">{{ t('repository.branches.newBranch') }}</n-button>
                         </n-space>
                       </template>
-                      <n-data-table :columns="branchColumns" :data="snapshot.branches" :bordered="false" table-layout="fixed" />
+                      <n-data-table :columns="branchColumns" :data="snapshot.branches" :row-key="(branch) => branch.name" virtual-scroll :max-height="420" :bordered="false" table-layout="fixed" />
                     </n-card>
                   </n-grid-item>
                   <n-grid-item span="2 m:1">
@@ -48,7 +48,7 @@ export default defineComponent({
                           {{ activeRemote ? t('repository.branches.fetchRemote', { remote: activeRemote.name }) : t('repository.branches.fetch') }}
                         </n-button>
                       </template>
-                      <n-data-table :columns="remoteBranchColumns" :data="snapshot.remoteBranches" :bordered="false" table-layout="fixed" />
+                      <n-data-table :columns="remoteBranchColumns" :data="snapshot.remoteBranches" :row-key="(branch) => branch.remoteName + ':' + branch.name" virtual-scroll :max-height="420" :bordered="false" table-layout="fixed" />
                       <n-empty
                         v-if="!snapshot.remoteBranches.length"
                         :description="activeRemote ? t('repository.branches.noRemoteBranches') : t('repository.branches.addSelectRemoteFirst')"
