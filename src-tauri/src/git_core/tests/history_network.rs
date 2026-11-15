@@ -789,12 +789,160 @@ fn commit_history_tracks_resolved_upstream_and_detached_head() {
     assert_eq!(commits[0].pushed, Some(false));
     assert_eq!(commits[1].pushed, Some(true));
 
+    let page = git
+        .commits_page(&repository, 1, 1, Some(&commits[0].sha))
+        .unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].sha, commits[1].sha);
+    assert_eq!(page[0].pushed, Some(true));
+    assert!(git
+        .commits_page(&repository, 1, 2, Some(&commits[0].sha))
+        .unwrap()
+        .is_empty());
+    let stale = git
+        .commits_page(&repository, 1, 1, Some(&commits[1].sha))
+        .unwrap_err();
+    assert_eq!(stale.code(), "repository_changed");
+
     run_git(&["checkout", "--detach", "-q", "HEAD"]);
     let detached_commits = git.commits(&repository, 100).unwrap();
     assert_eq!(detached_commits.len(), 2);
     assert!(detached_commits
         .iter()
         .all(|commit| commit.pushed.is_none()));
+
+    // Match the reported repository: 149 commits, 43 pushed, 106 local-only.
+    run_git(&["checkout", "-q", "main"]);
+    for index in 2..149 {
+        run_git(&[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            &format!("history {index}"),
+        ]);
+        if index == 42 {
+            run_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        }
+    }
+    let first = git.commits_page(&repository, 100, 0, None).unwrap();
+    let second = git
+        .commits_page(&repository, 100, 100, Some(&first[0].sha))
+        .unwrap();
+    assert_eq!(first.len(), 100);
+    assert!(first.iter().all(|commit| commit.pushed == Some(false)));
+    assert_eq!(second.len(), 49);
+    assert!(second[..6]
+        .iter()
+        .all(|commit| commit.pushed == Some(false)));
+    assert!(second[6..].iter().all(|commit| commit.pushed == Some(true)));
+    let all = git.commits(&repository, 200).unwrap();
+    assert_eq!(
+        first
+            .iter()
+            .chain(&second)
+            .map(|commit| &commit.sha)
+            .collect::<Vec<_>>(),
+        all.iter().map(|commit| &commit.sha).collect::<Vec<_>>()
+    );
+    run_git(&["checkout", "-qb", "side", "origin/main"]);
+    run_git(&["commit", "--allow-empty", "-qm", "pushed side commit"]);
+    run_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    run_git(&["checkout", "-q", "main"]);
+    run_git(&["merge", "--no-ff", "-qm", "merge side", "side"]);
+    let mut merged = git.commits_page(&repository, 100, 0, None).unwrap();
+    merged.extend(
+        git.commits_page(&repository, 100, 100, Some(&merged[0].sha))
+            .unwrap(),
+    );
+    assert_eq!(merged.len(), 151);
+    assert_eq!(
+        merged
+            .iter()
+            .filter(|commit| commit.pushed == Some(false))
+            .count(),
+        107
+    );
+    assert!(merged
+        .iter()
+        .any(|commit| commit.summary == "pushed side commit" && commit.pushed == Some(true)));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Both local-only and pushed short feature merges need one reachability walk.
+        for index in 0..24 {
+            run_git(&["checkout", "-qb", &format!("feature-{index}"), "main"]);
+            run_git(&["commit", "--allow-empty", "-qm", "short feature"]);
+            run_git(&["checkout", "-q", "main"]);
+            run_git(&["merge", "--no-ff", "-qm", "merge feature", &format!("feature-{index}")]);
+        }
+        let wrapper = repository.join("count-git.sh");
+        fs::write(&wrapper, "#!/bin/sh\nfor arg in \"$@\"; do\n  if [ \"$arg\" = rev-list ]; then printf x >> \"$(dirname \"$0\")/queries\"; fi\ndone\nexec git \"$@\"\n").unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+        let counted = GitCore::with_executable(&wrapper);
+        let local_only = counted.commits(&repository, 300).unwrap();
+        assert_eq!(local_only.iter().filter(|commit| commit.pushed == Some(false)).count(), 155);
+        assert_eq!(fs::read(repository.join("queries")).unwrap().len(), 1);
+        fs::remove_file(repository.join("queries")).unwrap();
+        run_git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        let pushed = counted.commits(&repository, 300).unwrap();
+        assert_eq!(pushed.len(), 199);
+        assert!(pushed.iter().all(|commit| commit.pushed == Some(true)));
+        assert_eq!(fs::read(repository.join("queries")).unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn commit_history_pagination_exceeds_the_old_reachability_output_budget() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let repository = TemporaryTestDirectory::create(std::env::temp_dir().join(format!(
+        "broknowmygitdesktop-deep-history-{}-{}", std::process::id(),
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+    )));
+    let run_git = |arguments: &[&str]| {
+        assert!(test_git_command()
+            .args(["-C", repository.to_str().unwrap()])
+            .args(arguments)
+            .status()
+            .unwrap()
+            .success());
+    };
+    run_git(&["init", "-q", "-b", "main"]);
+    let mut import = test_git_command()
+        .args(["-C", repository.to_str().unwrap(), "fast-import", "--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut input = std::io::BufWriter::new(import.stdin.take().unwrap());
+    for index in 1..=52_000 {
+        write!(input, "commit refs/heads/main\ncommitter History <history@example.invalid> {index} +0000\ndata 1\nx\n\n").unwrap();
+    }
+    input.flush().unwrap();
+    drop(input);
+    assert!(import.wait().unwrap().success());
+    run_git(&[
+        "remote",
+        "add",
+        "origin",
+        "https://example.invalid/history.git",
+    ]);
+    run_git(&["update-ref", "refs/remotes/origin/main", "HEAD~51999"]);
+    run_git(&["config", "branch.main.remote", "origin"]);
+    run_git(&["config", "branch.main.merge", "refs/heads/main"]);
+    let git = GitCore::new();
+    let head = git.commits(&repository, 1).unwrap()[0].sha.clone();
+    let page = git
+        .commits_page(&repository, 100, 51_950, Some(&head))
+        .unwrap();
+    assert_eq!(page.len(), 50);
+    assert!(page[..49].iter().all(|commit| commit.pushed == Some(false)));
+    assert_eq!(page[49].pushed, Some(true));
+    let refreshed = git.commits(&repository, 52_000).unwrap();
+    assert_eq!(refreshed.len(), 52_000);
+    assert_eq!(refreshed[0].pushed, Some(false));
+    assert_eq!(refreshed[51_999].pushed, Some(true));
 }
 
 #[test]

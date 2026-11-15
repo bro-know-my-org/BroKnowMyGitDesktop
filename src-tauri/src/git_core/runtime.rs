@@ -760,6 +760,39 @@ impl GitCore {
         )
     }
 
+    /// Drain a revision walk, retaining only requested object IDs. The caller's
+    /// set bounds memory even when Git emits millions of excluded IDs.
+    pub(super) fn run_retaining_object_ids(
+        &self,
+        repository: &Path,
+        arguments: &[OsString],
+        object_ids: HashSet<Vec<u8>>,
+    ) -> Result<Output, AppError> {
+        let output = self.execute_with_optional_input_timeout_and_output_limits(
+            Some(repository),
+            arguments,
+            None,
+            &GitEnvironment::default(),
+            GitExecutionLimits {
+                timeout: BOUNDED_GIT_COMMAND_TIMEOUT,
+                maximum_stdout_bytes: object_ids.len().saturating_mul(65),
+                maximum_stderr_bytes: MAX_NETWORK_GIT_DIAGNOSTIC_BYTES,
+                timeout_code: "git_command_timeout",
+                timeout_message: "Git 命令超时，请缩小范围后重试。",
+            },
+            Some(object_ids),
+        )?;
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(self.git_command_error_for_repository(
+                Some(repository),
+                "读取提交推送状态",
+                &output,
+            ))
+        }
+    }
+
     pub(super) fn execute_network_with_timeout(
         &self,
         repository: Option<&Path>,
@@ -793,6 +826,7 @@ impl GitCore {
             None,
             environment,
             limits,
+            None,
         )
     }
 
@@ -810,6 +844,7 @@ impl GitCore {
             Some(input),
             environment,
             limits,
+            None,
         )
     }
 
@@ -820,6 +855,7 @@ impl GitCore {
         input: Option<&[u8]>,
         environment: &GitEnvironment,
         limits: GitExecutionLimits,
+        retained_object_ids: Option<HashSet<Vec<u8>>>,
     ) -> Result<Output, AppError> {
         let pipe_operation = GitPipeOperationPermit::acquire()?;
         let mut command = Command::new(&self.executable);
@@ -874,11 +910,21 @@ impl GitCore {
             terminate_git_network_child(&mut child, process_id, Some(&process_tree));
             AppError::new("git_command_failed", "无法读取 Git 网络命令输出。")
         })?;
-        let stdout_reader = spawn_network_git_pipe_reader(
-            stdout,
-            limits.maximum_stdout_bytes,
-            Arc::clone(&pipe_operation),
-        );
+        let stdout_reader = if let Some(object_ids) = retained_object_ids {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            let permit = Arc::clone(&pipe_operation);
+            thread::spawn(move || {
+                let _permit = permit;
+                let _ = sender.send(read_retained_object_ids(stdout, object_ids));
+            });
+            receiver
+        } else {
+            spawn_network_git_pipe_reader(
+                stdout,
+                limits.maximum_stdout_bytes,
+                Arc::clone(&pipe_operation),
+            )
+        };
         let stderr_reader = spawn_network_git_pipe_reader(
             stderr,
             limits.maximum_stderr_bytes,
@@ -1167,6 +1213,34 @@ fn collect_git_input_writer(
     }
 }
 
+fn read_retained_object_ids(
+    pipe: impl Read,
+    mut object_ids: HashSet<Vec<u8>>,
+) -> Result<Vec<u8>, NetworkGitPipeError> {
+    let mut reader = BufReader::new(pipe);
+    let mut retained = Vec::new();
+    let mut line = Vec::with_capacity(65);
+    loop {
+        line.clear();
+        let count = (&mut reader)
+            .take(66)
+            .read_until(b'\n', &mut line)
+            .map_err(NetworkGitPipeError::Io)?;
+        if count == 0 {
+            return Ok(retained);
+        }
+        // SHA-256 is the longest supported Git object ID. A bounded line read
+        // also prevents an invalid unterminated stream from growing memory.
+        if count > 65 || line.pop() != Some(b'\n') {
+            return Err(NetworkGitPipeError::TooLarge);
+        }
+        if object_ids.remove(&line) {
+            retained.extend_from_slice(&line);
+            retained.push(b'\n');
+        }
+    }
+}
+
 fn read_network_git_pipe(
     mut pipe: impl Read,
     maximum_bytes: usize,
@@ -1244,5 +1318,27 @@ fn network_git_pipe_error(error: NetworkGitPipeError) -> AppError {
             let _ = error.kind();
             AppError::new("git_command_failed", "无法读取 Git 网络命令输出。")
         }
+    }
+}
+
+#[cfg(test)]
+mod retained_object_id_tests {
+    use super::*;
+
+    #[test]
+    fn filters_and_deduplicates_ids_with_bounded_line_reads() {
+        let sha1 = "a".repeat(40);
+        let sha256 = "b".repeat(64);
+        let other = "c".repeat(40);
+        let wanted = || {
+            [sha1.as_bytes().to_vec(), sha256.as_bytes().to_vec()]
+                .into_iter()
+                .collect()
+        };
+        let input = format!("{other}\n{sha1}\n{sha1}\n{sha256}\n");
+        let retained = read_retained_object_ids(input.as_bytes(), wanted()).unwrap();
+        assert_eq!(retained, format!("{sha1}\n{sha256}\n").as_bytes());
+        assert!(read_retained_object_ids(sha1.as_bytes(), wanted()).is_err());
+        assert!(read_retained_object_ids(std::io::repeat(b'x'), wanted()).is_err());
     }
 }

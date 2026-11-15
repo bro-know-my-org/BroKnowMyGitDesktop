@@ -10,10 +10,17 @@ const MAX_COMMIT_FILE_DIFF_BYTES: usize = 4 * 1024 * 1024;
 pub async fn list_commits(
     repository_path: String,
     limit: Option<usize>,
+    offset: Option<usize>,
+    expected_head: Option<String>,
 ) -> Result<Vec<CommitSummary>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         let repository = repository_root(&repository_path)?;
-        GitCore::new().commits(&repository, limit.unwrap_or(100))
+        GitCore::new().commits_page(
+            &repository,
+            limit.unwrap_or(100),
+            offset.unwrap_or(0),
+            expected_head.as_deref(),
+        )
     })
     .await
     .map_err(|_| AppError::new("command_failed", "提交历史后台任务未能完成。"))?

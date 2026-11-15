@@ -1140,10 +1140,11 @@ export const api = {
     });
   },
 
-  listCommits(repositoryPath: string, limit = 100): Promise<CommitSummary[]> {
-    return request("list_commits", { repositoryPath, limit }, () => {
+  listCommits(repositoryPath: string, limit = 100, offset = 0, expectedHead?: string): Promise<CommitSummary[]> {
+    return request("list_commits", { repositoryPath, limit, offset, expectedHead }, () => {
       const snapshot = requireBrowserSnapshot(repositoryPath);
-      return localizeBrowserCommits(browserHistoryCommits(snapshot).slice(0, limit));
+      if (expectedHead !== undefined && snapshot.status.headCommit !== expectedHead) throw browserError("repository_changed");
+      return localizeBrowserCommits(browserHistoryCommits(snapshot).slice(offset, offset + limit));
     });
   },
 

@@ -437,19 +437,31 @@ impl GitCore {
     /// Lists recent commits using a NUL-delimited format so user-authored
     /// subjects cannot confuse the parser.
     pub fn commits(&self, repository: &Path, limit: usize) -> Result<Vec<CommitSummary>, AppError> {
-        self.commits_with_consistency_retry(repository, limit, 2)
+        self.commits_page(repository, limit, 0, None)
+    }
+
+    pub fn commits_page(
+        &self,
+        repository: &Path,
+        limit: usize,
+        offset: usize,
+        expected_head: Option<&str>,
+    ) -> Result<Vec<CommitSummary>, AppError> {
+        self.commits_with_consistency_retry(repository, limit, offset, expected_head, 2)
     }
 
     fn commits_with_consistency_retry(
         &self,
         repository: &Path,
         limit: usize,
+        offset: usize,
+        expected_head: Option<&str>,
         retries_remaining: usize,
     ) -> Result<Vec<CommitSummary>, AppError> {
-        if limit == 0 || limit > 1_000 {
+        if limit == 0 || offset.checked_add(limit).is_none() {
             return Err(AppError::new(
                 "invalid_history_limit",
-                "提交历史读取数量必须在 1 到 1000 之间",
+                "提交历史读取数量必须大于零且偏移不能溢出",
             ));
         }
         let format = "%H%x00%h%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00";
@@ -460,6 +472,7 @@ impl GitCore {
             // signature presentation text to this machine-readable stream.
             OsString::from("--no-show-signature"),
             OsString::from(format!("--max-count={limit}")),
+            OsString::from(format!("--skip={offset}")),
             // `tformat:` appends a newline after every record. With our
             // explicit record separator that trailing newline becomes a
             // spurious final record, which makes valid histories fail the
@@ -474,11 +487,19 @@ impl GitCore {
                 return self.commits_with_consistency_retry(
                     repository,
                     limit,
+                    offset,
+                    expected_head,
                     retries_remaining - 1,
                 );
             }
             Err(error) => return Err(error),
         };
+        if expected_head.is_some_and(|expected| position.head_commit.as_deref() != Some(expected)) {
+            return Err(AppError::new(
+                "repository_changed",
+                "提交位置已变化，请刷新历史后重试。",
+            ));
+        }
         let Some(head_commit) = position.head_commit.as_deref() else {
             let verified_position = match self.history_position(repository) {
                 Ok(position) => position,
@@ -486,6 +507,8 @@ impl GitCore {
                     return self.commits_with_consistency_retry(
                         repository,
                         limit,
+                        offset,
+                        expected_head,
                         retries_remaining - 1,
                     );
                 }
@@ -498,6 +521,8 @@ impl GitCore {
                 return self.commits_with_consistency_retry(
                     repository,
                     limit,
+                    offset,
+                    expected_head,
                     retries_remaining - 1,
                 );
             }
@@ -511,7 +536,11 @@ impl GitCore {
             Some(repository),
             &arguments,
             &GitEnvironment::default(),
-            MAX_COMMIT_HISTORY_OUTPUT_BYTES,
+            // Retained-range refreshes can request more than one normal page.
+            // Scale their budget while retaining a hard per-operation bound.
+            MAX_COMMIT_HISTORY_OUTPUT_BYTES
+                .max(limit.saturating_mul(1024))
+                .min(64 * 1024 * 1024),
             "读取提交历史",
         )?;
         let mut commits = parse_commits(&output.stdout)?;
@@ -542,23 +571,21 @@ impl GitCore {
             }
             Err(error) => return Err(error),
         };
-        let local_only_commits = self.local_only_commit_ids(
+        self.mark_pushed_commits(
             repository,
-            limit,
+            &mut commits,
             head_commit,
+            offset + limit,
             position.upstream_commit.as_deref(),
         )?;
-        for commit in &mut commits {
-            commit.pushed = local_only_commits
-                .as_ref()
-                .map(|local_only| !local_only.contains(&commit.sha));
-        }
         let verified_position = match self.history_position(repository) {
             Ok(position) => position,
             Err(error) if error.code() == "repository_changed" && retries_remaining > 0 => {
                 return self.commits_with_consistency_retry(
                     repository,
                     limit,
+                    offset,
+                    expected_head,
                     retries_remaining - 1,
                 );
             }
@@ -573,7 +600,13 @@ impl GitCore {
             return Ok(commits);
         }
         if retries_remaining > 0 {
-            return self.commits_with_consistency_retry(repository, limit, retries_remaining - 1);
+            return self.commits_with_consistency_retry(
+                repository,
+                limit,
+                offset,
+                expected_head,
+                retries_remaining - 1,
+            );
         }
         Err(AppError::new(
             "repository_changed",
@@ -581,37 +614,40 @@ impl GitCore {
         ))
     }
 
-    fn local_only_commit_ids(
+    fn mark_pushed_commits(
         &self,
         repository: &Path,
-        limit: usize,
-        head_commit: &str,
-        upstream_commit: Option<&str>,
-    ) -> Result<Option<HashSet<String>>, AppError> {
-        let Some(upstream_commit) = upstream_commit else {
-            return Ok(None);
+        commits: &mut [CommitSummary],
+        head: &str,
+        walk_limit: usize,
+        upstream: Option<&str>,
+    ) -> Result<(), AppError> {
+        let Some(upstream) = upstream else {
+            return Ok(());
         };
-
-        let output = self.run_with_output_limit(
-            Some(repository),
-            &[
-                OsString::from("rev-list"),
-                OsString::from(format!("--max-count={limit}")),
-                OsString::from(head_commit),
-                OsString::from("--not"),
-                OsString::from(upstream_commit),
-            ],
-            &GitEnvironment::default(),
-            MAX_COMMIT_HISTORY_OUTPUT_BYTES,
-            "读取未推送提交",
-        )?;
-        Ok(Some(
-            output_text(&output.stdout)
-                .lines()
-                .filter(|line| !line.is_empty())
-                .map(ToOwned::to_owned)
+        if commits.is_empty() {
+            return Ok(());
+        }
+        let output = self.run_retaining_object_ids(
+            repository,
+            &os_arguments(&[
+                "rev-list",
+                &format!("--max-count={walk_limit}"),
+                head,
+                "--not",
+                upstream,
+            ]),
+            commits
+                .iter()
+                .map(|commit| commit.sha.as_bytes().to_vec())
                 .collect(),
-        ))
+        )?;
+        let text = output_text(&output.stdout);
+        let local_only: HashSet<_> = text.lines().collect();
+        for commit in commits {
+            commit.pushed = Some(!local_only.contains(commit.sha.as_str()));
+        }
+        Ok(())
     }
 
     /// Reads a complete patch for one existing commit without exposing Git's
