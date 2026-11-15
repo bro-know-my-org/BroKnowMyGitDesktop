@@ -236,12 +236,12 @@
   margin-bottom: 16px;
 }
 
-@media (width <= 1120px) {
+@media (width <= 760px) {
   .changes-grid {
     grid-template-columns: 1fr;
   }
   
-  .repository-column-resizer {
+  .changes-workspace > .repository-column-resizer {
     display: none;
   }
   

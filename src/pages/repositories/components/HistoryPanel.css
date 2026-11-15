@@ -211,7 +211,10 @@
   min-width: 0;
   min-height: 0;
   flex: 1 1 0;
-  grid-template-columns: minmax(210px, 28%) minmax(0, 1fr);
+  grid-template-columns:
+    minmax(210px, min(var(--history-file-list-pane-width, 28%), calc(100% - 240px)))
+    0
+    minmax(240px, 1fr);
 }
 
 .history-files-pane,
@@ -220,10 +223,6 @@
   min-width: 0;
   min-height: 0;
   flex-direction: column;
-}
-
-.history-files-pane {
-  border-right: 1px solid var(--app-divider);
 }
 
 .history-pane-header {
@@ -442,6 +441,10 @@
 
   .history-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .history-detail-grid > .repository-column-resizer {
+    display: none;
   }
 
   .history-files-pane {

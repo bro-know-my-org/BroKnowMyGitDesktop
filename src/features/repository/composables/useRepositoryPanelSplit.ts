@@ -1,49 +1,67 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const repositoryPanelWidthStorageKey = "broknowmygitdesktop.repository-panel-width";
-const minimumListPaneWidth = 240;
-const minimumDetailPaneWidth = 480;
 
-function initialRepositoryPanelWidth(): number | null {
+interface RepositoryPanelSplitOptions {
+  storageKey?: string;
+  widthProperty?: string;
+  defaultWidth?: string;
+  minimumListPaneWidth?: number;
+  minimumDetailPaneWidth?: number;
+}
+
+function initialRepositoryPanelWidth(storageKey: string, minimumListPaneWidth: number): number | null {
   if (typeof window === "undefined") return null;
   try {
-    const saved = Number.parseFloat(window.localStorage.getItem(repositoryPanelWidthStorageKey) ?? "");
+    const saved = Number.parseFloat(window.localStorage.getItem(storageKey) ?? "");
     return Number.isFinite(saved) && saved >= minimumListPaneWidth ? Math.round(saved) : null;
   } catch {
     return null;
   }
 }
 
-const repositoryPanelWidth = ref<number | null>(initialRepositoryPanelWidth());
+const defaultRepositoryPanelWidth = ref<number | null>(initialRepositoryPanelWidth(repositoryPanelWidthStorageKey, 240));
 
-function maximumListPaneWidth(containerWidth: number): number {
-  return Math.max(minimumListPaneWidth, containerWidth - minimumDetailPaneWidth);
-}
+export function useRepositoryPanelSplit(options: RepositoryPanelSplitOptions = {}) {
+  const {
+    storageKey = repositoryPanelWidthStorageKey,
+    widthProperty = "--repository-list-pane-width",
+    defaultWidth = "27.2%",
+    minimumListPaneWidth = 240,
+    minimumDetailPaneWidth = 480,
+  } = options;
+  // Keep the original shared outer width; nested splits own their state and storage.
+  const repositoryPanelWidth = storageKey === repositoryPanelWidthStorageKey
+    ? defaultRepositoryPanelWidth
+    : ref<number | null>(initialRepositoryPanelWidth(storageKey, minimumListPaneWidth));
 
-function clampListPaneWidth(width: number, containerWidth: number): number {
-  return Math.round(Math.min(Math.max(width, minimumListPaneWidth), maximumListPaneWidth(containerWidth)));
-}
-
-function rememberRepositoryPanelWidth(): void {
-  if (typeof window === "undefined" || repositoryPanelWidth.value === null) return;
-  try {
-    window.localStorage.setItem(repositoryPanelWidthStorageKey, String(repositoryPanelWidth.value));
-  } catch {
-    // The resized width still applies for this session if storage is unavailable.
+  function maximumListPaneWidth(containerWidth: number): number {
+    return Math.max(minimumListPaneWidth, containerWidth - minimumDetailPaneWidth);
   }
-}
 
-function resetRememberedRepositoryPanelWidth(): void {
-  repositoryPanelWidth.value = null;
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(repositoryPanelWidthStorageKey);
-  } catch {
-    // Ignore unavailable browser storage; the in-memory value has still been reset.
+  function clampListPaneWidth(width: number, containerWidth: number): number {
+    return Math.round(Math.min(Math.max(width, minimumListPaneWidth), maximumListPaneWidth(containerWidth)));
   }
-}
 
-export function useRepositoryPanelSplit() {
+  function rememberRepositoryPanelWidth(): void {
+    if (typeof window === "undefined" || repositoryPanelWidth.value === null) return;
+    try {
+      window.localStorage.setItem(storageKey, String(repositoryPanelWidth.value));
+    } catch {
+      // The resized width still applies for this session if storage is unavailable.
+    }
+  }
+
+  function resetRememberedRepositoryPanelWidth(): void {
+    repositoryPanelWidth.value = null;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      // Ignore unavailable browser storage; the in-memory value has still been reset.
+    }
+  }
+
   let resizing = false;
   let startPointerX = 0;
   let startListPaneWidth = 0;
@@ -53,13 +71,14 @@ export function useRepositoryPanelSplit() {
   let resizeAnimationFrame: number | null = null;
   let activePointerId: number | null = null;
   let activeResizer: HTMLElement | null = null;
+  let containerObserver: ResizeObserver | null = null;
   const repositoryPanelResizer = ref<HTMLElement | null>(null);
   const repositoryPanelAriaValue = ref(minimumListPaneWidth);
   const repositoryPanelAriaMax = ref(minimumListPaneWidth);
 
   const repositoryPanelStyle = computed<Record<string, string>>(() => ({
-    "--repository-list-pane-width": repositoryPanelWidth.value === null
-      ? "27.2%"
+    [widthProperty]: repositoryPanelWidth.value === null
+      ? defaultWidth
       : `${repositoryPanelWidth.value}px`,
   }));
 
@@ -117,7 +136,7 @@ export function useRepositoryPanelSplit() {
       startListPaneWidth + pendingPointerX - startPointerX,
       resizeContainerWidth,
     );
-    container.style.setProperty("--repository-list-pane-width", `${liveListPaneWidth}px`);
+    container.style.setProperty(widthProperty, `${liveListPaneWidth}px`);
   }
 
   function resizeRepositoryPanel(event: PointerEvent): void {
@@ -178,12 +197,25 @@ export function useRepositoryPanelSplit() {
     void nextTick(updateRepositoryPanelAriaValues);
   });
 
+  watch(repositoryPanelResizer, (resizer) => {
+    containerObserver?.disconnect();
+    const container = splitContainer(resizer);
+    if (container) containerObserver?.observe(container);
+    void nextTick(updateRepositoryPanelAriaValues);
+  });
+
   onMounted(() => {
+    containerObserver = new ResizeObserver(() => {
+      if (!resizing) updateRepositoryPanelAriaValues();
+    });
+    const container = splitContainer(repositoryPanelResizer.value);
+    if (container) containerObserver.observe(container);
     window.addEventListener("resize", handleViewportResize);
     void nextTick(updateRepositoryPanelAriaValues);
   });
 
   onBeforeUnmount(() => {
+    containerObserver?.disconnect();
     window.removeEventListener("resize", handleViewportResize);
     stopRepositoryPanelResize();
     if (resizeAnimationFrame !== null) window.cancelAnimationFrame(resizeAnimationFrame);

@@ -16,6 +16,13 @@ export default defineComponent({
   components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NSpace, NSpin, NTag, RepositoryDiffViewer, RepositoryFileDiff },
   setup() {
     const workspace = useWorkspaceControllerContext();
+    const historyFileSplit = useRepositoryPanelSplit({
+      storageKey: "broknowmygitdesktop.history-file-panel-width",
+      widthProperty: "--history-file-list-pane-width",
+      defaultWidth: "28%",
+      minimumListPaneWidth: 210,
+      minimumDetailPaneWidth: 240,
+    });
     const message = useMessage();
     const commitContextMenuOpen = ref(false);
     const stashDrawerShown = ref(false);
@@ -173,6 +180,13 @@ export default defineComponent({
     return {
       ...workspace,
       ...useRepositoryPanelSplit(),
+      historyFilePanelStyle: historyFileSplit.repositoryPanelStyle,
+      historyFilePanelResizer: historyFileSplit.repositoryPanelResizer,
+      historyFilePanelAriaValue: historyFileSplit.repositoryPanelAriaValue,
+      historyFilePanelAriaMax: historyFileSplit.repositoryPanelAriaMax,
+      startHistoryFilePanelResize: historyFileSplit.startRepositoryPanelResize,
+      resizeHistoryFilePanelWithKeyboard: historyFileSplit.resizeRepositoryPanelWithKeyboard,
+      resetHistoryFilePanelWidth: historyFileSplit.resetRememberedRepositoryPanelWidth,
       commitContextMenuOpen,
       stashDrawerShown,
       commitContextMenuX,
@@ -309,7 +323,7 @@ export default defineComponent({
                         <n-button size="tiny" type="error" tertiary @click="confirmResetCommit(selectedCommit, 'hard')">{{ t('repository.history.hardReset') }}</n-button>
                       </n-space>
                     </template>
-                    <div class="history-detail-grid">
+                    <div class="history-detail-grid" :style="historyFilePanelStyle">
                       <section class="history-files-pane" :aria-label="t('repository.history.filesChangedCommit')">
                         <header class="history-pane-header">
                           <strong>{{ t('repository.history.changedFiles') }}</strong>
@@ -354,6 +368,23 @@ export default defineComponent({
                           />
                         </n-spin>
                       </section>
+
+                      <div
+                        ref="historyFilePanelResizer"
+                        class="repository-column-resizer"
+                        role="separator"
+                        tabindex="0"
+                        aria-orientation="vertical"
+                        :aria-label="t('repository.changes.resizeFileList')"
+                        :aria-valuemin="210"
+                        :aria-valuenow="historyFilePanelAriaValue"
+                        :aria-valuemax="historyFilePanelAriaMax"
+                        :aria-valuetext="t('repository.history.widthPixels', { width: historyFilePanelAriaValue })"
+                        :title="t('repository.history.dragResizeDoubleClickRestoreDefault')"
+                        @pointerdown="startHistoryFilePanelResize"
+                        @keydown="resizeHistoryFilePanelWithKeyboard"
+                        @dblclick="resetHistoryFilePanelWidth"
+                      />
 
                       <section class="history-file-diff-pane" :aria-label="t('repository.history.commitFileDiff')">
                         <header class="history-pane-header history-diff-header">
