@@ -53,6 +53,7 @@
 .history-commit-scroll {
   min-height: 0;
   flex: 1 1 0;
+  padding: 3px;
 }
 
 .history-stash-count {
@@ -104,27 +105,30 @@
   overscroll-behavior: contain;
 }
 
-.history-commit-list {
-  display: grid;
-  align-content: start;
-  gap: 3px;
-  margin: 0;
-  padding: 3px;
+.history-pagination {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 9px;
+  color: var(--app-text-muted);
+  font-size: calc(11px * var(--app-font-scale));
 }
 
 .history-commit-row {
   box-sizing: border-box;
   display: grid;
   width: 100%;
+  height: calc(100% - 3px);
   min-width: 0;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
   gap: 4px;
   padding: 9px 10px;
   border: 1px solid transparent;
   border-radius: var(--app-radius-sm);
   background: transparent;
   color: var(--app-text-body);
-  content-visibility: auto;
-  contain-intrinsic-size: auto 60px;
   cursor: pointer;
   outline: none;
   text-align: left;

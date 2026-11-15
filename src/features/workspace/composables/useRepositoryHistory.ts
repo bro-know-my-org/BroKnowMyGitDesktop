@@ -1,6 +1,6 @@
 import { skipResourceTextDiff } from "../../repository/utils/resourcePreview";
 import { computed, ref, watch, type Ref } from "vue";
-import { api } from "../../../shared/api/tauri";
+import { api, isAppError } from "../../../shared/api/tauri";
 import { t } from "../../../shared/i18n";
 import type {
   CommitChangedFile,
@@ -75,6 +75,9 @@ export function useRepositoryHistory({
   const commitDiffTruncated = ref(false);
   const commitDiffMaximumReached = ref(false);
   const historyLoading = ref(false);
+  const historyLoadingMore = ref(false);
+  const historyHasMore = ref(false);
+  const historyPageSize = 100;
   const reflogLoading = ref(false);
   const commitFilesLoading = ref(false);
   const commitDiffLoading = ref(false);
@@ -217,6 +220,8 @@ export function useRepositoryHistory({
     historyLoadedRepositoryPath = null;
     historyLoadedSignature = null;
     historyLoading.value = false;
+    historyLoadingMore.value = false;
+    historyHasMore.value = false;
   }
 
   function invalidateStashesCache(): void {
@@ -255,6 +260,7 @@ export function useRepositoryHistory({
   }
 
   function disposeRepositoryHistory(): void {
+    invalidateCommitHistoryCache();
     if (commitFilesDebounceTimer) clearTimeout(commitFilesDebounceTimer);
     if (commitDiffDebounceTimer) clearTimeout(commitDiffDebounceTimer);
     commitFilesDebounceTimer = null;
@@ -266,7 +272,7 @@ export function useRepositoryHistory({
   }
 
   async function loadHistory(): Promise<void> {
-    await loadHistoryWithOptions({ force: true });
+    await loadHistoryWithOptions({ force: true, resetPagination: true });
   }
 
   async function loadHistoryWithOptions(options: HistoryLoadOptions = {}): Promise<void> {
@@ -277,7 +283,9 @@ export function useRepositoryHistory({
     const repositoryPath = activeRepositoryPath.value;
     if (!repositoryPath) return;
     const selectionGeneration = getSelectionGeneration();
-    const { force = false, reportErrors = true, silent = false } = options;
+    const { force = false, reportErrors = true, silent = false, resetPagination = false } = options;
+    const targetCount = resetPagination ? historyPageSize : Math.max(historyPageSize, commits.value.length);
+    const requestCount = targetCount > historyPageSize ? targetCount + 1 : targetCount;
     const requestHistorySignature = historySnapshotSignature(snapshot.value);
     if (!force && historyLoadedRepositoryPath === repositoryPath && historyLoadedSignature === requestHistorySignature) return;
     if (force) {
@@ -286,18 +294,36 @@ export function useRepositoryHistory({
     }
     if (!force && historyLoading.value) return;
     const requestGeneration = ++historyRequestGeneration;
+    historyLoadingMore.value = false;
     if (!silent) historyLoading.value = true;
     try {
-      const nextCommits = await api.listCommits(repositoryPath);
-      if (
-        !repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+      // One traversal refreshes the retained range without repeated --skip walks.
+      let nextCommits: CommitSummary[];
+      try {
+        nextCommits = await api.listCommits(repositoryPath, requestCount);
+      } catch (error) {
+        if (requestCount <= historyPageSize || !isAppError(error) || error.code !== "git_output_too_large") throw error;
+        // Long subjects or very deep histories may exceed the combined budget.
+        // Fall back to the same bounded pages that loaded this range originally.
+        nextCommits = [];
+        while (nextCommits.length < requestCount) {
+          const limit = Math.min(historyPageSize, requestCount - nextCommits.length);
+          const page = await api.listCommits(repositoryPath, limit, nextCommits.length, nextCommits[0]?.sha);
+          if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+            || requestGeneration !== historyRequestGeneration
+            || historySnapshotSignature(snapshot.value) !== requestHistorySignature) return;
+          nextCommits.push(...page);
+          if (page.length < limit) break;
+        }
+      }
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
         || requestGeneration !== historyRequestGeneration
-        || historySnapshotSignature(snapshot.value) !== requestHistorySignature
-      ) return;
-      commits.value = nextCommits;
+        || historySnapshotSignature(snapshot.value) !== requestHistorySignature) return;
+      commits.value = nextCommits.slice(0, targetCount);
+      historyHasMore.value = nextCommits.length === requestCount;
       historyLoadedRepositoryPath = repositoryPath;
       historyLoadedSignature = requestHistorySignature;
-      if (selectedCommit.value && !nextCommits.some((commit) => commit.sha === selectedCommit.value?.sha)) {
+      if (selectedCommit.value && !commits.value.some((commit) => commit.sha === selectedCommit.value?.sha)) {
         clearCommitSelection();
       }
     } catch (error) {
@@ -308,6 +334,30 @@ export function useRepositoryHistory({
       if (!silent && repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === historyRequestGeneration) {
         historyLoading.value = false;
       }
+    }
+  }
+
+  async function loadMoreHistory(): Promise<void> {
+    const repositoryPath = activeRepositoryPath.value;
+    if (!repositoryPath || historyLoading.value || historyLoadingMore.value || !historyHasMore.value) return;
+    const signature = historySnapshotSignature(snapshot.value);
+    if (historyLoadedRepositoryPath !== repositoryPath || historyLoadedSignature !== signature) return;
+    const selectionGeneration = getSelectionGeneration();
+    const requestGeneration = ++historyRequestGeneration;
+    historyLoadingMore.value = true;
+    try {
+      const page = await api.listCommits(repositoryPath, historyPageSize, commits.value.length, commits.value[0]?.sha);
+      if (!repositorySelectionIsCurrent(repositoryPath, selectionGeneration)
+        || requestGeneration !== historyRequestGeneration
+        || historySnapshotSignature(snapshot.value) !== signature) return;
+      commits.value = [...commits.value, ...page];
+      historyHasMore.value = page.length === historyPageSize;
+    } catch (error) {
+      if (repositorySelectionIsCurrent(repositoryPath, selectionGeneration) && requestGeneration === historyRequestGeneration) {
+        reportError(error, t("workspace.controller.couldNotLoadCommitHistory"), repositoryPath, selectionGeneration);
+      }
+    } finally {
+      if (requestGeneration === historyRequestGeneration) historyLoadingMore.value = false;
     }
   }
 
@@ -587,6 +637,9 @@ export function useRepositoryHistory({
     commitDiffTruncated,
     commitDiffMaximumReached,
     historyLoading,
+    historyLoadingMore,
+    historyHasMore,
+    loadMoreHistory,
     reflogLoading,
     commitFilesLoading,
     commitDiffLoading,

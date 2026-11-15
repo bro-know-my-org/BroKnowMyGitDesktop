@@ -1,6 +1,6 @@
 <script lang="ts">
 import { computed, defineComponent, nextTick, ref, watch } from "vue";
-import { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, useMessage } from "naive-ui";
+import { NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NSpace, NSpin, NTag, useMessage } from "naive-ui";
 import RepositoryFileDiff from "../../../features/repository/components/RepositoryFileDiff.vue";
 import RepositoryDiffViewer from "../../../features/repository/components/RepositoryDiffViewer.vue";
 import { useRepositoryPanelSplit } from "../../../features/repository/composables/useRepositoryPanelSplit";
@@ -13,7 +13,7 @@ import FixedVirtualList from "../../../shared/virtual-list/FixedVirtualList.vue"
 
 export default defineComponent({
   name: "RepositoryHistoryPanel",
-  components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NScrollbar, NSpace, NSpin, NTag, RepositoryDiffViewer, RepositoryFileDiff },
+  components: { FixedVirtualList, NButton, NCard, NDataTable, NDrawer, NDrawerContent, NDropdown, NEmpty, NSpace, NSpin, NTag, RepositoryDiffViewer, RepositoryFileDiff },
   setup() {
     const workspace = useWorkspaceControllerContext();
     const message = useMessage();
@@ -46,6 +46,8 @@ export default defineComponent({
       unknown: "?",
     };
     const historyFileRowHeight = computed(() => Math.ceil((25.3 * resolvedInterfaceFontSize.value / 14) + 3));
+    const historyCommitRowHeight = computed(() => Math.ceil(40 * resolvedInterfaceFontSize.value / 14 + 24));
+    const commitVirtualKeys = computed(() => workspace.commits.value.map((commit) => commit.sha));
     const commitFileVirtualKeys = computed(() => workspace.commitChangedFiles.value.map(
       (file) => `${file.previousPath || ""}\u0000${file.path}`,
     ));
@@ -178,6 +180,8 @@ export default defineComponent({
       commitContextMenuOptions,
       historyActionOptions,
       historyFileRowHeight,
+      historyCommitRowHeight,
+      commitVirtualKeys,
       commitFileVirtualKeys,
       commitFileStatusCode,
       commitFileStatusClass,
@@ -222,37 +226,51 @@ export default defineComponent({
                       </n-space>
                     </template>
                     <n-spin :show="historyLoading">
-                      <n-scrollbar
+                      <FixedVirtualList
                         v-if="commits.length"
                         class="history-commit-scroll"
-                        content-class="history-commit-list"
+                        :item-count="commits.length"
+                        :item-height="historyCommitRowHeight"
+                        :item-keys="commitVirtualKeys"
+                        :loading="historyLoading || historyLoadingMore"
+                        :reset-key="activeRepositoryPath"
                         :aria-label="t('repository.history.commitHistoryList')"
+                        @end-reached="loadMoreHistory"
                       >
+                        <template #default="{ index, tabIndex }">
                         <button
-                          v-for="commit in commits"
-                          :key="commit.sha"
+                          data-virtual-list-focus
+                          :tabindex="tabIndex"
                           type="button"
                           class="history-commit-row"
-                          :class="{ selected: selectedCommit?.sha === commit.sha }"
-                          :aria-label="t('repository.history.viewCommitShaSummary', { sha: commit.shortSha, summary: commit.summary || '—' })"
-                          @click="loadCommitFiles(commit)"
-                          @contextmenu="openCommitContextMenu($event, commit)"
+                          :class="{ selected: selectedCommit?.sha === commits[index].sha }"
+                          :aria-label="t('repository.history.viewCommitShaSummary', { sha: commits[index].shortSha, summary: commits[index].summary || '—' })"
+                          @click="loadCommitFiles(commits[index])"
+                          @contextmenu="openCommitContextMenu($event, commits[index])"
                         >
                           <span class="history-commit-primary">
-                            <span class="history-commit-summary" :title="commit.summary || '—'">{{ commit.summary || '—' }}</span>
-                            <span v-if="commit.tags.length || commit.tagsTruncated || commit.pushed === false" class="history-commit-tags">
-                              <n-tag v-for="tag in commit.tags" :key="tag" size="tiny" type="primary" :bordered="false">{{ tag }}</n-tag>
-                              <n-tag v-if="commit.tagsTruncated" size="tiny" type="warning" :bordered="false">{{ t('repository.history.tagsIncomplete') }}</n-tag>
-                              <n-tag v-if="commit.pushed === false" size="tiny" type="warning" :bordered="false">{{ t('repository.history.notPushed') }}</n-tag>
+                            <span class="history-commit-summary" :title="commits[index].summary || '—'">{{ commits[index].summary || '—' }}</span>
+                            <span v-if="commits[index].tags.length || commits[index].tagsTruncated || commits[index].pushed === false" class="history-commit-tags">
+                              <n-tag v-for="tag in commits[index].tags" :key="tag" size="tiny" type="primary" :bordered="false">{{ tag }}</n-tag>
+                              <n-tag v-if="commits[index].tagsTruncated" size="tiny" type="warning" :bordered="false">{{ t('repository.history.tagsIncomplete') }}</n-tag>
+                              <n-tag v-if="commits[index].pushed === false" size="tiny" type="warning" :bordered="false">{{ t('repository.history.notPushed') }}</n-tag>
                             </span>
                           </span>
                           <span class="history-commit-meta">
-                            <span class="history-commit-author" :title="commit.authorName || '—'">{{ commit.authorName || '—' }}</span>
-                            <span class="history-commit-sha">{{ commit.shortSha }}</span>
-                            <span class="history-commit-date" :title="commit.authoredAt">{{ commit.authoredAt }}</span>
+                            <span class="history-commit-author" :title="commits[index].authorName || '—'">{{ commits[index].authorName || '—' }}</span>
+                            <span class="history-commit-sha">{{ commits[index].shortSha }}</span>
+                            <span class="history-commit-date" :title="commits[index].authoredAt">{{ commits[index].authoredAt }}</span>
                           </span>
                         </button>
-                      </n-scrollbar>
+                        </template>
+                      </FixedVirtualList>
+                      <div v-if="commits.length" class="history-pagination" aria-live="polite">
+                        <span>{{ t('repository.history.loadedCommits', { count: commits.length }) }}</span>
+                        <n-button v-if="historyHasMore" size="tiny" text :loading="historyLoadingMore" :disabled="historyLoading" @click="loadMoreHistory">
+                          {{ t('repository.history.loadMore') }}
+                        </n-button>
+                        <span v-else>{{ t('repository.history.allLoaded') }}</span>
+                      </div>
                       <n-dropdown
                         v-model:show="commitContextMenuOpen"
                         trigger="manual"

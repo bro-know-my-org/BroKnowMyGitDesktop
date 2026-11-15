@@ -84,6 +84,7 @@ export interface HistoryLoadOptions {
   force?: boolean;
   reportErrors?: boolean;
   silent?: boolean;
+  resetPagination?: boolean;
 }
 
 export const commitCacheLimit = 20;

@@ -9,14 +9,18 @@ const props = withDefaults(defineProps<{
   itemKeys: readonly (string | number)[];
   overscanViewports?: number;
   resetKey?: string | number | null;
+  loading?: boolean;
 }>(), {
   overscanViewports: 3,
   resetKey: null,
+  loading: false,
 });
 
 defineSlots<{
   default(props: { index: number; tabIndex: number }): unknown;
 }>();
+const emit = defineEmits<{ endReached: [] }>();
+let lastEndReachedCount = -1;
 
 const scrollbar = ref<InstanceType<typeof NScrollbar> | null>(null);
 // Virtualization must measure and scroll the inner viewport, not the scrollbar wrapper.
@@ -62,6 +66,12 @@ function updateViewport(): void {
   if (!element) return;
   scrollTop.value = element.scrollTop;
   viewportHeight.value = element.clientHeight;
+  if (!props.loading && element.clientHeight > 0 && props.itemCount > 0
+    && element.scrollTop + element.clientHeight * 2 >= props.itemCount * props.itemHeight
+    && lastEndReachedCount !== props.itemCount) {
+    lastEndReachedCount = props.itemCount;
+    emit("endReached");
+  }
   if (focusedIndex.value === null && props.itemCount > 0) {
     const firstVisible = Math.min(props.itemCount - 1, Math.floor(element.scrollTop / props.itemHeight));
     const visibleCount = Math.max(1, Math.ceil(element.clientHeight / props.itemHeight));
@@ -69,6 +79,13 @@ function updateViewport(): void {
       setActiveIndex(firstVisible);
     }
   }
+}
+
+function handleScroll(): void {
+  // A failed or superseded page can retry on user scrolling, but not merely
+  // when loading becomes false (which would create a tight retry loop).
+  if (!props.loading) lastEndReachedCount = -1;
+  updateViewport();
 }
 
 function itemStyle(index: number): Record<string, string> {
@@ -164,6 +181,7 @@ function handleFocusOut(): void {
 }
 
 watch(() => props.resetKey, () => {
+  lastEndReachedCount = -1;
   if (scroller.value) scroller.value.scrollTop = 0;
   scrollTop.value = 0;
   setActiveIndex(0);
@@ -171,7 +189,10 @@ watch(() => props.resetKey, () => {
   focusedItemIdentity.value = null;
 });
 
+watch(() => props.loading, () => { void nextTick(updateViewport); });
+
 watch([() => [...props.itemKeys], () => props.itemCount], () => {
+  if (props.itemCount < lastEndReachedCount) lastEndReachedCount = -1;
   const count = Math.max(0, props.itemCount);
   const identities = Array.from({ length: count }, (_, index) => itemIdentity(index));
   const activeMatch = activeItemIdentity.value === null ? -1 : identities.indexOf(activeItemIdentity.value);
@@ -220,7 +241,7 @@ defineExpose({ scrollToIndex });
     @focusin="handleFocusIn"
     @focusout="handleFocusOut"
     @keydown="handleKeydown"
-    @scroll="updateViewport"
+    @scroll="handleScroll"
   >
     <div class="fixed-virtual-list-spacer" :style="spacerStyle">
       <div
