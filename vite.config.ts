@@ -7,11 +7,14 @@ import { fileURLToPath } from "node:url";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
-export default defineConfig(async ({ mode }) => {
+export default defineConfig(async ({ mode, command, isPreview }) => {
   const environment = loadEnv(mode, ".", "");
   const performanceProfilingEnabled = mode === "development" || environment.VITE_BKM_PERF === "true";
+  const servingDev = command === "serve" && !isPreview;
 
   return {
+    // Leave existing immutable WebView entries under the old optimizer URL.
+    cacheDir: servingDev ? "node_modules/.vite-bkm" : undefined,
     plugins: [
       vue(),
       {
@@ -48,6 +51,8 @@ export default defineConfig(async ({ mode }) => {
     clearScreen: false,
     // 2. tauri expects a fixed port, fail if that port is not available
     server: {
+      // A prebundled entry can keep its URL while its shared chunk URLs change.
+      headers: servingDev ? { "Cache-Control": "no-cache" } : undefined,
       port: 51420,
       strictPort: true,
       host: host || false,

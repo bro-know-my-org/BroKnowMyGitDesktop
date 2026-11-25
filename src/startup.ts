@@ -54,21 +54,24 @@ const startupStatus = document.querySelector<HTMLElement>("[data-startup-status]
 if (startupStatus) startupStatus.textContent = startupVisibleMessages[startupLocale];
 
 function showStartupFailure(): void {
-  const startup = document.querySelector<HTMLElement>("#bkm-startup");
-  if (!startup) return;
-  const content = startup.querySelector<HTMLElement>(".bkm-startup-content");
-  if (!content) return;
+  const app = document.getElementById("app");
+  if (!app) return;
+  // Vue clears its mount target before rendering, so rebuild the shell on failure.
+  const startup = document.createElement("div");
+  startup.id = "bkm-startup";
+  startup.setAttribute("role", "alert");
   startup.setAttribute("aria-label", startupFailureMessages[startupLocale]);
-  content.replaceChildren();
   const message = document.createElement("p");
   message.textContent = startupFailureMessages[startupLocale];
   message.style.color = "#8994a6";
   message.style.fontSize = "14px";
-  content.append(message);
+  startup.append(message);
+  app.replaceChildren(startup);
 }
 
 function loadApplication(): void {
-  void import("./main").catch(() => {
+  void import("./main").catch((error: unknown) => {
+    console.error("BroKnowMyGitDesktop failed to start:", error);
     showStartupFailure();
   });
 }
